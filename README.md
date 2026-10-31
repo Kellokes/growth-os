@@ -12,11 +12,12 @@ O plano completo está em [docs/PLAN.md](docs/PLAN.md).
 - Bloqueio por 15 min após 5 tentativas erradas; códigos 2FA não podem ser reutilizados.
 - Sessão no servidor, cookie `HttpOnly` + `Secure` + `SameSite=Strict`, token CSRF em toda escrita.
 - CSP restritiva, sem scripts de terceiros, sem `/docs` da API.
-- A IA nunca executa nada sozinha: ela propõe comandos e você clica em **Executar**.
-  - Leitura (`ls`, `cat`, `git status`…) roda direto.
-  - Qualquer outro comando pede seu código 2FA.
-  - Padrões destrutivos (`rm -rf /`, `sudo`, `curl | sh`, leitura de credenciais, socket do Docker…) são bloqueados.
-- Comandos rodam sem as variáveis secretas do app, com tempo limite e saída limitada.
+- A IA trabalha em laço (até 8 passos por pedido): propõe um comando, o Growth OS executa, devolve a saída e ela segue.
+  - **Roda direto:** leitura, criar/editar arquivos, instalar dependências, testes, `git commit`, `docker ps/logs`…
+  - **Pede seu 2FA e pausa:** `rm -r`, `git push --force`/para a `main`, `docker stop/down/up`, SQL destrutivo, `kill`, `.env`…
+  - **Bloqueado sempre:** `sudo`, `curl | sh`, leitura de credenciais, socket do Docker, `/proc/*/environ`…
+- Comandos rodam sem as variáveis secretas do app, com tempo limite e saída limitada, e o processo do app
+  é marcado como não-inspecionável (`PR_SET_DUMPABLE=0`), então eles também não leem `/proc/<pid>/environ`.
 - Container sem privilégios (`cap_drop: ALL`, `no-new-privileges`, raiz somente leitura),
   sem acesso ao socket do Docker e publicado só em `127.0.0.1` para o Caddy.
 - Tudo vai para o log de auditoria (botão **Auditoria** na barra lateral).

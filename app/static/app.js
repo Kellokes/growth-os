@@ -2,7 +2,7 @@
   const $ = (s) => document.querySelector(s);
   const app = $("#app");
   const CSRF = app.dataset.csrf;
-  const state = { conv: null, commands: {}, pending: null };
+  const state = { conv: null, commands: {}, boxes: {}, pending: null, busy: false };
 
   async function api(path, opts = {}) {
     const res = await fetch(path, {
@@ -40,18 +40,22 @@
     const pre = el("pre"); pre.textContent = code;
     box.append(head, pre);
     if (["bash", "sh", "shell", "zsh", "console"].includes(lang)) {
-      const btn = el("button", "btn small", "▶ Executar");
-      btn.type = "button";
-      btn.onclick = () => runCommand(code, box, btn);
-      head.appendChild(btn);
+      state.boxes[code] = box;
       const past = state.commands[code];
       if (past) showRun(box, past);
+      else {
+        const btn = el("button", "btn small", "▶ Executar");
+        btn.type = "button";
+        btn.onclick = () => runCommand(code, box, btn);
+        head.appendChild(btn);
+      }
     }
     return box;
   }
 
   function showRun(box, run) {
     box.querySelector(".run-out")?.remove();
+    box.querySelector(".code-head button")?.remove(); // já rodou: o botão manual não faz mais sentido
     const out = el("div", "run-out");
     const label = { done: "concluído", failed: `falhou (código ${run.exit_code})`, pending: "aguardando aprovação 2FA", blocked: "bloqueado", rejected: "rejeitado", running: "executando" }[run.status] || run.status;
     out.appendChild(el("div", "code-head", `<span>saída</span><span class="badge ${run.status}">${esc(label)}</span>`));
@@ -82,15 +86,20 @@
     const { run, box } = state.pending;
     try {
       const done = await api(`/api/commands/${run.id}/approve`, { method: "POST", body: JSON.stringify({ totp: $("#approve-totp").value }) });
-      state.commands[run.command] = done; showRun(box, done);
+      state.commands[run.command] = done; if (box) showRun(box, done);
       $("#approve-dialog").close();
+      continueAgent();
     } catch (e) { alert(e.message); }
   };
   $("#approve-cancel").onclick = () => $("#approve-dialog").close();
   $("#approve-reject").onclick = async () => {
     const { run, box } = state.pending;
-    try { const r = await api(`/api/commands/${run.id}/reject`, { method: "POST" }); state.commands[run.command] = r; showRun(box, r); } catch (e) { alert(e.message); }
-    $("#approve-dialog").close();
+    try {
+      const r = await api(`/api/commands/${run.id}/reject`, { method: "POST" });
+      state.commands[run.command] = r; if (box) showRun(box, r);
+      $("#approve-dialog").close();
+      continueAgent();
+    } catch (e) { alert(e.message); $("#approve-dialog").close(); }
   };
 
   function addMessage(m) {
@@ -116,7 +125,7 @@
   ];
 
   function emptyState() {
-    const e = el("div", "empty", '<div class="logo">◆</div><h2>O que vamos operar hoje?</h2><p>A IA propõe os comandos e você decide o que roda.</p>');
+    const e = el("div", "empty", '<div class="logo">◆</div><h2>O que vamos operar hoje?</h2><p>A IA executa sozinha o que é comum e pede o seu 2FA só para o que é perigoso.</p>');
     e.id = "empty";
     const chips = el("div", "chips");
     for (const [label, prompt] of PROMPTS) {
@@ -155,12 +164,14 @@
 
   async function openConversation(id) {
     const c = await api(`/api/conversations/${id}`);
-    state.conv = c; state.commands = {};
+    state.conv = c; state.commands = {}; state.boxes = {};
     for (const r of c.commands) state.commands[r.command] = r;
     $("#conv-title").textContent = c.title;
     $("#messages").innerHTML = "";
     if (!c.messages.length) $("#messages").appendChild(emptyState());
     c.messages.forEach(addMessage);
+    const pending = c.commands.find((r) => r.status === "pending");
+    if (pending) openApproval(pending, state.boxes[pending.command]);
     loadConversations();
   }
 
@@ -170,23 +181,68 @@
     $("#input").focus();
   }
 
+  // Lê o NDJSON do laço do agente e desenha cada evento assim que chega.
+  async function consume(path, body, provider) {
+    state.busy = true; $("#send").disabled = true;
+    let typing = addMessage({ role: "assistant", provider, typing: true });
+    const setTyping = (label) => { typing?.querySelector(".content").setAttribute("data-label", label); };
+    const dropTyping = () => { typing?.remove(); typing = null; };
+    try {
+      const res = await fetch(path, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) { location.href = "/login"; return; }
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `erro ${res.status}`); }
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const ev = JSON.parse(line);
+          if (ev.type === "step") { setTyping(`passo ${ev.n}`); }
+          else if (ev.type === "message") { dropTyping(); addMessage({ role: "assistant", provider: ev.provider, content: ev.content }); typing = addMessage({ role: "assistant", provider, typing: true }); }
+          else if (ev.type === "command") {
+            state.commands[ev.run.command] = ev.run;
+            const box = state.boxes[ev.run.command]; if (box) showRun(box, ev.run);
+          } else if (ev.type === "approval") {
+            dropTyping();
+            state.commands[ev.run.command] = ev.run;
+            const box = state.boxes[ev.run.command]; if (box) showRun(box, ev.run);
+            openApproval(ev.run, box);
+          } else if (ev.type === "notice") { dropTyping(); addMessage({ role: "assistant", provider, content: ev.message }); }
+          else if (ev.type === "error") { dropTyping(); addMessage({ role: "assistant", provider, content: `Erro: ${ev.message}`, error: true }); }
+        }
+      }
+    } catch (e) {
+      dropTyping(); addMessage({ role: "assistant", provider, content: `Erro: ${e.message}`, error: true });
+    } finally {
+      dropTyping(); state.busy = false; $("#send").disabled = false; $("#input").focus();
+      loadConversations();
+    }
+  }
+
+  function continueAgent() {
+    const provider = $("#provider").value;
+    if (state.conv && provider) consume(`/api/conversations/${state.conv.id}/continue`, { provider }, provider);
+  }
+
   $("#composer").onsubmit = async (ev) => {
     ev.preventDefault();
+    if (state.busy) return;
     const input = $("#input"); const text = input.value.trim(); if (!text) return;
     const provider = $("#provider").value;
     if (!provider) { alert("Nenhum provider disponível. Configure Claude, Codex ou OpenRouter no servidor."); return; }
     if (!state.conv) await newConversation();
     input.value = ""; input.style.height = "auto";
     addMessage({ role: "user", content: text });
-    const typing = addMessage({ role: "assistant", provider, typing: true });
-    $("#send").disabled = true;
-    try {
-      const m = await api(`/api/conversations/${state.conv.id}/messages`, { method: "POST", body: JSON.stringify({ provider, content: text }) });
-      typing.remove(); addMessage(m);
-      if (m.title && m.title !== state.conv.title) { state.conv.title = m.title; $("#conv-title").textContent = m.title; loadConversations(); }
-    } catch (e) {
-      typing.remove(); addMessage({ role: "assistant", provider, content: `Erro: ${e.message}`, error: true });
-    } finally { $("#send").disabled = false; input.focus(); }
+    if (state.conv.title === "Nova conversa") { state.conv.title = text.split("\n")[0].slice(0, 80); $("#conv-title").textContent = state.conv.title; }
+    consume(`/api/conversations/${state.conv.id}/messages`, { provider, content: text }, provider);
   };
 
   $("#input").addEventListener("keydown", (ev) => {

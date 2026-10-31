@@ -165,6 +165,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .composer .btn.primary { padding: 10px 20px; border-radius: 12px; }
 .hint { max-width: 860px; margin: 8px auto 0; text-align: center; font-size: 12px; color: var(--muted); }
 
+.content[data-label]::after { content: attr(data-label); margin-left: 10px; font-size: 12px; color: var(--muted); }
 .typing { display: inline-flex; gap: 5px; padding: 6px 0; }
 .typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); opacity: .3; animation: blink 1.2s infinite; }
 .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }

@@ -1,9 +1,12 @@
-"""Executor de comandos com classificação de risco.
+"""Executor de comandos com política de risco em três níveis.
 
-Regras (segurança primeiro):
-- blocked: padrões destrutivos ou de escalada; nunca rodam.
-- safe: comandos somente-leitura de uma lista fechada, sem operadores de shell perigosos.
-- approval: todo o resto; exige código 2FA do owner antes de rodar.
+- blocked:  nunca roda (escalada de privilégio, leitura de credenciais, formatação de disco...).
+- approval: perigoso ou irreversível; só roda com o código 2FA do owner.
+- auto:     todo o resto roda direto, inclusive escrita no /workspace, git comum, pip, testes...
+            "safe" é o subconjunto somente-leitura e tem o mesmo tratamento; só muda o rótulo.
+
+A política precisa ser tolerante o bastante para a IA trabalhar sem travar, mas qualquer
+comando que apague dados, derrube serviço, reescreva histórico ou toque em segredos cai em approval.
 """
 
 import os
@@ -16,7 +19,7 @@ from pathlib import Path
 SAFE_COMMANDS = {
     "ls", "pwd", "cat", "head", "tail", "wc", "grep", "find", "tree", "du", "df",
     "whoami", "date", "uname", "uptime", "free", "echo", "stat", "file", "which",
-    "ps",
+    "ps", "sort", "uniq", "cut", "diff", "basename", "dirname",
 }
 SAFE_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch", "remote"}
 
@@ -33,17 +36,36 @@ BLOCKED_PATTERNS = [
     r"\bdocker\.sock\b",
     r"/etc/(shadow|sudoers)",
     r"\bnc\b.*\s-e\s",
-    r"\bcrontab\s+-r\b",
-    # Credenciais dos CLIs logados e chaves SSH nunca podem ser lidas por comandos.
+    # Credenciais dos CLIs logados, chaves SSH e o ambiente do próprio app.
     r"\.(claude|codex|ssh)(/|\b)",
     r"\.claude\.json",
+    r"/proc/[^\s/]*/(environ|mem|maps)",
 ]
-_SHELL_OPERATORS = re.compile(r"[;&|`$<>]|\$\(")
+
+# Rodam só com 2FA: apagam dados, derrubam serviços, reescrevem histórico ou mexem em segredos.
+APPROVAL_PATTERNS = [
+    (r"\b(rm|rmdir|shred|unlink)\b.*\s-[a-zA-Z]*[rR]|\b(rm|rmdir|shred)\b.*--recursive|\bshred\b|\btruncate\b", "apaga ou sobrescreve dados"),
+    (r"\bfind\b.*(-delete|-exec\b|-execdir\b)", "find com ação destrutiva"),
+    (r"\bgit\s+push\b.*(--force|-f\b|--force-with-lease|--delete|\s:\w)", "force push ou apagar branch remota"),
+    (r"\bgit\s+push\b.*\b(main|master|production|prod)\b", "push para a branch principal"),
+    (r"\bgit\s+(reset\s+--hard|clean\s+-\w*f|branch\s+-D|checkout\s+--\s|stash\s+(drop|clear))", "descarta trabalho no git"),
+    (r"\bdocker\s+(compose\s+)?(rm|rmi|stop|kill|restart|down|prune|exec|run|up|build|pull|cp)\b", "altera containers"),
+    (r"\bdocker\s+(volume|network|system|image|container)\s+(rm|prune|remove)\b", "remove recursos do Docker"),
+    (r"\b(drop|truncate)\s+(table|database|schema)\b|\bdelete\s+from\b|\balter\s+table\b", "altera ou apaga dados do banco"),
+    (r"\b(kill|pkill|killall)\b", "encerra processos"),
+    (r"\b(chmod|chown|chgrp)\s+(-\w*R|--recursive)", "muda permissões recursivamente"),
+    (r"\b(systemctl|service|crontab|at)\b", "altera serviços ou agendamentos"),
+    (r"(^|[\s/\"'=])\.env(\.|\b)|\bprintenv\b|\bsecrets?\b.*\b(cat|echo|print)\b", "toca em variáveis ou segredos"),
+    (r"\|\s*(ba|z|da)?sh\b|\b(eval|exec)\b|\bbase64\s+(-d|--decode)", "executa código montado dinamicamente"),
+    (r">\s*/(etc|usr|bin|sbin|lib|var|opt|root|home|boot|data)\b", "escreve fora do /workspace"),
+    (r"\b(npm|pnpm|yarn)\s+(publish|unpublish)\b|\bpip\s+uninstall\b|\b(apt|apt-get|apk|yum|dnf)\b", "instala/remove pacotes do sistema ou publica"),
+]
+_APPROVAL_COMPILED = [(re.compile(p, re.I), why) for p, why in APPROVAL_PATTERNS]
 
 
 @dataclass
 class Classification:
-    risk: str  # safe | approval | blocked
+    risk: str  # safe | auto | approval | blocked
     reason: str
 
 
@@ -51,25 +73,25 @@ def classify(command: str) -> Classification:
     cmd = command.strip()
     if not cmd:
         return Classification("blocked", "comando vazio")
-    if len(cmd) > 4000:
+    if len(cmd) > 8000:
         return Classification("blocked", "comando muito longo")
     for pat in BLOCKED_PATTERNS:
         if re.search(pat, cmd):
             return Classification("blocked", f"padrão bloqueado: {pat}")
-    if _SHELL_OPERATORS.search(cmd):
-        return Classification("approval", "usa operadores de shell")
-    try:
-        parts = shlex.split(cmd)
-    except ValueError:
-        return Classification("approval", "não foi possível analisar o comando")
-    prog = parts[0]
-    if prog == "git" and len(parts) > 1 and parts[1] in SAFE_GIT_SUBCOMMANDS:
-        return Classification("safe", "git somente leitura")
-    if prog in SAFE_COMMANDS and prog != "find":
-        return Classification("safe", "comando somente leitura")
-    if prog == "find" and not any(p in ("-exec", "-execdir", "-delete", "-ok") for p in parts):
-        return Classification("safe", "find sem ações")
-    return Classification("approval", "pode alterar o sistema")
+    for rx, why in _APPROVAL_COMPILED:
+        if rx.search(cmd):
+            return Classification("approval", why)
+    # Somente-leitura "puro": um comando conhecido, sem operadores de shell.
+    if not re.search(r"[;&|`$<>]|\$\(", cmd):
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            return Classification("auto", "comando comum")
+        if parts[0] == "git" and len(parts) > 1 and parts[1] in SAFE_GIT_SUBCOMMANDS:
+            return Classification("safe", "git somente leitura")
+        if parts[0] in SAFE_COMMANDS:
+            return Classification("safe", "comando somente leitura")
+    return Classification("auto", "comando comum")
 
 
 # Variáveis que nunca vão para os comandos executados.

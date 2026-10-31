@@ -109,6 +109,24 @@
     return row;
   }
 
+  const PROMPTS = [
+    ["Estado do servidor", "Mostre o estado do servidor: disco, memória e containers rodando."],
+    ["Listar projetos", "Liste os projetos que existem no VPS e o que cada um faz."],
+    ["Novo projeto Python", "Crie a estrutura inicial de um novo projeto Python com FastAPI."],
+  ];
+
+  function emptyState() {
+    const e = el("div", "empty", '<div class="logo">◆</div><h2>O que vamos operar hoje?</h2><p>A IA propõe os comandos e você decide o que roda.</p>');
+    e.id = "empty";
+    const chips = el("div", "chips");
+    for (const [label, prompt] of PROMPTS) {
+      const b = el("button", "chip"); b.type = "button"; b.textContent = label; b.dataset.prompt = prompt;
+      chips.appendChild(b);
+    }
+    e.appendChild(chips);
+    return e;
+  }
+
   async function loadProviders() {
     const list = await api("/api/providers");
     const sel = $("#provider");
@@ -141,7 +159,7 @@
     for (const r of c.commands) state.commands[r.command] = r;
     $("#conv-title").textContent = c.title;
     $("#messages").innerHTML = "";
-    if (!c.messages.length) { const e = el("div", "empty", "<h2>O que vamos operar hoje?</h2><p>A IA propõe os comandos e você decide o que roda.</p>"); e.id = "empty"; $("#messages").appendChild(e); }
+    if (!c.messages.length) $("#messages").appendChild(emptyState());
     c.messages.forEach(addMessage);
     loadConversations();
   }
@@ -175,6 +193,12 @@
     if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); $("#composer").requestSubmit(); }
   });
   $("#input").addEventListener("input", (ev) => { ev.target.style.height = "auto"; ev.target.style.height = ev.target.scrollHeight + "px"; });
+  $("#messages").addEventListener("click", (ev) => {
+    const chip = ev.target.closest(".chip");
+    if (!chip) return;
+    $("#input").value = chip.dataset.prompt;
+    $("#composer").requestSubmit();
+  });
   $("#new-conv").onclick = newConversation;
   $("#logout").onclick = async () => { await api("/logout", { method: "POST" }).catch(() => {}); location.href = "/login"; };
   $("#show-audit").onclick = async () => {

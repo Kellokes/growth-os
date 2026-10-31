@@ -16,7 +16,10 @@
       <button class="btn small" id="new-conv" type="button">+ Nova</button>
     </div>
     <ul class="conv-list" id="conv-list"></ul>
-    <button class="btn ghost" id="logout" type="button">Sair</button>
+    <div class="side-foot">
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="Alternar tema" title="Alternar tema claro/escuro"><span class="i-sun">☀</span><span class="i-moon">☾</span></button>
+      <button class="btn ghost grow" id="logout" type="button">Sair</button>
+    </div>
   </aside>
 
   <main class="main">
@@ -29,16 +32,25 @@
 
     <section class="messages" id="messages">
       <div class="empty" id="empty">
+        <div class="logo">◆</div>
         <h2>O que vamos operar hoje?</h2>
         <p>Peça para criar, analisar ou alterar algo no VPS. A IA propõe os comandos e você decide o que roda.
-        Comandos de leitura executam direto; os que alteram o sistema pedem seu código 2FA.</p>
+        Leitura executa direto; o que altera o sistema pede seu código 2FA.</p>
+        <div class="chips">
+          <button class="chip" type="button" data-prompt="Mostre o estado do servidor: disco, memória e containers rodando.">Estado do servidor</button>
+          <button class="chip" type="button" data-prompt="Liste os projetos que existem no VPS e o que cada um faz.">Listar projetos</button>
+          <button class="chip" type="button" data-prompt="Crie a estrutura inicial de um novo projeto Python com FastAPI.">Novo projeto Python</button>
+        </div>
       </div>
     </section>
 
-    <form class="composer" id="composer">
-      <textarea id="input" rows="1" placeholder="Escreva uma mensagem…  (Enter envia, Shift+Enter quebra linha)" required></textarea>
-      <button class="btn primary" id="send" type="submit">Enviar</button>
-    </form>
+    <div class="composer-wrap">
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Escreva uma mensagem…" required></textarea>
+        <button class="btn primary" id="send" type="submit">Enviar</button>
+      </form>
+      <div class="hint">Enter envia · Shift+Enter quebra linha · a IA só propõe, quem executa é você</div>
+    </div>
   </main>
 </div>
 

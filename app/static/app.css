@@ -189,13 +189,65 @@ dialog pre { background: var(--code-bg); border: 1px solid var(--line); border-r
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 
 @media (max-width: 800px) {
-  .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .sidebar { padding: 12px 14px; gap: 10px; border-right: 0; border-bottom: 1px solid var(--line); max-height: 38vh; }
-  .nav { flex-direction: row; flex-wrap: wrap; }
+  html, body { height: 100%; }
+  .shell { height: 100vh; height: 100dvh; grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }
+
+  /* barra superior compacta: marca, tema e sair ficam numa linha */
+  .sidebar { padding: 10px 12px 8px; gap: 8px; border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+  .sidebar .brand { font-size: 15px; }
+  .sidebar .brand .logo { width: 26px; height: 26px; font-size: 12px; }
+  .sidebar > .brand { justify-content: flex-start; }
+
+  /* navegação e conversas viram faixas roláveis na horizontal */
+  .nav { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; gap: 6px; padding-bottom: 2px; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav a, .nav span, .nav .link { flex: none; padding: 7px 12px; border: 1px solid var(--line); border-radius: 99px; font-size: 13px; }
+  .nav a.active { box-shadow: none; border-color: var(--accent); }
   .nav .soon { display: none; }
-  .topbar { flex-direction: column; align-items: stretch; padding: 12px 16px; gap: 8px; }
-  .messages { padding: 20px 16px; }
-  .composer-wrap { padding: 0 12px 14px; }
-  .provider select { min-width: 0; flex: 1; }
-  .audit div { grid-template-columns: 1fr; gap: 2px; }
+  .conv-head { display: none; }
+  .conv-list { flex-direction: row; flex: none; overflow-x: auto; overflow-y: hidden; gap: 6px; padding-bottom: 2px; scrollbar-width: none; }
+  .conv-list::-webkit-scrollbar { display: none; }
+  .conv-list li { flex: none; }
+  .conv-list button { width: auto; max-width: 62vw; border: 1px solid var(--line); border-radius: 99px; padding: 6px 12px; font-size: 13px; }
+  .side-foot { display: flex; gap: 8px; position: absolute; top: 10px; right: 12px; }
+  .side-foot .grow { flex: none; }
+  .sidebar { position: relative; }
+  .sidebar .brand { padding-right: 0; }
+  .side-foot .btn.ghost { padding: 7px 12px; font-size: 13px; }
+  .side-foot .icon-btn { width: 34px; height: 34px; }
+
+  /* cabeçalho da conversa e provider ocupam a largura toda */
+  .topbar { flex-direction: column; align-items: stretch; padding: 10px 14px; gap: 8px; }
+  .topbar h1 { font-size: 15px; }
+  .provider { width: 100%; }
+  .provider select { min-width: 0; flex: 1; width: 100%; font-size: 16px; }
+
+  /* mensagens e campo de texto: 16px evita o zoom automático do iOS */
+  .messages { padding: 16px 14px; gap: 16px; }
+  .msg { gap: 10px; }
+  .msg .avatar { width: 28px; height: 28px; font-size: 11px; border-radius: 9px; }
+  .msg.user .body { padding: 9px 12px; }
+  .msg .content p { font-size: 15px; }
+  .code pre { font-size: 12.5px; padding: 10px 12px; }
+  .empty h2 { font-size: 22px; }
+  .empty { margin: 12vh auto 0; }
+  .chips { justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .chip { flex: none; }
+
+  .composer-wrap { padding: 0 10px calc(10px + env(safe-area-inset-bottom)); }
+  .composer { padding: 6px 6px 6px 12px; gap: 8px; border-radius: 16px; }
+  .composer textarea { font-size: 16px; }
+  .composer .btn.primary { padding: 9px 14px; }
+  .hint { display: none; }
+
+  /* diálogos ocupam quase a tela inteira e os botões empilham */
+  dialog { padding: 20px; width: calc(100% - 24px); max-height: calc(100dvh - 24px); overflow: auto; }
+  dialog .row { flex-direction: column-reverse; }
+  dialog .row .btn { width: 100%; }
+  dialog input { font-size: 16px; }
+  .audit div { grid-template-columns: 1fr; gap: 2px; padding: 9px 12px; }
+  .audit span:nth-child(2) { color: var(--text-2); }
+  .theme-fab { top: 10px; right: 10px; }
+  .login-card { padding: 26px 22px; }
+  .login-card input { font-size: 16px; }
 }

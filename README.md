@@ -32,8 +32,8 @@ docker compose up -d --build
 docker compose exec growth-os python -m app.cli create-user felipe
 
 # Login dos providers com a SUA conta (OAuth oficial de cada um)
-docker compose exec -it growth-os claude login     # ou: claude setup-token
-docker compose exec -it growth-os codex login --device-auth
+docker compose exec -it -w /workspace growth-os claude login
+docker compose exec -it -w /workspace growth-os codex login --device-auth
 ```
 
 Depois adicione o bloco de [deploy/Caddyfile.snippet](deploy/Caddyfile.snippet) ao Caddyfile

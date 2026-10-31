@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Acesso da IA ao Docker do VPS pelo gateway (somente leitura, restart só com 2FA).
+
+  gos-docker ps [projeto]           containers por projeto, estado e saúde
+  gos-docker logs NOME [--tail N]   últimas linhas de log (padrão 200)
+  gos-docker restart NOME           pede o 2FA do owner; o Growth OS executa depois de aprovado
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from urllib.parse import quote
+
+BASE = os.environ.get("DOCKER_GATEWAY_URL", "http://docker-gateway:2375").rstrip("/")
+
+
+def get(path: str) -> bytes:
+    try:
+        with urllib.request.urlopen(BASE + path, timeout=30) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        sys.exit(f"erro {e.code}: {e.read().decode(errors='replace')}")
+    except OSError as e:
+        sys.exit(f"gateway do Docker indisponível ({e}). Ele roda no compose do Growth OS.")
+
+
+def ps(project: str | None) -> None:
+    rows = json.loads(get("/containers"))
+    if project:
+        rows = [r for r in rows if r["project"] == project]
+    rows.sort(key=lambda r: (r["project"] or "~", r["name"]))
+    print(f"{'PROJETO':<16} {'CONTAINER':<30} {'ESTADO':<9} {'SAÚDE':<10} {'IMAGEM':<28} PORTAS")
+    for r in rows:
+        print(f"{(r['project'] or '-'):<16} {r['name']:<30} {r['state']:<9} {(r['health'] or '-'):<10} "
+              f"{r['image'][:28]:<28} {', '.join(r['ports'])}")
+
+
+def main(argv: list[str]) -> None:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "ps":
+        ps(rest[0] if rest else None)
+    elif cmd == "logs" and rest:
+        tail = "200"
+        if "--tail" in rest:
+            i = rest.index("--tail")
+            tail = rest[i + 1] if i + 1 < len(rest) else tail
+            rest = rest[:i] + rest[i + 2:]
+        sys.stdout.write(get(f"/containers/{quote(rest[0])}/logs?tail={quote(tail)}").decode(errors="replace"))
+    elif cmd == "restart":
+        sys.exit("restart precisa da aprovação 2FA do owner; o Growth OS executa quando ele aprovar.")
+    else:
+        sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

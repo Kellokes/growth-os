@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="shell" id="app" data-csrf="{{ csrf }}">
+  <aside class="sidebar">
+    {% include "_nav.html" %}
+    <div class="side-note muted">Containers vêm do gateway do Docker (sem exec, sem segredos). Restart pede o seu 2FA.</div>
+    <div class="grow"></div>
+    {% include "_side_foot.html" %}
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1>Projetos no VPS</h1>
+      <button class="btn small" id="refresh" type="button">↻ Atualizar</button>
+    </header>
+    <section class="page" id="page">
+      <div class="summary" id="summary"></div>
+      <div class="alerts" id="alerts"></div>
+      <div class="projects" id="projects"><div class="muted">Carregando…</div></div>
+    </section>
+  </main>
+</div>
+
+<dialog id="logs-dialog" class="card wide">
+  <div class="dialog-head"><h3 id="logs-title">Logs</h3>
+    <label class="inline">Linhas <select id="logs-tail"><option>100</option><option selected>300</option><option>1000</option></select></label>
+  </div>
+  <pre class="logs" id="logs-body"></pre>
+  <form method="dialog"><button class="btn">Fechar</button></form>
+</dialog>
+
+<dialog id="restart-dialog" class="card">
+  <form method="dialog" id="restart-form">
+    <h3>Reiniciar container</h3>
+    <p class="muted">O serviço fica fora do ar por alguns segundos.</p>
+    <pre id="restart-name"></pre>
+    <label>Código 2FA<input id="restart-totp" inputmode="numeric" autocomplete="one-time-code" required></label>
+    <div class="row">
+      <button class="btn ghost" type="button" id="restart-cancel">Cancelar</button>
+      <button class="btn danger" type="submit">Reiniciar</button>
+    </div>
+  </form>
+</dialog>
+
+{% include "_audit.html" %}
+<script src="/static/projects.js"></script>
+{% endblock %}

@@ -20,6 +20,7 @@ SAFE_COMMANDS = {
     "ls", "pwd", "cat", "head", "tail", "wc", "grep", "find", "tree", "du", "df",
     "whoami", "date", "uname", "uptime", "free", "echo", "stat", "file", "which",
     "ps", "sort", "uniq", "cut", "diff", "basename", "dirname",
+    "gos-docker",  # ps/logs pelo gateway; restart cai em approval antes de chegar aqui
 }
 SAFE_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch", "remote"}
 
@@ -40,10 +41,13 @@ BLOCKED_PATTERNS = [
     r"\.(claude|codex|ssh)(/|\b)",
     r"\.claude\.json",
     r"/proc/[^\s/]*/(environ|mem|maps)",
+    # Token do GitHub: só o credential helper e o gos-pr leem, nunca um comando direto.
+    r"/run/secrets|gos-secrets|github_token|gos-git-credential|\bgit\s+credential\b|credential\.helper",
 ]
 
 # Rodam só com 2FA: apagam dados, derrubam serviços, reescrevem histórico ou mexem em segredos.
 APPROVAL_PATTERNS = [
+    (r"\bgos-docker\s+restart\b", "reinicia um container de produção"),
     (r"\b(rm|rmdir|shred|unlink)\b.*\s-[a-zA-Z]*[rR]|\b(rm|rmdir|shred)\b.*--recursive|\bshred\b|\btruncate\b", "apaga ou sobrescreve dados"),
     (r"\bfind\b.*(-delete|-exec\b|-execdir\b)", "find com ação destrutiva"),
     (r"\bgit\s+push\b.*(--force|-f\b|--force-with-lease|--delete|\s:\w)", "force push ou apagar branch remota"),

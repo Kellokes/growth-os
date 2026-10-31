@@ -43,6 +43,18 @@ rede do `growth-os` e use `reverse_proxy growth-os:8000` no lugar de `127.0.0.1:
 
 Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli reset-2fa felipe`.
 
+## Projetos do VPS (etapa 2)
+
+- `docker-gateway` é o único container com o socket do Docker. Ele só lista containers (sem `Env`, mounts ou
+  labels), lê logs e reinicia com o token `GOS_GATEWAY_TOKEN`, que o `deploy.sh` gera sozinho no `.env`.
+- O app monta só o Caddyfile compartilhado (`GOS_CADDYFILE_HOST`, padrão `/opt/takeone/Caddyfile`), em modo
+  leitura. `GOS_CADDY_VARS` resolve `{$DOMAIN}`; o `deploy.sh` copia os valores do container do Caddy.
+- A IA usa `gos-docker ps|logs|restart` (restart pede 2FA e o app executa pelo gateway) e `gos-pr` para abrir PRs.
+- GitHub: crie um token *fine-grained* só com os repos dos projetos, permissões **Contents** e
+  **Pull requests** em leitura e escrita, e coloque em `GOS_GITHUB_TOKEN` no `.env`. Ele fica num arquivo do
+  tmpfs para o credential helper do git; comandos não recebem o token no ambiente e leitura direta é bloqueada.
+  Mesmo assim trate-o como acessível à IA: o escopo pequeno e a proteção da `main` nos repos são o limite real.
+
 ## Banco de dados
 
 Postgres 16 em container próprio (`growth-os-postgres`), sem porta publicada: só o app alcança, pela rede

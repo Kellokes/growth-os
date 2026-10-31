@@ -7,3 +7,4 @@ workspace/
 .pytest_cache/
 *.egg-info/
 build/
+docker-compose.override.yml

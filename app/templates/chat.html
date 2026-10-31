@@ -2,24 +2,13 @@
 {% block body %}
 <div class="shell" id="app" data-csrf="{{ csrf }}">
   <aside class="sidebar">
-    <div class="brand"><span class="logo">◆</span> Growth OS</div>
-    <nav class="nav">
-      <a class="active" href="/">Chat</a>
-      <span class="soon" title="Etapa 3">Dashboard <em>em breve</em></span>
-      <span class="soon" title="Etapa 3">Agentes <em>em breve</em></span>
-      <span class="soon" title="Etapa 2">Projetos <em>em breve</em></span>
-      <span class="soon" title="Etapa 3">Plan approval <em>em breve</em></span>
-      <button class="link" id="show-audit" type="button">Auditoria</button>
-    </nav>
+    {% include "_nav.html" %}
     <div class="conv-head">
       <span>Conversas</span>
       <button class="btn small" id="new-conv" type="button">+ Nova</button>
     </div>
     <ul class="conv-list" id="conv-list"></ul>
-    <div class="side-foot">
-      <button class="icon-btn" type="button" data-theme-toggle aria-label="Alternar tema" title="Alternar tema claro/escuro"><span class="i-sun">☀</span><span class="i-moon">☾</span></button>
-      <button class="btn ghost grow" id="logout" type="button">Sair</button>
-    </div>
+    {% include "_side_foot.html" %}
   </aside>
 
   <main class="main">
@@ -68,11 +57,7 @@
   </form>
 </dialog>
 
-<dialog id="audit-dialog" class="card wide">
-  <h3>Auditoria</h3>
-  <div class="audit" id="audit-list"></div>
-  <form method="dialog"><button class="btn">Fechar</button></form>
-</dialog>
+{% include "_audit.html" %}
 
 <script src="/static/app.js"></script>
 {% endblock %}

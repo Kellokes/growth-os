@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="shell" id="app" data-csrf="{{ csrf }}">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">◆</span> Growth OS</div>
+    <nav class="nav">
+      <a class="active" href="/">Chat</a>
+      <span class="soon" title="Etapa 3">Dashboard <em>em breve</em></span>
+      <span class="soon" title="Etapa 3">Agentes <em>em breve</em></span>
+      <span class="soon" title="Etapa 2">Projetos <em>em breve</em></span>
+      <span class="soon" title="Etapa 3">Plan approval <em>em breve</em></span>
+      <button class="link" id="show-audit" type="button">Auditoria</button>
+    </nav>
+    <div class="conv-head">
+      <span>Conversas</span>
+      <button class="btn small" id="new-conv" type="button">+ Nova</button>
+    </div>
+    <ul class="conv-list" id="conv-list"></ul>
+    <button class="btn ghost" id="logout" type="button">Sair</button>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="conv-title">Nova conversa</h1>
+      <label class="provider">Provider
+        <select id="provider"></select>
+      </label>
+    </header>
+
+    <section class="messages" id="messages">
+      <div class="empty" id="empty">
+        <h2>O que vamos operar hoje?</h2>
+        <p>Peça para criar, analisar ou alterar algo no VPS. A IA propõe os comandos e você decide o que roda.
+        Comandos de leitura executam direto; os que alteram o sistema pedem seu código 2FA.</p>
+      </div>
+    </section>
+
+    <form class="composer" id="composer">
+      <textarea id="input" rows="1" placeholder="Escreva uma mensagem…  (Enter envia, Shift+Enter quebra linha)" required></textarea>
+      <button class="btn primary" id="send" type="submit">Enviar</button>
+    </form>
+  </main>
+</div>
+
+<dialog id="approve-dialog" class="card">
+  <form method="dialog" id="approve-form">
+    <h3>Aprovar comando</h3>
+    <p class="muted">Este comando pode alterar o sistema. Confira antes de aprovar.</p>
+    <pre id="approve-cmd"></pre>
+    <label>Código 2FA<input id="approve-totp" inputmode="numeric" autocomplete="one-time-code" required></label>
+    <div class="row">
+      <button class="btn ghost" value="cancel" type="button" id="approve-cancel">Cancelar</button>
+      <button class="btn danger" value="reject" type="button" id="approve-reject">Rejeitar</button>
+      <button class="btn primary" value="ok" type="submit">Aprovar e executar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="audit-dialog" class="card wide">
+  <h3>Auditoria</h3>
+  <div class="audit" id="audit-list"></div>
+  <form method="dialog"><button class="btn">Fechar</button></form>
+</dialog>
+
+<script src="/static/app.js"></script>
+{% endblock %}

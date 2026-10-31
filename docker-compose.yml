@@ -1,0 +1,28 @@
+services:
+  growth-os:
+    build: .
+    container_name: growth-os
+    restart: unless-stopped
+    env_file: .env
+    # Só o Caddy do host enxerga a porta; nada fica exposto direto na internet.
+    ports:
+      - "127.0.0.1:8100:8000"
+    volumes:
+      - gos-data:/data
+      - gos-workspace:/workspace
+      # Login dos CLIs (claude login / codex login) persiste aqui.
+      - gos-home:/home/gos
+    # Endurecimento: sem privilégios extras e sem acesso ao socket do Docker nesta etapa.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 512
+
+volumes:
+  gos-data:
+  gos-workspace:
+  gos-home:

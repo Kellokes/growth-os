@@ -1,0 +1,18 @@
+# Adicione ao Caddyfile que já existe no VPS e rode: caddy reload
+os.seudominio.com {
+	# Opcional, mas recomendado: libere só seus IPs (ou use Tailscale e um IP 100.x).
+	# @blocked not remote_ip 203.0.113.10 100.64.0.0/10
+	# respond @blocked 403
+
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:8100 {
+		# Respostas da IA podem demorar alguns minutos.
+		transport http {
+			read_timeout 6m
+		}
+	}
+}

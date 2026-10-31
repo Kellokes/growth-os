@@ -42,6 +42,22 @@ rede do `growth-os` e use `reverse_proxy growth-os:8000` no lugar de `127.0.0.1:
 
 Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli reset-2fa felipe`.
 
+## Deploy automático
+
+A cada merge na `main`, o GitHub Actions ([deploy.yml](.github/workflows/deploy.yml)) roda os testes
+e, se passarem, conecta no VPS por SSH e executa `scripts/deploy.sh`: atualiza o código, reconstrói o
+container, espera ficar `healthy` e volta para a versão anterior sozinho se não ficar.
+
+Configuração (uma vez):
+
+1. No VPS: `cd ~/growth-os && git pull && ./scripts/setup-deploy-key.sh`
+2. No GitHub, em Settings > Secrets and variables > Actions, crie os 4 secrets que o script mostra:
+   `VPS_HOST`, `VPS_USER`, `VPS_KNOWN_HOSTS` e `VPS_SSH_KEY`. Depois apague a chave privada do VPS.
+3. Em Settings > Environments, crie o ambiente `production` (opcional: exigir sua aprovação a cada deploy).
+4. Em Settings > Branches, proteja a `main` exigindo PR aprovado e o check `test`.
+
+A chave do deploy só executa o `deploy.sh` (`command=` fixo, sem terminal e sem túnel); se vazar, não dá shell no VPS.
+
 ## Desenvolvimento
 
 ```bash

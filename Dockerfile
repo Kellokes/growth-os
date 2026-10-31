@@ -13,6 +13,10 @@ COPY pyproject.toml ./
 COPY app ./app
 RUN pip install --no-cache-dir .
 
+# Os volumes nomeados herdam o dono destas pastas; sem isso /data fica do root
+# e o app (usuário gos) não consegue criar o banco e reinicia em loop.
+RUN mkdir -p /data /workspace && chown -R gos:gos /data /workspace /home/gos
+
 USER gos
 ENV GOS_DATABASE_URL=sqlite:////data/growth_os.db \
     GOS_WORKSPACE_DIR=/workspace \

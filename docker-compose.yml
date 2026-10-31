@@ -1,13 +1,39 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: growth-os-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gos
+      POSTGRES_DB: gos
+      POSTGRES_PASSWORD: ${GOS_POSTGRES_PASSWORD:?defina GOS_POSTGRES_PASSWORD no .env}
+    volumes:
+      - gos-pgdata:/var/lib/postgresql/data
+    # Sem "ports": o banco só é alcançável pela rede interna do compose.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gos -d gos"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+
   growth-os:
     build: .
     container_name: growth-os
     restart: unless-stopped
     env_file: .env
+    environment:
+      GOS_DATABASE_URL: postgresql+psycopg://gos:${GOS_POSTGRES_PASSWORD}@postgres:5432/gos
+    depends_on:
+      postgres:
+        condition: service_healthy
     # Só o Caddy do host enxerga a porta; nada fica exposto direto na internet.
     ports:
       - "127.0.0.1:8100:8000"
     volumes:
+      # Mantido para o SQLite antigo (migrate-sqlite); pode ser removido depois da migração.
       - gos-data:/data
       - gos-workspace:/workspace
       # Login dos CLIs (claude login / codex login) persiste aqui.
@@ -23,6 +49,7 @@ services:
     pids_limit: 512
 
 volumes:
+  gos-pgdata:
   gos-data:
   gos-workspace:
   gos-home:

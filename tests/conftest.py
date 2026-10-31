@@ -1,3 +1,5 @@
+import os
+
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
@@ -13,11 +15,15 @@ TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"  # só para testes
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     _offset["n"] = -1
-    monkeypatch.setenv("GOS_DATABASE_URL", f"sqlite:///{tmp_path}/t.db")
+    # TEST_DATABASE_URL=postgresql+psycopg://... roda a suíte inteira no Postgres.
+    url = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{tmp_path}/t.db"
+    monkeypatch.setenv("GOS_DATABASE_URL", url)
     monkeypatch.setenv("GOS_WORKSPACE_DIR", str(tmp_path / "ws"))
     monkeypatch.setenv("GOS_COOKIE_SECURE", "false")
     get_settings.cache_clear()
-    dbmod.init_db()
+    engine = dbmod.init_db()
+    dbmod.Base.metadata.drop_all(engine)
+    dbmod.Base.metadata.create_all(engine)
     s = dbmod.new_session()
     s.add(dbmod.User(username="owner", password_hash=hash_password(PASSWORD), totp_secret=TOTP_SECRET))
     s.commit()

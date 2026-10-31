@@ -84,7 +84,11 @@ def init_db(url: str | None = None):
     url = url or get_settings().database_url
     if url.startswith("sqlite:///"):
         Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
-    _engine = create_engine(url, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {})
+    if url.startswith("sqlite"):
+        _engine = create_engine(url, connect_args={"check_same_thread": False})
+    else:
+        # pool_pre_ping descarta conexões que o Postgres fechou (restart, timeout).
+        _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
     Base.metadata.create_all(_engine)
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine

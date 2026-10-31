@@ -25,8 +25,8 @@ O plano completo está em [docs/PLAN.md](docs/PLAN.md).
 
 ```bash
 git clone https://github.com/Kellokes/growth-os.git && cd growth-os
-cp .env.example .env            # ajuste os valores
-docker compose up -d --build
+cp .env.example .env            # ajuste os valores, inclusive GOS_POSTGRES_PASSWORD
+docker compose up -d --build    # sobe o Postgres e o app
 
 # Crie o owner e cadastre o 2FA no seu app autenticador
 docker compose exec growth-os python -m app.cli create-user felipe
@@ -41,6 +41,26 @@ do VPS (troque o domínio) e rode `caddy reload`. Se o Caddy roda em container, 
 rede do `growth-os` e use `reverse_proxy growth-os:8000` no lugar de `127.0.0.1:8100`.
 
 Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli reset-2fa felipe`.
+
+## Banco de dados
+
+Postgres 16 em container próprio (`growth-os-postgres`), sem porta publicada: só o app alcança, pela rede
+interna do Docker. Os dados ficam no volume `growth-os_gos-pgdata`. A senha vem de `GOS_POSTGRES_PASSWORD` no `.env`.
+
+**Migrando de uma instalação antiga em SQLite** (uma vez, antes de usar o app novo):
+
+```bash
+# 1. Gere a senha e grave no .env do VPS
+echo "GOS_POSTGRES_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" >> .env
+# 2. Suba o Postgres e o app novo, depois copie os dados do SQLite antigo
+docker compose up -d --build
+docker compose exec growth-os python -m app.cli migrate-sqlite /data/growth_os.db
+```
+
+O comando se recusa a rodar se o destino já tiver dados, então não duplica nada.
+O SQLite antigo continua no volume `gos-data` como backup.
+
+Rodar os testes no Postgres: `TEST_DATABASE_URL=postgresql+psycopg://usuario@host/banco pytest`.
 
 ## Deploy automático
 

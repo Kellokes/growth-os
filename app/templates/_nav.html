@@ -1,5 +1,5 @@
 {% from "_icons.html" import ic %}
-{# Menu lateral, como nos harness: primeiro as seções, embaixo as threads, e no rodapé modelos, auditoria, tema e sair.
+{# Menu lateral, como nos harness: primeiro as seções, embaixo as threads, e no rodapé ícones de projetos, modelos, auditoria, tema e sair.
    No celular vira gaveta, aberta pelo botão de menu da barra de cima. #}
 <div class="mbar">
   <button class="icon-btn side-open" type="button" data-side-open aria-controls="sidenav" aria-label="Abrir menu">{{ ic("menu") }}</button>
@@ -14,7 +14,7 @@
   </div>
 
   <nav class="nav" aria-label="Seções">
-    {% for key, href, icon, label in [("chat", "/", "threads", "Threads"), ("dashboard", "/dashboard", "grid", "Dashboard"), ("plan", "/plan", "plan", "Plano do dia"), ("board", "/board", "kanban", "Kanban"), ("content", "/content", "send", "Conteúdo"), ("agents", "/agents", "agents", "Agentes"), ("routines", "/automations", "bolt", "Automações"), ("projects", "/projects", "projects", "Projetos"), ("models", "/settings", "sliders", "Modelos")] %}
+    {% for key, href, icon, label in [("dashboard", "/dashboard", "grid", "Dashboard"), ("plan", "/plan", "plan", "Plano do dia"), ("board", "/board", "kanban", "Kanban"), ("content", "/content", "send", "Conteúdo"), ("agents", "/agents", "agents", "Agentes"), ("routines", "/automations", "bolt", "Automações")] %}
     <a class="nav-item{% if active == key %} active{% endif %}" href="{{ href }}"{% if active == key %} aria-current="page"{% endif %} title="{{ label }}">{{ ic(icon) }}<span>{{ label }}</span></a>
     {% endfor %}
   </nav>
@@ -30,6 +30,8 @@
   </section>
 
   <div class="side-foot">
+    <a class="icon-btn{% if active == "projects" %} on{% endif %}" href="/projects" aria-label="Projetos" title="Projetos"{% if active == "projects" %} aria-current="page"{% endif %}>{{ ic("projects") }}</a>
+    <a class="icon-btn{% if active == "models" %} on{% endif %}" href="/settings" aria-label="Modelos" title="Modelos: provider, modelo e raciocínio por atividade"{% if active == "models" %} aria-current="page"{% endif %}>{{ ic("sliders") }}</a>
     <button class="icon-btn" id="show-audit" type="button" aria-label="Auditoria" title="Auditoria">{{ ic("audit") }}</button>
     <button class="icon-btn theme-btn" type="button" data-theme-toggle aria-label="Alternar tema" title="Alternar tema claro/escuro"><span class="i-sun">{{ ic("sun") }}</span><span class="i-moon">{{ ic("moon") }}</span></button>
     <button class="icon-btn" id="logout" type="button" aria-label="Sair" title="Sair">{{ ic("logout") }}</button>

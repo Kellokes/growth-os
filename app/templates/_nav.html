@@ -2,7 +2,7 @@
 <header class="topnav">
   <a class="brand" href="/" aria-label="Growth OS"><span class="logo">◆</span><span class="brand-name">Growth OS</span></a>
   <nav class="nav" aria-label="Seções">
-    {% for key, href, icon, label in [("chat", "/", "threads", "Threads"), ("dashboard", "/dashboard", "grid", "Dashboard"), ("plan", "/plan", "plan", "Plano do dia"), ("board", "/board", "kanban", "Kanban"), ("agents", "/agents", "agents", "Agentes"), ("routines", "/automations", "bolt", "Automações"), ("projects", "/projects", "projects", "Projetos")] %}
+    {% for key, href, icon, label in [("chat", "/", "threads", "Threads"), ("dashboard", "/dashboard", "grid", "Dashboard"), ("plan", "/plan", "plan", "Plano do dia"), ("board", "/board", "kanban", "Kanban"), ("content", "/content", "send", "Conteúdo"), ("agents", "/agents", "agents", "Agentes"), ("routines", "/automations", "bolt", "Automações"), ("projects", "/projects", "projects", "Projetos")] %}
     <a class="nav-item{% if active == key %} active{% endif %}" href="{{ href }}"{% if active == key %} aria-current="page"{% endif %} title="{{ label }}">{{ ic(icon) }}<span>{{ label }}</span></a>
     {% endfor %}
   </nav>

@@ -17,10 +17,11 @@ from .agent import cmd_json, execute_run, run_agent, tool_message
 from .audit import audit
 from .config import get_settings
 from .db import (
-    Agent, AgentNote, AuditLog, Automation, CommandRun, Conversation, GrowthProject, Integration, Message, Metric,
+    Agent, AgentNote, AuditLog, Automation, CommandRun, ContentItem, Conversation, GrowthProject, Integration, Message, Metric,
     Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
+from . import content as cnt
 from . import growth
 from . import modelcfg
 from . import routines
@@ -245,6 +246,11 @@ def board_page(request: Request, db: DB = Depends(get_db)):
 @app.get("/automations", response_class=HTMLResponse)
 def automations_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "automations.html", "routines")
+
+
+@app.get("/content", response_class=HTMLResponse)
+def content_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "content.html", "content")
 
 
 @app.get("/projects", response_class=HTMLResponse)
@@ -1237,3 +1243,244 @@ def run_automation_now(slug: str, aid: int, request: Request, auth: Auth = Depen
     t = routines.create_run(db, a, approved=True, actor=auth.user.username)
     growth.runner.submit(t.id)
     return _task_json(t, {p.id: p})
+
+
+# ---------- central de conteúdo: posts, e-mails e saídas dos agentes (por projeto) ----------
+
+class ContentIn(BaseModel):
+    project: str | None = Field(default=None, max_length=48)  # só na criação
+    channel: str | None = Field(default=None, max_length=24)
+    title: str | None = Field(default=None, max_length=200)
+    body: str | None = Field(default=None, max_length=20000)
+    recipient: str | None = Field(default=None, max_length=300)
+    purpose: str | None = Field(default=None, max_length=60)
+    media: str | None = Field(default=None, max_length=4000)
+    scheduled_at: str | None = Field(default=None, max_length=20)  # "AAAA-MM-DDTHH:MM" local; "" limpa
+
+
+class ContentDecideIn(BaseModel):
+    approve: bool
+    note: str = Field(default="", max_length=1000)
+
+
+class ContentSentIn(BaseModel):
+    link: str = Field(default="", max_length=500, pattern=r"^$|^https?://\S+$")
+
+
+def _content_or_404(db: DB, cid: int) -> ContentItem:
+    c = db.get(ContentItem, cid)
+    if c is None:
+        raise HTTPException(404, "conteúdo não encontrado")
+    return c
+
+
+def _content_json(db: DB, c: ContentItem) -> dict:
+    p = db.get(GrowthProject, c.project_id)
+    return cnt.item_json(c, p.slug if p else "")
+
+
+def _scope(db: DB, project: str) -> int | None:
+    return None if project == "all" else _project_or_404(db, project).id
+
+
+@app.get("/api/content/channels")
+def content_channels(auth: Auth = Depends(current_auth)):
+    return cnt.channels_json()
+
+
+@app.get("/api/content")
+def list_content(project: str = "all", days: int = 30, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Tudo que ainda vai sair (aguardando, aprovado, falhou) + o que saiu ou foi rejeitado nos últimos `days` dias."""
+    days = max(1, min(days, 365))
+    pid = _scope(db, project)
+    q = db.query(ContentItem)
+    if pid is not None:
+        q = q.filter(ContentItem.project_id == pid)
+    since = utcnow() - timedelta(days=days)
+    open_rows = q.filter(ContentItem.status.in_(cnt.EDITABLE)).order_by(ContentItem.id.desc()).limit(500).all()
+    closed = (
+        q.filter(ContentItem.status.in_(("sent", "rejected")),
+                 func.coalesce(ContentItem.sent_at, ContentItem.decided_at, ContentItem.created_at) >= since)
+        .order_by(ContentItem.id.desc()).limit(500).all()
+    )
+    projects = _projects_by_id(db)
+    now = cnt.local_now()
+    items = [cnt.item_json(c, projects[c.project_id].slug if c.project_id in projects else "", now)
+             for c in open_rows + closed]
+    counts: dict[str, int] = {}
+    for it in items:
+        counts[it["stage"]] = counts.get(it["stage"], 0) + 1
+    return {"items": items, "counts": counts, "days": days}
+
+
+@app.post("/api/content")
+def create_content(body: ContentIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Peça escrita pelo próprio owner: já nasce aprovada (quem escreveu é quem aprova)."""
+    p = _project_or_404(db, body.project)
+    if not (body.body or "").strip():
+        raise HTTPException(422, "o texto é obrigatório")
+    c = ContentItem(project_id=p.id, status="approved", decided_at=utcnow())
+    _apply_content(c, body)
+    db.add(c)
+    db.commit()
+    audit(db, auth.user.username, "content_create", f"#{c.id} {p.slug}/{c.channel}: {c.title or c.body[:60]}"[:500],
+          client_ip(request))
+    return _content_json(db, c)
+
+
+def _apply_content(c: ContentItem, body: ContentIn) -> None:
+    data = body.model_dump(exclude_unset=True)
+    if "channel" in data and body.channel is not None:
+        c.channel = cnt.norm_channel(body.channel)
+    for field in ("title", "body", "recipient", "purpose", "media"):
+        if data.get(field) is not None:
+            setattr(c, field, str(data[field]).strip())
+    if "scheduled_at" in data:
+        raw = (body.scheduled_at or "").strip()
+        when = cnt.parse_when(raw) if raw else None
+        if raw and when is None:
+            raise HTTPException(422, "data inválida (use AAAA-MM-DD HH:MM)")
+        c.scheduled_at = when
+    if not c.body.strip():
+        raise HTTPException(422, "o texto não pode ficar vazio")
+    cnt.touch(c)
+
+
+@app.patch("/api/content/{cid}")
+def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    c = _content_or_404(db, cid)
+    if c.status not in cnt.EDITABLE:
+        raise HTTPException(409, "conteúdo enviado ou rejeitado não se edita; volte para aprovação antes")
+    if body.project is not None:
+        raise HTTPException(422, "não dá para mudar o projeto de um conteúdo")
+    _apply_content(c, body)
+    if c.status == "failed":
+        c.status, c.note = "approved", ""
+    db.commit()
+    audit(db, auth.user.username, "content_edit", f"#{c.id}: {sorted(body.model_dump(exclude_unset=True))}", client_ip(request))
+    return _content_json(db, c)
+
+
+@app.post("/api/content/{cid}/decide")
+def decide_content(cid: int, body: ContentDecideIn, request: Request,
+                   auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    c = _content_or_404(db, cid)
+    if c.status != "pending":
+        raise HTTPException(409, "este conteúdo não está aguardando aprovação")
+    c.status = "approved" if body.approve else "rejected"
+    c.note = "" if body.approve else body.note.strip()
+    c.decided_at = utcnow()
+    cnt.touch(c)
+    db.commit()
+    audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}",
+          client_ip(request))
+    return _content_json(db, c)
+
+
+@app.post("/api/content/{cid}/sent")
+def mark_content_sent(cid: int, body: ContentSentIn, request: Request,
+                      auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """O owner publicou/enviou (até as integrações de envio existirem, é ele quem aperta o botão lá fora)."""
+    c = _content_or_404(db, cid)
+    if c.status != "approved":
+        raise HTTPException(409, "só conteúdo aprovado pode ser marcado como enviado")
+    c.status, c.sent_at, c.link = "sent", utcnow(), body.link.strip()
+    cnt.touch(c)
+    db.commit()
+    audit(db, auth.user.username, "content_sent", f"#{c.id} {c.channel} {c.link}"[:500], client_ip(request))
+    return _content_json(db, c)
+
+
+@app.post("/api/content/{cid}/reopen")
+def reopen_content(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Rejeitado, falhou ou aprovado volta para "aguardando aprovação" (para revisar de novo)."""
+    c = _content_or_404(db, cid)
+    if c.status == "sent":
+        raise HTTPException(409, "conteúdo já enviado não volta")
+    c.status, c.decided_at, c.note = "pending", None, ""
+    cnt.touch(c)
+    db.commit()
+    audit(db, auth.user.username, "content_reopen", f"#{c.id}", client_ip(request))
+    return _content_json(db, c)
+
+
+@app.delete("/api/content/{cid}")
+def delete_content(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    c = _content_or_404(db, cid)
+    if c.status == "sent":
+        raise HTTPException(409, "conteúdo enviado fica no histórico")
+    db.delete(c)
+    db.commit()
+    audit(db, auth.user.username, "content_delete", f"#{cid} {c.channel}: {c.title or c.body[:60]}"[:500], client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/content/agenda")
+def content_agenda(project: str = "all", days: int = 14, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """O que está programado nos próximos `days` dias: conteúdo com data e execuções das rotinas."""
+    days = max(1, min(days, 62))
+    pid = _scope(db, project)
+    start, end = cnt.agenda_window(days)
+    projects = _projects_by_id(db)
+    slug = lambda i: projects[i].slug if i in projects else ""  # noqa: E731
+    now = cnt.local_now()
+    events = []
+    q = db.query(ContentItem).filter(
+        ContentItem.scheduled_at.isnot(None), ContentItem.scheduled_at >= start, ContentItem.scheduled_at < end,
+        ContentItem.status.in_(("pending", "approved", "sent", "failed")),
+    )
+    if pid is not None:
+        q = q.filter(ContentItem.project_id == pid)
+    for c in q.all():
+        events.append({"kind": "content", "at": c.scheduled_at.isoformat(timespec="minutes"),
+                       "item": cnt.item_json(c, slug(c.project_id), now)})
+    aq = db.query(Automation).filter(Automation.enabled.is_(True))
+    if pid is not None:
+        aq = aq.filter(Automation.project_id == pid)
+    for a in aq.all():
+        p = projects.get(a.project_id)
+        if p is None or not p.enabled:
+            continue
+        for i in range(days):
+            d = (start + timedelta(days=i)).date()
+            if not routines.scheduled_today(a, d) or (d == now.date() and (a.last_run_on == d or now.hour > a.hour)):
+                continue
+            events.append({"kind": "routine", "at": datetime(d.year, d.month, d.day, a.hour).isoformat(timespec="minutes"),
+                           "routine": {"id": a.id, "project": p.slug, "agent": a.agent_slug, "title": a.title,
+                                       "schedule": routines.describe_schedule(a), "auto_approve": a.auto_approve}})
+    events.sort(key=lambda e: e["at"])
+    unscheduled = db.query(ContentItem).filter(ContentItem.status == "approved", ContentItem.scheduled_at.is_(None))
+    if pid is not None:
+        unscheduled = unscheduled.filter(ContentItem.project_id == pid)
+    return {"events": events[:500], "days": days, "start": start.date().isoformat(),
+            "unscheduled": unscheduled.count()}
+
+
+@app.get("/api/content/outputs")
+def agent_outputs(project: str = "all", days: int = 14, agent: str = "",
+                  auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """O que os agentes entregaram: tarefas concluídas ou que falharam, com o resultado e as peças que geraram."""
+    days = max(1, min(days, 90))
+    pid = _scope(db, project)
+    since = utcnow() - timedelta(days=days)
+    q = db.query(Task).filter(Task.status.in_(("done", "failed")),
+                              func.coalesce(Task.finished_at, Task.created_at) >= since)
+    if pid is not None:
+        q = q.filter(Task.project_id == pid)
+    if agent:
+        q = q.filter(Task.agent_slug == agent)
+    rows = q.order_by(func.coalesce(Task.finished_at, Task.created_at).desc(), Task.id.desc()).limit(200).all()
+    ids = [t.id for t in rows]
+    pieces: dict[int, list[dict]] = {}
+    if ids:
+        for c in db.query(ContentItem).filter(ContentItem.task_id.in_(ids)).all():
+            pieces.setdefault(c.task_id, []).append({"id": c.id, "channel": c.channel, "title": c.title,
+                                                     "stage": cnt.stage(c)})
+    projects = _projects_by_id(db)
+    links = _links(db, rows)
+    out = []
+    for t in rows:
+        j = _task_json(t, projects, links)
+        j["content"] = pieces.get(t.id, [])
+        out.append(j)
+    return {"outputs": out, "days": days}

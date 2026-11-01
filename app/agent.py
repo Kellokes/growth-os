@@ -89,10 +89,11 @@ async def run_agent(db: DB, cid: int, provider: Provider, actor: str, ip: str) -
             audit(db, actor, "chat_error", f"{provider.id}: {e}", ip)
             yield {"type": "error", "message": str(e)}
             return
-        m = Message(conversation_id=cid, role="assistant", provider=provider.id, content=reply or "(sem resposta)")
+        m = Message(conversation_id=cid, role="assistant", provider=provider.id, model=provider.model,
+                    content=reply or "(sem resposta)")
         db.add(m)
         db.commit()
-        yield {"type": "message", "id": m.id, "provider": provider.id, "content": m.content}
+        yield {"type": "message", "id": m.id, "provider": provider.id, "model": provider.model, "content": m.content}
 
         commands = extract_commands(reply)
         if not commands:

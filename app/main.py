@@ -21,6 +21,7 @@ from .db import (
 )
 from .executor import classify
 from . import growth
+from . import modelcfg
 from . import projects as proj
 from .providers import all_providers
 from .security import (
@@ -237,6 +238,11 @@ def projects_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "projects.html", "projects")
 
 
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "settings.html", "models")
+
+
 # ---------- API ----------
 
 @app.get("/api/providers")
@@ -248,8 +254,60 @@ def providers(auth: Auth = Depends(current_auth)):
     return out
 
 
+def _choice_json(c) -> dict:
+    return {"provider": c.provider or "", "model": c.model or "", "reasoning": c.reasoning or ""}
+
+
+@app.get("/api/models")
+def model_settings(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Tudo que a tela de modelos e os seletores precisam: atividades, catálogo, regras salvas e o efeito final."""
+    rows = modelcfg.saved(db)
+    provs = []
+    for p in all_providers().values():
+        ok, why = p.available()
+        cat = modelcfg.CATALOG.get(p.id, {"kinds": ["text"], "reasoning": [], "models": []})
+        provs.append({"id": p.id, "label": p.label, "available": ok, "reason": why, **cat})
+    return {
+        "providers": provs,
+        "activities": modelcfg.ACTIVITIES,
+        "settings": {k: _choice_json(r) for k, r in rows.items()},
+        "effective": {a["key"]: {**_choice_json(c := modelcfg.resolve(db, a["key"])), "source": c.source}
+                      for a in modelcfg.ACTIVITIES},
+        "openrouter_default": get_settings().openrouter_model,
+    }
+
+
+@app.get("/api/models/openrouter")
+async def openrouter_models(kind: str = "text", auth: Auth = Depends(current_auth)):
+    return [m for m in await modelcfg.openrouter_models() if kind in m.get("kinds", ["text"])][:400]
+
+
+class ModelChoiceIn(BaseModel):
+    provider: str = Field(default="", max_length=32)
+    model: str = Field(default="", max_length=120)
+    reasoning: str = Field(default="", max_length=16)
+
+
+@app.put("/api/models/{activity}")
+def save_model_setting(activity: str, body: ModelChoiceIn, request: Request,
+                       auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    if activity not in modelcfg.ACTIVITY_KEYS:
+        raise HTTPException(404, "atividade desconhecida")
+    provider, model, reasoning = body.provider.strip(), body.model.strip(), body.reasoning.strip()
+    if not provider:
+        model = reasoning = ""  # sem provider = segue o padrão
+    err = modelcfg.check(provider, model, reasoning, modelcfg.kind_of(activity))
+    if err:
+        raise HTTPException(400, err)
+    modelcfg.save(db, activity, provider, model, reasoning)
+    audit(db, auth.user.username, "model_setting", f"{activity}: {provider or 'padrão'} {model} {reasoning}".strip(),
+          client_ip(request))
+    return {"ok": True}
+
+
 def _conv_json(c: Conversation) -> dict:
-    return {"id": c.id, "title": c.title, "category": c.category or "", "deleted": c.deleted_at is not None}
+    return {"id": c.id, "title": c.title, "category": c.category or "", "deleted": c.deleted_at is not None,
+            "provider": c.provider or "", "model": c.model or "", "reasoning": c.reasoning or ""}
 
 
 @app.get("/api/conversations")
@@ -341,30 +399,38 @@ def get_conversation(cid: int, auth: Auth = Depends(current_auth), db: DB = Depe
     return {
         **_conv_json(c),
         "messages": [
-            {"id": m.id, "role": m.role, "provider": m.provider, "content": m.content}
+            {"id": m.id, "role": m.role, "provider": m.provider, "model": m.model or "", "content": m.content}
             for m in msgs if m.role != "tool"
         ],
         "commands": [cmd_json(r) for r in cmds],
     }
 
 
-class ChatIn(BaseModel):
+class ContinueIn(BaseModel):
     provider: str
+    model: str = Field(default="", max_length=120)  # vazio = padrão da conta/CLI
+    reasoning: str = Field(default="", max_length=16)  # vazio = padrão do modelo
+
+
+class ChatIn(ContinueIn):
     content: str = Field(min_length=1, max_length=20000)
 
 
-class ContinueIn(BaseModel):
-    provider: str
-
-
-def _provider_or_400(pid: str):
+def _provider_or_400(pid: str, model: str = "", reasoning: str = ""):
     provider = all_providers().get(pid)
     if provider is None:
         raise HTTPException(400, "provider_desconhecido")
     ok, why = provider.available()
     if not ok:
         raise HTTPException(400, why)
-    return provider
+    model, reasoning = model.strip(), reasoning.strip()
+    if pid in modelcfg.CATALOG:
+        err = modelcfg.check(pid, model, reasoning)
+        if err:
+            raise HTTPException(400, err)
+    elif model and not modelcfg.MODEL_RE.match(model):
+        raise HTTPException(400, "id de modelo inválido")
+    return provider.configured(model, reasoning if pid in modelcfg.CATALOG else "")
 
 
 def _stream(cid: int, provider, actor: str, ip: str) -> StreamingResponse:
@@ -395,7 +461,8 @@ async def send_message(
         raise HTTPException(404, "not_found")
     if c.deleted_at is not None:
         raise HTTPException(409, "conversa na lixeira: restaure antes de continuar")
-    provider = _provider_or_400(body.provider)
+    provider = _provider_or_400(body.provider, body.model, body.reasoning)
+    c.provider, c.model, c.reasoning = provider.id, provider.model, provider.reasoning  # a thread lembra a escolha
 
     db.add(Message(conversation_id=cid, role="user", content=body.content))
     title_changed = c.title in ("Nova thread", "Nova conversa")
@@ -415,7 +482,7 @@ async def continue_conversation(
     """Retoma o laço depois que o owner aprovou ou rejeitou um comando."""
     if db.get(Conversation, cid) is None:
         raise HTTPException(404, "not_found")
-    provider = _provider_or_400(body.provider)
+    provider = _provider_or_400(body.provider, body.model, body.reasoning)
     last = db.query(Message).filter(Message.conversation_id == cid).order_by(Message.id.desc()).first()
     if last is None or last.role != "tool":
         raise HTTPException(409, "nada para continuar")
@@ -667,7 +734,8 @@ def project_agents(slug: str, auth: Auth = Depends(current_auth), db: DB = Depen
     return [
         {"slug": a.slug, "name": a.name, "area": a.area, "icon": a.icon, "mission": growth.mission(a, pa),
          "default_mission": a.mission, "custom": bool(pa.mission.strip()), "enabled": pa.enabled,
-         "provider": pa.provider or "", "stats": stats.get(a.slug, {})}
+         "provider": pa.provider or "", "model": pa.model or "", "reasoning": pa.reasoning or "",
+         "stats": stats.get(a.slug, {})}
         for a, pa in growth.team(db, p)
     ]
 
@@ -675,7 +743,9 @@ def project_agents(slug: str, auth: Auth = Depends(current_auth), db: DB = Depen
 class AgentIn(BaseModel):
     enabled: bool | None = None
     mission: str | None = Field(default=None, max_length=4000)  # "" volta para a missão padrão da área
-    provider: str | None = Field(default=None, max_length=32)
+    provider: str | None = Field(default=None, max_length=32)  # "" = segue a configuração de modelos
+    model: str | None = Field(default=None, max_length=120)
+    reasoning: str | None = Field(default=None, max_length=16)
 
 
 @app.patch("/api/gprojects/{slug}/agents/{agent}")
@@ -694,6 +764,17 @@ def update_project_agent(slug: str, agent: str, body: AgentIn, request: Request,
         pa.mission = "" if body.mission.strip() == default.strip() else body.mission.strip()
     if body.provider is not None:
         pa.provider = body.provider or None
+    if body.model is not None:
+        pa.model = body.model.strip()
+    if body.reasoning is not None:
+        pa.reasoning = body.reasoning.strip()
+    if not pa.provider:
+        pa.model, pa.reasoning = "", ""
+    elif pa.provider in modelcfg.CATALOG:
+        err = modelcfg.check(pa.provider, pa.model, pa.reasoning)
+        if err:
+            db.rollback()
+            raise HTTPException(400, err)
     db.commit()
     audit(db, auth.user.username, "agent_update", f"{slug}/{agent}: {body.model_dump(exclude_none=True)}"[:500],
           client_ip(request))

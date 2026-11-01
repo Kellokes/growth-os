@@ -30,8 +30,12 @@ class CodexCLIProvider(Provider):
                 "--sandbox", "read-only",
                 "--skip-git-repo-check",
                 "--output-last-message", str(out_file),
-                "-",
             ]
+            if self.model:
+                args += ["--model", self.model]
+            if self.reasoning:
+                args += ["-c", f'model_reasoning_effort="{self.reasoning}"']
+            args.append("-")
             raw = await run_cli(args, Path(s.workspace_dir), s.provider_timeout_seconds, stdin=prompt)
             if out_file.exists():
                 return out_file.read_text(errors="replace").strip()

@@ -38,7 +38,7 @@ def fake(monkeypatch):
     def _use(replies):
         p = ScriptedProvider(replies)
         holder["p"] = p
-        monkeypatch.setattr(growth, "pick_provider", lambda pa=None: p)
+        monkeypatch.setattr(growth, "pick_provider", lambda *a, **k: p)
         return p
 
     return _use
@@ -151,7 +151,7 @@ def test_plan_fails_when_all_agents_fail(logged, monkeypatch):
     make_projects("Zombie Party")
     only_agents("growth")
 
-    def boom(pa=None):
+    def boom(*a, **k):
         raise growth.ProviderError("nenhum provider disponível para os agentes")
 
     monkeypatch.setattr(growth, "pick_provider", boom)

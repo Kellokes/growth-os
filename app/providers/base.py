@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,6 +94,15 @@ async def run_cli(args: list[str], cwd: Path, timeout: int, stdin: str | None = 
 class Provider:
     id: str = ""
     label: str = ""
+    # Escolhidos por atividade/thread (ver app/modelcfg.py). Vazio = padrão da conta/CLI/modelo.
+    model: str = ""
+    reasoning: str = ""
+
+    def configured(self, model: str = "", reasoning: str = "") -> "Provider":
+        """Cópia deste provider com o modelo e o raciocínio escolhidos (o original não muda)."""
+        p = copy.copy(self)
+        p.model, p.reasoning = model or "", reasoning or ""
+        return p
 
     def available(self) -> tuple[bool, str]:
         return True, ""

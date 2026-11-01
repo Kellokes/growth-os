@@ -29,6 +29,10 @@ class ClaudeCLIProvider(Provider):
             "--tools", "",
             "--system-prompt", SYSTEM_PROMPT,
         ]
+        if self.model:
+            args += ["--model", self.model]
+        if self.reasoning:
+            args += ["--effort", self.reasoning]
         raw = await run_cli(args, Path(s.workspace_dir), s.provider_timeout_seconds, stdin=render_transcript(history))
         try:
             data = json.loads(raw)

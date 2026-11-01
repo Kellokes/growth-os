@@ -57,6 +57,10 @@ class Conversation(Base):
     category: Mapped[str] = mapped_column(String(40), default="", server_default="")
     # "Excluir" no app só esconde: a conversa (e a auditoria dela) continua no banco.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Última escolha de modelo da thread (vazio = segue a configuração de modelos).
+    provider: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    model: Mapped[str] = mapped_column(String(120), default="", server_default="")
+    reasoning: Mapped[str] = mapped_column(String(16), default="", server_default="")
 
 
 class Message(Base):
@@ -65,6 +69,7 @@ class Message(Base):
     conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), index=True)
     role: Mapped[str] = mapped_column(String(16))  # user | assistant | system
     provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str] = mapped_column(String(120), default="", server_default="")
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -132,6 +137,18 @@ class ProjectAgent(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     mission: Mapped[str] = mapped_column(Text, default="")  # vazio = missão padrão da área
     provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str] = mapped_column(String(120), default="", server_default="")
+    reasoning: Mapped[str] = mapped_column(String(16), default="", server_default="")
+
+
+class ModelSetting(Base):
+    """Provider, modelo e raciocínio de uma atividade (threads, agentes, imagens...). Ver app/modelcfg.py."""
+    __tablename__ = "model_settings"
+    activity: Mapped[str] = mapped_column(String(32), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    reasoning: Mapped[str] = mapped_column(String(16), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Metric(Base):
@@ -220,6 +237,14 @@ _NEW_COLUMNS = {
     "conversations": {
         "category": "VARCHAR(40) NOT NULL DEFAULT ''",
         "deleted_at": "TIMESTAMP NULL",
+        "provider": "VARCHAR(32) NOT NULL DEFAULT ''",
+        "model": "VARCHAR(120) NOT NULL DEFAULT ''",
+        "reasoning": "VARCHAR(16) NOT NULL DEFAULT ''",
+    },
+    "messages": {"model": "VARCHAR(120) NOT NULL DEFAULT ''"},
+    "project_agents": {
+        "model": "VARCHAR(120) NOT NULL DEFAULT ''",
+        "reasoning": "VARCHAR(16) NOT NULL DEFAULT ''",
     },
 }
 

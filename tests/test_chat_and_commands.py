@@ -148,3 +148,50 @@ def test_commands_do_not_see_app_secrets(logged, monkeypatch):
     monkeypatch.setenv("SOME_API_TOKEN", "segredo-xyz")
     r = logged.post("/api/commands", json={"command": "env | grep -c segredo-xyz; true"}).json()
     assert r["output"].strip() == "0"
+
+
+# ---------- gestão de conversas ----------
+
+def test_conversations_have_categories_and_search(logged):
+    a, b, c = new_conv(logged), new_conv(logged), new_conv(logged)
+    assert logged.patch(f"/api/conversations/{a}", json={"title": "Deploy takeone", "category": "  Takeone  "}).json()["category"] == "Takeone"
+    logged.patch(f"/api/conversations/{b}", json={"title": "Ideias de post", "category": "Ideias"})
+    logged.patch(f"/api/conversations/{c}", json={"title": "Outro deploy"})
+    assert [x["id"] for x in logged.get("/api/conversations?category=Takeone").json()] == [a]
+    assert [x["id"] for x in logged.get("/api/conversations?category=").json()] == [c]
+    assert {x["id"] for x in logged.get("/api/conversations?q=deploy").json()} == {a, c}
+    cats = logged.get("/api/conversations/categories").json()
+    assert [k["name"] for k in cats["categories"]] == ["Ideias", "Takeone", ""]
+    assert logged.patch(f"/api/conversations/{a}", json={"category": "x" * 41}).status_code == 422
+
+
+def test_delete_only_hides_and_can_be_restored(logged, use):
+    from app.db import Conversation, Message, new_session
+
+    use(["feito"])
+    cid = new_conv(logged)
+    events(say(logged, cid, "olá"))
+    r = logged.delete(f"/api/conversations/{cid}")
+    assert r.status_code == 200 and r.json()["deleted"] is True
+    assert cid not in [x["id"] for x in logged.get("/api/conversations").json()]
+    assert [x["id"] for x in logged.get("/api/conversations?trash=1").json()] == [cid]
+    assert logged.get("/api/conversations/categories").json()["trash"] == 1
+    # continua no banco, com as mensagens
+    db = new_session()
+    try:
+        assert db.get(Conversation, cid) is not None
+        assert db.query(Message).filter(Message.conversation_id == cid).count() >= 2
+    finally:
+        db.close()
+    assert logged.get(f"/api/conversations/{cid}").json()["deleted"] is True
+    assert say(logged, cid).status_code == 409
+    actions = [a["action"] for a in logged.get("/api/audit").json()]
+    assert "conversation_hidden" in actions
+
+    assert logged.post(f"/api/conversations/{cid}/restore").json()["deleted"] is False
+    assert cid in [x["id"] for x in logged.get("/api/conversations").json()]
+
+
+def test_conversation_management_needs_csrf(logged):
+    cid = new_conv(logged)
+    assert logged.delete(f"/api/conversations/{cid}", headers={"X-CSRF-Token": "errado"}).status_code == 403

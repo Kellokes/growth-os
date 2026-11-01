@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as DB
 
 from .agent import cmd_json, execute_run, run_agent, tool_message
@@ -198,10 +198,35 @@ def providers(auth: Auth = Depends(current_auth)):
     return out
 
 
+def _conv_json(c: Conversation) -> dict:
+    return {"id": c.id, "title": c.title, "category": c.category or "", "deleted": c.deleted_at is not None}
+
+
 @app.get("/api/conversations")
-def list_conversations(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    rows = db.query(Conversation).order_by(Conversation.id.desc()).limit(100).all()
-    return [{"id": c.id, "title": c.title} for c in rows]
+def list_conversations(
+    category: str | None = None, trash: bool = False, q: str = "",
+    auth: Auth = Depends(current_auth), db: DB = Depends(get_db),
+):
+    query = db.query(Conversation)
+    query = query.filter(Conversation.deleted_at.is_not(None) if trash else Conversation.deleted_at.is_(None))
+    if category is not None:
+        query = query.filter(Conversation.category == category.strip())
+    if q.strip():
+        query = query.filter(Conversation.title.ilike(f"%{q.strip()[:80]}%"))
+    rows = query.order_by(Conversation.id.desc()).limit(200).all()
+    return [_conv_json(c) for c in rows]
+
+
+@app.get("/api/conversations/categories")
+def conversation_categories(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    rows = (
+        db.query(Conversation.category, func.count(Conversation.id))
+        .filter(Conversation.deleted_at.is_(None))
+        .group_by(Conversation.category).all()
+    )
+    trash = db.query(func.count(Conversation.id)).filter(Conversation.deleted_at.is_not(None)).scalar() or 0
+    cats = sorted(({"name": n or "", "count": k} for n, k in rows), key=lambda c: (c["name"] == "", c["name"].lower()))
+    return {"categories": cats, "trash": trash}
 
 
 @app.post("/api/conversations")
@@ -209,7 +234,51 @@ def create_conversation(auth: Auth = Depends(current_auth), db: DB = Depends(get
     c = Conversation()
     db.add(c)
     db.commit()
-    return {"id": c.id, "title": c.title}
+    return _conv_json(c)
+
+
+class ConvPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    category: str | None = Field(default=None, max_length=40)
+
+
+def _conv_or_404(db, cid: int) -> Conversation:
+    c = db.get(Conversation, cid)
+    if c is None:
+        raise HTTPException(404, "not_found")
+    return c
+
+
+@app.patch("/api/conversations/{cid}")
+def update_conversation(cid: int, body: ConvPatch, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    c = _conv_or_404(db, cid)
+    if body.title is not None and body.title.strip():
+        c.title = body.title.strip()[:200]
+    if body.category is not None:
+        c.category = " ".join(body.category.split())[:40]
+    db.commit()
+    return _conv_json(c)
+
+
+@app.delete("/api/conversations/{cid}")
+def delete_conversation(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Só esconde do sistema (vai para a lixeira). Mensagens, comandos e auditoria ficam no banco."""
+    c = _conv_or_404(db, cid)
+    if c.deleted_at is None:
+        c.deleted_at = utcnow()
+        db.commit()
+        audit(db, auth.user.username, "conversation_hidden", f"#{c.id} {c.title[:120]}", client_ip(request))
+    return _conv_json(c)
+
+
+@app.post("/api/conversations/{cid}/restore")
+def restore_conversation(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    c = _conv_or_404(db, cid)
+    if c.deleted_at is not None:
+        c.deleted_at = None
+        db.commit()
+        audit(db, auth.user.username, "conversation_restored", f"#{c.id} {c.title[:120]}", client_ip(request))
+    return _conv_json(c)
 
 
 @app.get("/api/conversations/{cid}")
@@ -220,8 +289,7 @@ def get_conversation(cid: int, auth: Auth = Depends(current_auth), db: DB = Depe
     msgs = db.query(Message).filter(Message.conversation_id == cid).order_by(Message.id).all()
     cmds = db.query(CommandRun).filter(CommandRun.conversation_id == cid).order_by(CommandRun.id).all()
     return {
-        "id": c.id,
-        "title": c.title,
+        **_conv_json(c),
         "messages": [
             {"id": m.id, "role": m.role, "provider": m.provider, "content": m.content}
             for m in msgs if m.role != "tool"
@@ -275,10 +343,12 @@ async def send_message(
     c = db.get(Conversation, cid)
     if c is None:
         raise HTTPException(404, "not_found")
+    if c.deleted_at is not None:
+        raise HTTPException(409, "conversa na lixeira: restaure antes de continuar")
     provider = _provider_or_400(body.provider)
 
     db.add(Message(conversation_id=cid, role="user", content=body.content))
-    title_changed = c.title == "Nova conversa"
+    title_changed = c.title in ("Nova thread", "Nova conversa")
     if title_changed:
         c.title = body.content.strip().splitlines()[0][:80]
     db.commit()

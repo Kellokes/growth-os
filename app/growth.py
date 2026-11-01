@@ -610,7 +610,10 @@ async def execute_task(task_id: int) -> None:
             task.status, task.result = "failed", str(e)
             db.commit()
             return
-        conv = Conversation(title=f"{agent.icon} {project.name} · {agent.name}: {task.title}"[:200])
+        conv = Conversation(
+            title=f"{agent.icon} {project.name} · {agent.name}: {task.title}"[:200],
+            category=f"Agentes · {project.name}"[:40],
+        )
         db.add(conv)
         db.commit()
         task.conversation_id, task.status = conv.id, "running"

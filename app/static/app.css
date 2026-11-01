@@ -130,7 +130,7 @@ a { color: inherit; }
 .btn.small { padding: 6px 13px; font-size: 13px; }
 .btn.big { padding: 14px 22px; font-size: 15px; }
 .btn:disabled { opacity: .5; cursor: wait; transform: none; }
-.btn:focus-visible, .icon-btn:focus-visible, .link:focus-visible, .nav-item:focus-visible, .conv-list button:focus-visible, .pill:focus-visible, .chip:focus-visible, .send:focus-visible, .kpi:focus-visible {
+.btn:focus-visible, .icon-btn:focus-visible, .link:focus-visible, .nav-item:focus-visible, .conv-item:focus-visible, .pill:focus-visible, .chip:focus-visible, .send:focus-visible, .kpi:focus-visible {
   outline: 2px solid var(--text); outline-offset: 2px;
 }
 .link { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; text-align: left; font: inherit; }
@@ -264,8 +264,6 @@ input[type="checkbox"] { accent-color: var(--text); }
 .search-field { position: relative; flex-direction: row; align-items: center; }
 .search-field .ic { position: absolute; left: 14px; width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
 .conv-search { width: 100%; padding: 11px 14px 11px 40px; border-radius: var(--pill); font-size: 14px; }
-.conv-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px; }
-.conv-filters:empty { display: none; }
 .fchip {
   font: inherit; font-size: 12.5px; padding: 6px 12px; border-radius: var(--pill); border: 1px solid var(--line);
   background: transparent; color: var(--text-2); cursor: pointer; display: inline-flex; gap: 6px; align-items: center; max-width: 100%;
@@ -277,17 +275,51 @@ input[type="checkbox"] { accent-color: var(--text); }
 .fchip.active span { color: inherit; opacity: .6; }
 .fchip:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .conv-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
-.conv-list li { animation: rise .35s var(--ease) both; }
-.conv-list button {
-  width: 100%; text-align: left; background: none; border: 0; padding: 11px 14px; border-radius: var(--r);
-  cursor: pointer; font-size: 14px; color: var(--text-2); display: flex; flex-direction: column; gap: 1px;
+.conv-list > li { animation: rise .35s var(--ease) both; }
+.conv-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.conv-item {
+  width: 100%; text-align: left; background: none; border: 0; padding: 10px 14px; border-radius: var(--r);
+  cursor: pointer; font: inherit; font-size: 14px; color: var(--text-2); display: flex; flex-direction: column; gap: 1px;
   transition: background-color .2s, color .2s, transform .2s var(--ease);
 }
-.conv-list button:hover { background: var(--panel-2); color: var(--text); transform: translateX(2px); }
-.conv-list button.active { background: var(--lime); color: var(--on-lime); font-weight: 500; }
-.conv-list button.active .conv-cat { color: color-mix(in srgb, var(--on-lime) 60%, transparent); }
+.conv-item:hover { background: var(--panel-2); color: var(--text); transform: translateX(2px); }
+.conv-item.active { background: var(--lime); color: var(--on-lime); font-weight: 500; }
+.conv-item:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+/* grupos estilo Slack: cabeçalho com seta, contagem e "+"; abre/fecha com animação de altura */
+.conv-group { display: flex; flex-direction: column; }
+.conv-group + .conv-group { margin-top: 4px; }
+.conv-group-head { display: flex; align-items: center; gap: 2px; border-radius: var(--r); transition: background-color .2s; }
+.conv-group-head:hover { background: var(--panel-2); }
+.conv-group-head:hover .conv-group-count { background: var(--panel-3); }
+.conv-group-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: none; border: 0;
+  border-radius: var(--r); cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted); text-align: left; transition: color .2s;
+}
+.conv-group-toggle:hover, .conv-group.open .conv-group-toggle { color: var(--text); }
+.conv-group-toggle .ic { width: 14px; height: 14px; flex: none; transition: transform .25s var(--ease); }
+.conv-group.open .conv-group-toggle .ic { transform: rotate(90deg); }
+.conv-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-group-count {
+  font-size: 11px; font-weight: 500; letter-spacing: 0; min-width: 22px; padding: 2px 7px; border-radius: var(--pill);
+  background: var(--panel-2); color: var(--muted); text-align: center;
+}
+.conv-group-add {
+  flex: none; width: 30px; height: 30px; display: grid; place-items: center; margin-right: 4px; border: 0; border-radius: 50%;
+  background: none; color: var(--muted); cursor: pointer; opacity: 0; transition: opacity .2s, background-color .2s, color .2s;
+}
+.conv-group-add .ic { width: 16px; height: 16px; }
+.conv-group-head:hover .conv-group-add, .conv-group-add:focus-visible { opacity: 1; }
+.conv-group-add:hover { background: var(--ink); color: var(--on-ink); }
+.conv-group-toggle:focus-visible, .conv-group-add:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.conv-group-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .3s var(--ease); }
+.conv-group.open .conv-group-body, .conv-group.peek .conv-group-body { grid-template-rows: 1fr; }
+.conv-group-body > .conv-items { min-height: 0; overflow: hidden; padding-left: 12px; }
+.conv-group.open .conv-items { padding-top: 2px; padding-bottom: 4px; }
+.conv-group.trash .conv-group-toggle { font-weight: 500; }
+@media (hover: none) { .conv-group-add { opacity: 1; } }
 .conv-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conv-cat { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-empty { padding: 10px 14px; font-size: 13px; color: var(--muted); }
 .conv-backdrop[hidden] { display: none; }
 
@@ -834,10 +866,10 @@ dialog pre { background: var(--code-bg); border: 1px solid var(--line); border-r
   .conv-backdrop { position: fixed; inset: 0; z-index: 39; background: rgba(10, 12, 10, .4); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); animation: fade .3s var(--ease) both; }
   .conv-close { display: inline-grid !important; width: 40px; height: 40px; }
   .conv-search { font-size: 16px; }
-  .conv-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
-  .conv-filters::-webkit-scrollbar { display: none; }
   .fchip { flex: none; padding: 7px 13px; font-size: 13px; }
-  .conv-list button { padding: 13px 14px; font-size: 15px; }
+  .conv-item { padding: 12px 14px; font-size: 15px; }
+  .conv-group-toggle { padding: 11px 10px; font-size: 12.5px; }
+  .conv-group-add { width: 36px; height: 36px; }
 
   .chat-card { border-radius: var(--r-lg); }
   .chat-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; padding: 10px 10px 8px; }

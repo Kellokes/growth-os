@@ -168,46 +168,89 @@
     $("#model-dialog").close();
   };
 
-  // ---------- lista de conversas: filtro por categoria, busca, lixeira ----------
-  const TRASH = "__trash__", ALL = "__all__";
+  // ---------- lista de conversas: grupos por categoria (estilo Slack), busca, lixeira ----------
+  const TRASH = "__trash__", NONE = "";
   const NEW_TITLES = ["Nova thread", "Nova conversa"];
-  let filter = ALL;
-  try { filter = localStorage.getItem("gos.convFilter") || ALL; } catch { /* sem storage */ }
+  const ICON = (n) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="/static/icons.svg#i-${n}"/></svg>`;
+  // Grupos fechados ficam lembrados neste navegador. A lixeira começa fechada.
+  let collapsed = new Set([TRASH]);
+  try { const saved = JSON.parse(localStorage.getItem("gos.convCollapsed") || "null"); if (Array.isArray(saved)) collapsed = new Set(saved); } catch { /* sem storage */ }
+  const saveCollapsed = () => { try { localStorage.setItem("gos.convCollapsed", JSON.stringify([...collapsed])); } catch { /* ok */ } };
   let searchTimer = null;
 
-  async function loadFilters() {
+  async function loadCategories() {
     const data = await api("/api/conversations/categories");
-    const box = $("#conv-filters"); box.innerHTML = "";
-    const total = data.categories.reduce((n, c) => n + c.count, 0);
-    const opts = [[ALL, "Todas", total], ...data.categories.map((c) => [c.name, c.name || "Sem categoria", c.count])];
-    if (data.trash) opts.push([TRASH, "🗑 Lixeira", data.trash]);
-    if (!opts.some(([v]) => v === filter)) filter = ALL;
-    for (const [value, label, count] of opts) {
-      const b = el("button", "fchip" + (value === filter ? " active" : ""));
-      b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", value === filter);
-      b.innerHTML = `${esc(label)} <span>${count}</span>`;
-      b.onclick = () => { filter = value; try { localStorage.setItem("gos.convFilter", value); } catch { /* ok */ } loadConversations(); };
-      box.appendChild(b);
-    }
     const dl = $("#conv-cats"); dl.innerHTML = "";
     for (const c of data.categories) if (c.name) { const o = el("option"); o.value = c.name; dl.appendChild(o); }
+    return data;
+  }
+
+  function convItem(c) {
+    const li = el("li");
+    const b = el("button", "conv-item" + (state.conv?.id === c.id ? " active" : ""));
+    b.type = "button";
+    b.innerHTML = `<span class="conv-t">${esc(c.title)}</span>`;
+    b.onclick = () => { openConversation(c.id); closePanel(); };
+    li.appendChild(b);
+    return li;
+  }
+
+  // Um grupo: cabeçalho que abre/fecha + botão "+" para nova thread já na categoria.
+  function convGroup(key, label, items, { forceOpen = false, canAdd = true } = {}) {
+    const open = forceOpen || !collapsed.has(key);
+    const g = el("li", "conv-group" + (open ? " open" : "") + (key === TRASH ? " trash" : ""));
+    const head = el("div", "conv-group-head");
+    const toggle = el("button", "conv-group-toggle");
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", open);
+    toggle.innerHTML = `${ICON("chevron")}<span class="conv-group-name">${esc(label)}</span><span class="conv-group-count">${items.length}</span>`;
+    toggle.onclick = () => {
+      const nowOpen = !g.classList.contains("open");
+      g.classList.toggle("open", nowOpen); toggle.setAttribute("aria-expanded", nowOpen);
+      if (nowOpen) collapsed.delete(key); else collapsed.add(key);
+      saveCollapsed(); renderGroupBody(g, items, nowOpen);
+      if (nowOpen) setTimeout(() => g.scrollIntoView({ block: "nearest", behavior: "smooth" }), 320);
+    };
+    head.appendChild(toggle);
+    if (canAdd) {
+      const add = el("button", "conv-group-add", ICON("plus"));
+      add.type = "button"; add.title = `Nova thread em ${label}`; add.setAttribute("aria-label", add.title);
+      add.onclick = () => newConversation(key);
+      head.appendChild(add);
+    }
+    g.appendChild(head);
+    const body = el("div", "conv-group-body"); const ul = el("ul", "conv-items");
+    body.appendChild(ul); g.appendChild(body);
+    renderGroupBody(g, items, open);
+    return g;
+  }
+
+  // Grupo fechado ainda mostra a thread aberta, como o Slack faz com o canal atual.
+  function renderGroupBody(g, items, open) {
+    const ul = g.querySelector(".conv-items"); ul.innerHTML = "";
+    const shown = open ? items : items.filter((c) => c.id === state.conv?.id);
+    g.classList.toggle("peek", !open && shown.length > 0);
+    for (const c of shown) ul.appendChild(convItem(c));
   }
 
   async function loadConversations() {
-    await loadFilters().catch(() => {});
-    const qs = new URLSearchParams();
-    if (filter === TRASH) qs.set("trash", "1"); else if (filter !== ALL) qs.set("category", filter);
-    const q = $("#conv-search").value.trim(); if (q) qs.set("q", q);
-    const list = await api("/api/conversations?" + qs);
+    const q = $("#conv-search").value.trim();
+    const qs = new URLSearchParams(); if (q) qs.set("q", q);
+    const tq = new URLSearchParams({ trash: "1" }); if (q) tq.set("q", q);
+    const [cats, list, trash] = await Promise.all([
+      loadCategories().catch(() => ({ trash: 0 })),
+      api("/api/conversations?" + qs),
+      api("/api/conversations?" + tq).catch(() => []),
+    ]);
+    const groups = new Map();
+    for (const c of list) { const k = c.category || NONE; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c); }
+    const keys = [...groups.keys()].sort((a, b) => (a === NONE) - (b === NONE) || a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
     const ul = $("#conv-list"); ul.innerHTML = "";
-    if (!list.length) ul.appendChild(el("li", "conv-empty", filter === TRASH ? "Lixeira vazia." : q ? "Nada encontrado." : "Nenhuma thread ainda."));
-    for (const c of list) {
-      const li = el("li"); const b = el("button", state.conv?.id === c.id ? "active" : "");
-      b.type = "button";
-      b.innerHTML = `<span class="conv-t">${esc(c.title)}</span>` + (c.category && filter === ALL ? `<span class="conv-cat">${esc(c.category)}</span>` : "");
-      b.onclick = () => { openConversation(c.id); closePanel(); };
-      li.appendChild(b); ul.appendChild(li);
-    }
+    if (!list.length && !trash.length) ul.appendChild(el("li", "conv-empty", q ? "Nada encontrado." : "Nenhuma thread ainda."));
+    // Sem nenhuma categoria e sem lixeira, um cabeçalho "Sem categoria" sozinho só atrapalha.
+    const flat = keys.length === 1 && keys[0] === NONE && !trash.length && !cats.trash;
+    if (flat) for (const c of groups.get(NONE)) ul.appendChild(convItem(c));
+    else for (const k of keys) ul.appendChild(convGroup(k, k || "Sem categoria", groups.get(k), { forceOpen: !!q }));
+    if (trash.length) ul.appendChild(convGroup(TRASH, "Lixeira", trash, { forceOpen: !!q, canAdd: false }));
     return list;
   }
 
@@ -261,7 +304,6 @@
       const c = await api(`/api/conversations/${state.conv.id}/restore`, { method: "POST" });
       Object.assign(state.conv, c); showConvMeta(state.conv);
       if ($("#conv-dialog").open) $("#conv-dialog").close();
-      filter = ALL; try { localStorage.setItem("gos.convFilter", ALL); } catch { /* ok */ }
       loadConversations();
     } catch (e) { alert(e.message); }
   }
@@ -290,15 +332,18 @@
     loadConversations();
   }
 
-  async function newConversation() {
+  // category: nome da categoria quando vem do "+" de um grupo; vazio = sem categoria.
+  async function newConversation(category = NONE) {
     closePanel();
-    // Reaproveita a conversa vazia aberta em vez de empilhar várias "Nova conversa".
-    if (state.conv && !state.conv.deleted && NEW_TITLES.includes(state.conv.title) && !$("#messages .msg")) { $("#input").focus(); return; }
-    const c = await api("/api/conversations", { method: "POST" });
-    if (filter !== ALL && filter !== TRASH) {
-      // Nova conversa já nasce na categoria que está filtrada.
-      Object.assign(c, await api(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ category: filter }) }));
-    } else if (filter === TRASH) { filter = ALL; }
+    const want = typeof category === "string" ? category : NONE;
+    // Reaproveita a conversa vazia aberta em vez de empilhar várias "Nova thread".
+    const reuse = state.conv && !state.conv.deleted && NEW_TITLES.includes(state.conv.title) && !$("#messages .msg");
+    if (reuse && (state.conv.category || NONE) === want) { $("#input").focus(); return; }
+    const c = reuse ? state.conv : await api("/api/conversations", { method: "POST" });
+    if (want || reuse) {
+      Object.assign(c, await api(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ category: want }) }));
+    }
+    if (want) { collapsed.delete(want); saveCollapsed(); }
     await openConversation(c.id);
     $("#input").focus();
   }

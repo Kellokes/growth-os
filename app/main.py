@@ -1,6 +1,7 @@
 import asyncio
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,12 +17,13 @@ from .agent import cmd_json, execute_run, run_agent, tool_message
 from .audit import audit
 from .config import get_settings
 from .db import (
-    Agent, AgentNote, AuditLog, CommandRun, Conversation, GrowthProject, Message, Metric, Plan, ProjectAgent, Task,
-    TaskLink, User, get_db, init_db, new_session, utcnow,
+    Agent, AgentNote, AuditLog, Automation, CommandRun, Conversation, GrowthProject, Integration, Message, Metric,
+    Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
 from . import growth
 from . import modelcfg
+from . import routines
 from . import projects as proj
 from .providers import all_providers
 from .security import (
@@ -73,9 +75,11 @@ async def lifespan(_app: FastAPI):
     _protect_process_memory()
     _write_github_token()
     init_db()
+    growth.runner.bind(asyncio.get_running_loop())
     db = new_session()
     try:
         growth.seed_defaults(db)
+        growth.requeue_approved(db)
     finally:
         db.close()
     scheduler = asyncio.create_task(growth.scheduler_loop()) if get_settings().scheduler_enabled else None
@@ -231,6 +235,16 @@ def plan_page(request: Request, db: DB = Depends(get_db)):
 @app.get("/agents", response_class=HTMLResponse)
 def agents_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "agents.html", "agents")
+
+
+@app.get("/board", response_class=HTMLResponse)
+def board_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "board.html", "board")
+
+
+@app.get("/automations", response_class=HTMLResponse)
+def automations_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "automations.html", "routines")
 
 
 @app.get("/projects", response_class=HTMLResponse)
@@ -643,6 +657,11 @@ def _task_json(t: Task, projects: dict[int, GrowthProject] | None = None, links:
         "title": t.title, "rationale": t.rationale, "steps": t.steps, "risk": t.risk, "kpi": t.kpi_key,
         "status": t.status, "result": t.result, "conversation_id": t.conversation_id,
         "created_at": t.created_at.isoformat(),
+        "decided_at": t.decided_at.isoformat() if t.decided_at else None,
+        "finished_at": t.finished_at.isoformat() if t.finished_at else None,
+        "automation_id": t.automation_id,
+        # de onde veio: plano do dia, automação, pedido de outro agente ou pedido direto do owner
+        "origin": "automation" if t.automation_id else "handoff" if link else "plan" if t.plan_id else "owner",
     }
 
 
@@ -935,3 +954,286 @@ def upsert_metric(slug: str, body: MetricIn, request: Request, auth: Auth = Depe
     db.commit()
     audit(db, auth.user.username, "kpi_upsert", f"{slug}/{body.key}", client_ip(request))
     return {"ok": True}
+
+
+# ---------- kanban das atividades dos agentes ----------
+
+@app.get("/api/board")
+def board(project: str = "all", days: int = 14, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Tudo que está aberto + o que fechou nos últimos `days` dias. As colunas são as etapas da tarefa."""
+    days = max(1, min(days, 90))
+    q = db.query(Task)
+    if project != "all":
+        q = q.filter(Task.project_id == _project_or_404(db, project).id)
+    since = utcnow() - timedelta(days=days)
+    open_rows = q.filter(Task.status.in_(routines.OPEN_STATUSES)).order_by(Task.id.desc()).limit(300).all()
+    closed = (
+        q.filter(Task.status.in_(("done", "failed", "rejected")),
+                 func.coalesce(Task.finished_at, Task.decided_at, Task.created_at) >= since)
+        .order_by(Task.id.desc()).limit(300).all()
+    )
+    rows = open_rows + closed
+    projects = _projects_by_id(db)
+    links = _links(db, rows)
+    autos = {a.id: a.title for a in db.query(Automation).all()}
+    out = []
+    for t in rows:
+        j = _task_json(t, projects, links)
+        j["automation"] = autos.get(t.automation_id, "") if t.automation_id else ""
+        out.append(j)
+    return {"tasks": out, "days": days}
+
+
+@app.post("/api/tasks/{tid}/retry")
+def retry_task(tid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Tarefa que falhou volta para a fila (é o owner pedindo de novo, então já vale como aprovação)."""
+    t = db.get(Task, tid)
+    if t is None:
+        raise HTTPException(404, "tarefa não encontrada")
+    if t.status != "failed":
+        raise HTTPException(409, "só dá para repetir tarefa que falhou")
+    t.status, t.result, t.finished_at, t.decided_at = "approved", "", None, utcnow()
+    db.commit()
+    audit(db, auth.user.username, "task_retry", f"#{t.id} {t.agent_slug}: {t.title}", client_ip(request))
+    growth.runner.submit(t.id)
+    return _task_json(t, _projects_by_id(db), _links(db, [t]))
+
+
+# ---------- habilidades, integrações e automações (por projeto) ----------
+
+def _agent_slugs(db: DB, project: GrowthProject) -> set[str]:
+    return {pa.agent_slug for pa in db.query(ProjectAgent).filter(ProjectAgent.project_id == project.id).all()}
+
+
+@app.get("/api/routines/catalog")
+def routines_catalog(auth: Auth = Depends(current_auth)):
+    return {
+        "skills": [{"key": k, "name": n, "description": d, "agents": routines.split_agents(a), "instructions": i}
+                   for k, n, d, a, i in routines.SKILL_TEMPLATES],
+        "automations": [{"title": t, "agent": a, "skill_template": sk, "frequency": f, "weekday": w, "monthday": m, "hour": h}
+                        for t, a, sk, f, w, m, h in routines.AUTOMATION_TEMPLATES],
+        "weekdays": routines.WEEKDAYS,
+    }
+
+
+class SkillIn(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=300)
+    instructions: str | None = Field(default=None, max_length=6000)
+    agents: list[str] | None = Field(default=None, max_length=20)
+    enabled: bool | None = None
+
+
+def _skill_or_404(db: DB, project: GrowthProject, sid: int) -> Skill:
+    s = db.get(Skill, sid)
+    if s is None or s.project_id != project.id:
+        raise HTTPException(404, "habilidade não encontrada neste projeto")
+    return s
+
+
+def _apply_skill(db: DB, project: GrowthProject, s: Skill, body: SkillIn) -> None:
+    if body.agents is not None:
+        unknown = set(body.agents) - _agent_slugs(db, project)
+        if unknown:
+            raise HTTPException(400, f"agente não existe neste projeto: {', '.join(sorted(unknown))}")
+        s.agents = ",".join(dict.fromkeys(body.agents))
+    for k in ("name", "description", "instructions", "enabled"):
+        v = getattr(body, k)
+        if v is not None:
+            setattr(s, k, v.strip() if isinstance(v, str) else v)
+
+
+def _skill_from_template(db: DB, project: GrowthProject, key: str) -> Skill:
+    existing = db.query(Skill).filter(Skill.project_id == project.id, Skill.template == key).first()
+    if existing is not None:
+        return existing
+    tpl = next((t for t in routines.SKILL_TEMPLATES if t[0] == key), None)
+    if tpl is None:
+        raise HTTPException(404, "modelo de habilidade não existe")
+    _, name, desc, agents, instructions = tpl
+    s = Skill(project_id=project.id, name=name, description=desc, instructions=instructions, agents=agents, template=key)
+    db.add(s)
+    db.commit()
+    return s
+
+
+@app.get("/api/gprojects/{slug}/skills")
+def list_skills(slug: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    return [routines.skill_json(s) for s in db.query(Skill).filter(Skill.project_id == p.id).order_by(Skill.id).all()]
+
+
+@app.post("/api/gprojects/{slug}/skills")
+def create_skill(slug: str, body: SkillIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    if not body.name or not (body.instructions or "").strip():
+        raise HTTPException(422, "nome e instruções são obrigatórios")
+    s = Skill(project_id=p.id, name="")
+    _apply_skill(db, p, s, body)
+    db.add(s)
+    db.commit()
+    audit(db, auth.user.username, "skill_create", f"{slug}: {s.name}", client_ip(request))
+    return routines.skill_json(s)
+
+
+@app.post("/api/gprojects/{slug}/skills/template/{key}")
+def add_skill_template(slug: str, key: str, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    s = _skill_from_template(db, p, key)
+    audit(db, auth.user.username, "skill_create", f"{slug}: {s.name} (biblioteca)", client_ip(request))
+    return routines.skill_json(s)
+
+
+@app.patch("/api/gprojects/{slug}/skills/{sid}")
+def update_skill(slug: str, sid: int, body: SkillIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    s = _skill_or_404(db, p, sid)
+    _apply_skill(db, p, s, body)
+    db.commit()
+    audit(db, auth.user.username, "skill_update", f"{slug}: {s.name}", client_ip(request))
+    return routines.skill_json(s)
+
+
+@app.delete("/api/gprojects/{slug}/skills/{sid}")
+def delete_skill(slug: str, sid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    s = _skill_or_404(db, p, sid)
+    db.query(Automation).filter(Automation.skill_id == s.id).update({Automation.skill_id: None})
+    db.delete(s)
+    db.commit()
+    audit(db, auth.user.username, "skill_delete", f"{slug}: {s.name}", client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/gprojects/{slug}/integrations")
+def list_integrations(slug: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    return routines.integrations_for(db, _project_or_404(db, slug))
+
+
+class IntegrationIn(BaseModel):
+    config: dict[str, str] = Field(default_factory=dict, max_length=10)
+    enabled: bool | None = None
+
+
+@app.put("/api/gprojects/{slug}/integrations/{kind}")
+def save_integration(slug: str, kind: str, body: IntegrationIn, request: Request,
+                     auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    try:
+        routines.save_integration(db, p, kind, body.config, body.enabled)
+    except KeyError as e:
+        raise HTTPException(404, "integração não existe no catálogo") from e
+    audit(db, auth.user.username, "integration_save", f"{slug}/{kind}: {sorted(body.config)}"[:500], client_ip(request))
+    return next(i for i in routines.integrations_for(db, p) if i["kind"] == kind)
+
+
+@app.delete("/api/gprojects/{slug}/integrations/{kind}")
+def delete_integration(slug: str, kind: str, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    db.query(Integration).filter(Integration.project_id == p.id, Integration.kind == kind).delete()
+    db.commit()
+    audit(db, auth.user.username, "integration_delete", f"{slug}/{kind}", client_ip(request))
+    return {"ok": True}
+
+
+def _now_local() -> datetime:
+    return datetime.now(ZoneInfo(get_settings().timezone))
+
+
+class AutomationIn(BaseModel):
+    agent: str | None = Field(default=None, max_length=32)
+    title: str | None = Field(default=None, min_length=3, max_length=200)
+    steps: str | None = Field(default=None, max_length=4000)
+    skill_id: int | None = None
+    skill_template: str | None = Field(default=None, max_length=48)
+    frequency: str | None = Field(default=None, pattern=r"^(daily|weekly|monthly)$")
+    weekday: int | None = Field(default=None, ge=0, le=6)
+    monthday: int | None = Field(default=None, ge=1, le=28)
+    hour: int | None = Field(default=None, ge=0, le=23)
+    auto_approve: bool | None = None
+    enabled: bool | None = None
+
+
+def _automation_or_404(db: DB, project: GrowthProject, aid: int) -> Automation:
+    a = db.get(Automation, aid)
+    if a is None or a.project_id != project.id:
+        raise HTTPException(404, "automação não encontrada neste projeto")
+    return a
+
+
+def _apply_automation(db: DB, project: GrowthProject, a: Automation, body: AutomationIn) -> None:
+    data = body.model_dump(exclude_unset=True)
+    if "agent" in data and data["agent"] is not None:
+        if data["agent"] not in _agent_slugs(db, project):
+            raise HTTPException(404, "agente não existe neste projeto")
+        a.agent_slug = data["agent"]
+    if data.get("skill_template"):
+        a.skill_id = _skill_from_template(db, project, data["skill_template"]).id
+    elif "skill_id" in data:
+        if data["skill_id"] is not None:
+            _skill_or_404(db, project, data["skill_id"])
+        a.skill_id = data["skill_id"]
+    for k in ("title", "steps", "frequency", "weekday", "monthday", "hour", "auto_approve", "enabled"):
+        if data.get(k) is not None:
+            setattr(a, k, data[k].strip() if isinstance(data[k], str) else data[k])
+    # Criada (ou remarcada) depois da hora de hoje: começa na próxima vez, não dispara na hora.
+    now = _now_local()
+    if routines.scheduled_today(a, now.date()) and now.hour > a.hour:
+        a.last_run_on = now.date()
+
+
+@app.get("/api/gprojects/{slug}/automations")
+def list_automations(slug: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    now = _now_local()
+    rows = db.query(Automation).filter(Automation.project_id == p.id).order_by(Automation.id).all()
+    return [routines.automation_json(db, a, now) for a in rows]
+
+
+@app.post("/api/gprojects/{slug}/automations")
+def create_automation(slug: str, body: AutomationIn, request: Request,
+                      auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    if not body.agent or not body.title:
+        raise HTTPException(422, "agente e título são obrigatórios")
+    a = Automation(project_id=p.id, agent_slug=body.agent, title=body.title)
+    _apply_automation(db, p, a, body)
+    db.add(a)
+    db.commit()
+    audit(db, auth.user.username, "automation_create",
+          f"{slug}/{a.agent_slug}: {a.title} ({routines.describe_schedule(a)}, auto={a.auto_approve})"[:500], client_ip(request))
+    return routines.automation_json(db, a, _now_local())
+
+
+@app.patch("/api/gprojects/{slug}/automations/{aid}")
+def update_automation(slug: str, aid: int, body: AutomationIn, request: Request,
+                      auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    a = _automation_or_404(db, p, aid)
+    _apply_automation(db, p, a, body)
+    db.commit()
+    audit(db, auth.user.username, "automation_update", f"#{a.id} {slug}: {body.model_dump(exclude_unset=True)}"[:500],
+          client_ip(request))
+    return routines.automation_json(db, a, _now_local())
+
+
+@app.delete("/api/gprojects/{slug}/automations/{aid}")
+def delete_automation(slug: str, aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    a = _automation_or_404(db, p, aid)
+    db.delete(a)
+    db.commit()
+    audit(db, auth.user.username, "automation_delete", f"#{aid} {slug}: {a.title}", client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/gprojects/{slug}/automations/{aid}/run")
+def run_automation_now(slug: str, aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Rodar agora é o owner pedindo: a tarefa já nasce aprovada e entra na fila."""
+    p = _project_or_404(db, slug)
+    a = _automation_or_404(db, p, aid)
+    if routines.has_open_run(db, a):
+        raise HTTPException(409, "a última execução desta automação ainda está aberta no kanban")
+    t = routines.create_run(db, a, approved=True, actor=auth.user.username)
+    growth.runner.submit(t.id)
+    return _task_json(t, {p.id: p})

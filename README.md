@@ -79,6 +79,23 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
   `GOS_TELEGRAM_BOT_TOKEN` e `GOS_TELEGRAM_CHAT_ID`. O bot só envia; não aceita comandos.
 - `GOS_PUBLIC_URL` (ex.: `https://os.takeonestudio.io`) coloca o link do plano no aviso.
 
+## Kanban, habilidades, integrações e rotinas
+
+- **Kanban** (`/board`): cada atividade dos agentes numa coluna da etapa em que está (aguardando você, na fila,
+  em execução, esperando 2FA, concluída, falhou/rejeitada), por projeto ou todos. Arrastar uma proposta para
+  "Na fila" aprova; uma falha arrastada para "Na fila" (ou "Tentar de novo") roda de novo.
+- **Automações** (`/automations`), sempre do projeto escolhido:
+  - Habilidades: playbooks com os passos que os agentes marcados seguem. Entram no prompt do plano e da
+    execução. Há uma biblioteca com modelos prontos.
+  - Integrações: catálogo grátis/self-hosted primeiro (Umami, Plausible, Search Console, Meta Graph API,
+    Postiz, Uptime Kuma, Stripe, API do projeto). A tela guarda só a configuração pública. A chave vai no
+    `.env` do VPS no nome que a tela mostra (ex.: `GOS_INT_ZOMBIE_PARTY_UMAMI_API_KEY`) e o app precisa
+    reiniciar para ler. Comandos da IA não recebem variáveis `GOS_*`.
+  - Rotinas: atividades que se repetem (todo dia, semana ou mês, numa hora). Na hora marcada viram tarefa
+    do agente. Por padrão entram como proposta e esperam aprovação; "Rodar sem pedir aprovação" coloca
+    direto na fila (comandos perigosos continuam pedindo 2FA). Não empilham: se a anterior ainda está
+    aberta, a rodada é pulada.
+
 ## Banco de dados
 
 Postgres 16 em container próprio (`growth-os-postgres`), sem porta publicada: só o app alcança, pela rede
@@ -128,6 +145,8 @@ pytest
 ```
 app/
   main.py          rotas (páginas, chat, comandos, auditoria)
+  growth.py        agentes, plano do dia, fila de tarefas e agendador
+  routines.py      habilidades, integrações e rotinas (automações)
   security.py      senha, 2FA, sessões, CSRF
   executor.py      classificação de risco e execução de comandos
   providers/       Claude CLI, Codex CLI, OpenRouter

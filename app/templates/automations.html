@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Automações · Growth OS{% endblock %}
+{% block body %}
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
+  <main class="main">
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Automações</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1 id="page-title">Automações</h1><p class="lede muted">O que os agentes deste projeto sabem fazer, as ferramentas ligadas a ele e as atividades que se repetem sozinhas. Nada roda sem a sua aprovação, a não ser que você libere.</p></div>
+        <div class="actions">
+          <div class="seg" id="tabs" role="tablist" aria-label="Seções">
+            <button type="button" role="tab" data-tab="habilidades">{{ ic("spark") }} Habilidades</button><button type="button" role="tab" data-tab="integracoes">{{ ic("plug") }} Integrações</button><button type="button" role="tab" data-tab="rotinas">{{ ic("repeat") }} Rotinas</button>
+          </div>
+        </div>
+      </div>
+    </header>
+    {% include "_project_switch.html" %}
+    <section class="page">
+      <div class="tab-panel" data-panel="habilidades" hidden>
+        <div class="panel-head">
+          <p class="muted">Habilidades são playbooks: passos que o agente segue quando a tarefa pede. Cada uma vale só para os agentes que você marcar.</p>
+          <button class="btn primary" type="button" id="new-skill">{{ ic("plus") }} Nova habilidade</button>
+        </div>
+        <div class="tiles" id="skills"></div>
+        <h3 class="section-title">Biblioteca</h3>
+        <div class="tiles" id="skill-library"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="integracoes" hidden>
+        <div class="panel-head">
+          <p class="muted">Ferramentas grátis ou que rodam no próprio VPS primeiro. Aqui fica só a configuração pública; a chave vai no <code>.env</code> do VPS e nunca passa por esta tela.</p>
+        </div>
+        <div class="tiles" id="integrations"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="rotinas" hidden>
+        <div class="panel-head">
+          <p class="muted">Atividades rotineiras: na hora marcada viram uma tarefa do agente e aparecem no <a href="/board">Kanban</a>.</p>
+          <button class="btn primary" type="button" id="new-auto">{{ ic("plus") }} Nova rotina</button>
+        </div>
+        <div class="tiles" id="automations"></div>
+        <h3 class="section-title">Sugestões</h3>
+        <div class="suggest" id="auto-suggest"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="skill-dialog" class="card">
+  <form method="dialog" id="skill-form">
+    <h3 id="skill-dialog-title">Nova habilidade</h3>
+    <label>Nome<input id="sk-name" required minlength="2" maxlength="80" placeholder="Ex.: Responder avaliações da loja"></label>
+    <label>Para que serve<input id="sk-desc" maxlength="300" placeholder="Uma linha, o agente vê isto ao planejar"></label>
+    <label>Passos (o agente segue isto)<textarea id="sk-instr" rows="7" required maxlength="6000" placeholder="1. …&#10;2. …&#10;3. Entregue …"></textarea></label>
+    <fieldset class="pick"><legend>Quais agentes usam <span class="muted">(nenhum marcado = o time todo)</span></legend><div id="sk-agents" class="pick-list"></div></fieldset>
+    <div class="row">
+      <button class="btn ghost" type="button" id="sk-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="auto-dialog" class="card">
+  <form method="dialog" id="auto-form">
+    <h3 id="auto-dialog-title">Nova rotina</h3>
+    <div class="two">
+      <label>Agente<select id="au-agent"></select></label>
+      <label>Habilidade<select id="au-skill"></select></label>
+    </div>
+    <label>O que fazer<input id="au-title" required minlength="3" maxlength="200" placeholder="Ex.: Checar a saúde dos sites"></label>
+    <label>Detalhes (opcional)<textarea id="au-steps" rows="3" maxlength="4000"></textarea></label>
+    <div class="two three">
+      <label>Repetir<select id="au-freq"><option value="daily">Todo dia</option><option value="weekly">Toda semana</option><option value="monthly">Todo mês</option></select></label>
+      <label id="au-wd-wrap">Dia da semana<select id="au-weekday"></select></label>
+      <label id="au-md-wrap">Dia do mês<select id="au-monthday"></select></label>
+      <label>Hora<select id="au-hour"></select></label>
+    </div>
+    <label class="inline auto-approve"><span class="switch"><input type="checkbox" id="au-auto"><span></span></span><span>Rodar sem pedir aprovação<small class="muted" id="au-auto-note">Desligado: cada vez entra como proposta e espera você aprovar.</small></span></label>
+    <div class="row">
+      <button class="btn ghost" type="button" id="au-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+{% include "_audit.html" %}
+<script src="/static/automations.js"></script>
+{% endblock %}

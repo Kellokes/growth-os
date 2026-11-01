@@ -52,7 +52,8 @@
     return { reload, current: () => current, list: () => list };
   }
 
-  window.GOS = { $, esc, api, fmt, initProjects };
+  const icon = (name) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="/static/icons.svg#i-${name}"/></svg>`;
+  window.GOS = { $, esc, api, fmt, icon, initProjects };
   const call = async (path, method = "GET") => {
     const res = await fetch(path, { method, credentials: "same-origin", headers: { "X-CSRF-Token": CSRF } });
     if (res.status === 401) { location.href = "/login"; throw new Error("sessão expirada"); }

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session as DB
 from starlette.concurrency import run_in_threadpool
 
 from .audit import audit
+from . import actions
 from .config import get_settings
 from .projects import GatewayError, restart_container, restart_target
 from .db import CommandRun, Message
@@ -105,8 +106,10 @@ async def execute_run(db: DB, run: CommandRun) -> None:
         run.status = "done" if run.exit_code == 0 else "failed"
         db.commit()
         return
+    ticket = actions.ticket_for_conversation(run.conversation_id)  # só tarefas de agente em execução têm ticket
     result = await run_in_threadpool(
-        run_command, run.command, Path(s.workspace_dir), s.command_timeout_seconds, s.command_max_output_bytes
+        run_command, run.command, Path(s.workspace_dir), s.command_timeout_seconds, s.command_max_output_bytes,
+        {"TASK_TICKET": ticket} if ticket else None,
     )
     run.exit_code = result.exit_code
     run.output = result.output

@@ -616,6 +616,7 @@ def sync_task_for_conversation(db: DB, cid: int) -> None:
 
 
 async def execute_task(task_id: int) -> None:
+    from . import actions  # import tardio: actions importa este módulo
     from .agent import run_agent  # import tardio: agent importa projects/providers
 
     db = new_session()
@@ -646,9 +647,13 @@ async def execute_task(task_id: int) -> None:
         db.add(Message(conversation_id=conv.id, role="user", content=task_brief(project, agent, pa, task, guide, tools)))
         db.commit()
         error = ""
-        async for ev in run_agent(db, conv.id, provider, f"agente:{agent.slug}", "agendador"):
-            if ev["type"] == "error":
-                error = ev["message"]
+        ticket = actions.issue_ticket(task)  # permite `gos-int` enquanto esta tarefa roda
+        try:
+            async for ev in run_agent(db, conv.id, provider, f"agente:{agent.slug}", "agendador"):
+                if ev["type"] == "error":
+                    error = ev["message"]
+        finally:
+            actions.revoke_ticket(ticket)
         if error:
             task.status, task.result, task.finished_at = "failed", error, utcnow()
             db.commit()
@@ -740,10 +745,35 @@ async def scheduler_loop() -> None:
         except Exception:  # noqa: BLE001 - o agendador nunca pode morrer
             log.exception("agendador")
         try:
+            await collect_daily(datetime.now(tz))
+        except Exception:  # noqa: BLE001
+            log.exception("coleta de KPIs")
+        try:
             await run_automations(datetime.now(tz))
         except Exception:  # noqa: BLE001
             log.exception("automações")
         await asyncio.sleep(60)
+
+
+_collected_on: date | None = None
+
+
+async def collect_daily(now: datetime) -> list[str]:
+    """Uma vez por dia, antes do plano, lê as integrações prontas e grava os KPIs (sem gastar IA)."""
+    global _collected_on
+    s = get_settings()
+    if _collected_on == now.date() or now.hour < max(s.plan_hour - 1, 0):
+        return []
+    from . import actions  # import tardio: actions importa este módulo
+
+    _collected_on = now.date()
+    db = new_session()
+    try:
+        done = await actions.collect_kpis(db)
+        actions.prune(db)
+        return done
+    finally:
+        db.close()
 
 
 async def run_automations(now: datetime) -> list[int]:

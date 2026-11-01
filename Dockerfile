@@ -8,8 +8,8 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Ferramentas da etapa 2: Docker pelo gateway, git com token restrito e PRs.
-COPY scripts/gos-docker scripts/gos-pr scripts/gos-git-credential scripts/gos-self /usr/local/bin/
-RUN chmod 755 /usr/local/bin/gos-docker /usr/local/bin/gos-pr /usr/local/bin/gos-git-credential /usr/local/bin/gos-self \
+COPY scripts/gos-docker scripts/gos-pr scripts/gos-git-credential scripts/gos-self scripts/gos-int /usr/local/bin/
+RUN chmod 755 /usr/local/bin/gos-docker /usr/local/bin/gos-pr /usr/local/bin/gos-git-credential /usr/local/bin/gos-self /usr/local/bin/gos-int \
  && git config --system credential.https://github.com.helper /usr/local/bin/gos-git-credential \
  && git config --system user.name "Growth OS" \
  && git config --system user.email "growth-os@users.noreply.github.com" \

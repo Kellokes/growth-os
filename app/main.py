@@ -21,6 +21,7 @@ from .db import (
     Mission, Action, Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
+from . import actions as acts
 from . import approvals as appr
 from . import content as cnt
 from . import growth
@@ -975,6 +976,43 @@ def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth = Depe
     if not done and errors:
         raise HTTPException(errors[0]["code"], errors[0]["error"])
     return {"decided": done, "errors": errors}
+
+
+# ---------- interno: gos-int (só de dentro do container, com o ticket da tarefa) ----------
+
+INTERNAL_HOSTS = {"127.0.0.1", "::1"}
+_FORWARD_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip")
+
+
+class InternalIn(BaseModel):
+    ticket: str = Field(max_length=200)
+    integracao: str = Field(default="", max_length=32)
+    operacao: str = Field(default="", max_length=48)
+    parametros: dict = Field(default_factory=dict)
+
+
+def _internal_ticket(request: Request, ticket: str) -> acts.Ticket:
+    """Só quem roda dentro do container (loopback, sem passar pelo Caddy) e tem o ticket de uma tarefa viva."""
+    host = request.client.host if request.client else ""
+    if host not in INTERNAL_HOSTS or any(h in request.headers for h in _FORWARD_HEADERS):
+        raise HTTPException(404, "not_found")
+    t = acts.lookup(ticket)
+    if t is None:
+        raise HTTPException(403, "ticket inválido ou tarefa já terminou")
+    return t
+
+
+@app.post("/internal/integrations")
+def internal_integrations(body: InternalIn, request: Request, db: DB = Depends(get_db)):
+    t = _internal_ticket(request, body.ticket)
+    project = db.get(GrowthProject, t.project_id)
+    return {"integracoes": acts.catalog(db, project, t.agent_slug) if project else []}
+
+
+@app.post("/internal/actions")
+async def internal_actions(body: InternalIn, request: Request, db: DB = Depends(get_db)):
+    t = _internal_ticket(request, body.ticket)
+    return await acts.run_operation(db, t, body.integracao.strip().lower(), body.operacao.strip(), body.parametros)
 
 
 class TaskIn(BaseModel):

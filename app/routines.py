@@ -186,6 +186,22 @@ def skills_for_agent(db: DB, project_id: int, slug: str) -> list[Skill]:
     return [s for s in rows if not split_agents(s.agents) or slug in split_agents(s.agents)]
 
 
+def _gos_int_help(db: DB, project: GrowthProject, slug: str) -> str:
+    from . import actions  # import tardio: actions importa este módulo
+
+    cat = actions.catalog(db, project, slug)
+    if not cat:
+        return ""
+    lines = []
+    for c in cat:
+        for o in c["operacoes"]:
+            lines.append(f"- {c['integracao']} {o['operacao']}({o['parametros']}) [{o['efeito']}]: {o['sobre']}")
+    return ("Para usar uma integração pronta, rode no bash (a chave fica com o app, você só recebe o resultado):\n"
+            "  gos-int list\n  gos-int run INTEGRAÇÃO OPERAÇÃO '{\"parametro\": valor}'\n"
+            "Operações [read] respondem na hora. Operações [external] (publicar, enviar) NUNCA rodam sozinhas: viram um "
+            "pedido em Aprovações e você continua o resto do trabalho. Disponíveis agora:\n" + "\n".join(lines))
+
+
 def toolbox(db: DB, project: GrowthProject, slug: str, task: Task | None = None, full: bool = True) -> str:
     """Habilidades e integrações deste projeto que o agente pode usar (texto para o prompt)."""
     parts = []
@@ -212,6 +228,7 @@ def toolbox(db: DB, project: GrowthProject, slug: str, task: Task | None = None,
             note = "" if i["status"] == "ready" else " (a chave ainda não foi configurada no VPS)"
             lines.append(f"- {i['name']} ({i['category']}): {cfg}{note}")
         parts.append("Integrações ligadas neste projeto (configuração pública; chaves não ficam com você):\n" + "\n".join(lines))
+        parts.append(_gos_int_help(db, project, slug))
     return "\n\n".join(parts)
 
 

@@ -330,6 +330,8 @@ um texto malicioso lido por um agente não consegue publicar nem enviar nada soz
 
 ## 6. Ordem de entrega (um PR por fase)
 
+> Andamento: fases 1 e 2 mergeadas (PR #24); fase 3 (conectores de leitura, `gos-int`, coleta de KPIs) no PR seguinte.
+
 1. **Base de dados e Aprovações (backend)**: tabelas `missions`, `approvals`, `actions`, `events`;
    colunas novas; migração dos itens pendentes; API `/api/approvals`. Testes de migração e da fila.
 2. **Interface 5 → 3**: telas Aprovações, Kanban com filtro de conteúdo e agenda, Automações com a aba

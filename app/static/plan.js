@@ -30,7 +30,7 @@
     $("#sched-note").textContent = `Gerado todo dia às ${s.hour}h (${s.timezone})${s.enabled ? "" : " — agendador desligado"}. ${s.telegram ? "Aviso no Telegram ligado." : "Aviso no Telegram desligado."} Nada roda sem a sua aprovação.`;
     const plan = data.plan;
     const state = $("#plan-state");
-    $("#generate").textContent = plan && plan.status === "ready" ? "Refazer plano" : "Gerar plano";
+    $("#generate .lbl").textContent = plan && plan.status === "ready" ? "Refazer plano" : "Gerar plano";
     $("#generate").disabled = plan?.status === "generating";
     if (!plan) state.innerHTML = `<div class="empty-card card"><div class="logo">☀</div><h2>O plano de hoje ainda não foi gerado</h2><p class="muted">Ele sai sozinho às ${s.hour}h. Quer gerar agora?</p></div>`;
     else if (plan.status === "generating") state.innerHTML = `<div class="empty-card card"><span class="typing"><i></i><i></i><i></i></span><h2>Os agentes estão montando o plano…</h2><p class="muted">Cada um lê os KPIs e propõe até 3 tarefas. Leva alguns minutos.</p></div>`;
@@ -38,7 +38,7 @@
     else state.innerHTML = plan.error ? `<div class="alert">Alguns agentes falharam:<br>${esc(plan.error)}</div>` : "";
 
     const tasks = visible(data.tasks); const carry = visible(data.carryover);
-    $("#page-title").textContent = project === "all" ? "Plano do dia · todos os projetos" : `Plano do dia · ${pinfo(project).name}`;
+    $("#page-crumb").textContent = project === "all" ? "Todos os projetos" : pinfo(project).name;
     const pending = tasks.filter((t) => t.status === "proposed");
     $("#plan-bar").hidden = !pending.length;
     $("#pending-count").textContent = pending.length;

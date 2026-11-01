@@ -1,16 +1,19 @@
 {% extends "base.html" %}
+{% from "_icons.html" import ic %}
 {% block title %}Entrar · Growth OS{% endblock %}
 {% block body %}
 <main class="login">
-  <button class="icon-btn theme-fab" type="button" data-theme-toggle aria-label="Alternar tema"><span class="i-sun">☀</span><span class="i-moon">☾</span></button>
+  <button class="icon-btn theme-fab theme-btn" type="button" data-theme-toggle aria-label="Alternar tema"><span class="i-sun">{{ ic("sun") }}</span><span class="i-moon">{{ ic("moon") }}</span></button>
   <form class="card login-card" method="post" action="/login" autocomplete="on">
-    <div class="brand"><span class="logo">◆</span> Growth OS</div>
+    <div class="orb small" aria-hidden="true"><i></i></div>
+    <div class="brand"><span class="logo">◆</span><span class="brand-name">Growth OS</span></div>
+    <h1 class="login-title">Bem-vindo de volta</h1>
     <p class="muted">Acesso restrito ao owner.</p>
     {% if error %}<div class="alert">{{ error }}</div>{% endif %}
     <label>Usuário<input name="username" autocomplete="username" required autofocus></label>
     <label>Senha<input name="password" type="password" autocomplete="current-password" required></label>
     <label>Código 2FA<input name="totp" inputmode="numeric" pattern="[0-9 ]{6,8}" autocomplete="one-time-code" required></label>
-    <button class="btn primary" type="submit">Entrar</button>
+    <button class="btn primary big" type="submit">Entrar {{ ic("arrow") }}</button>
   </form>
 </main>
 {% endblock %}

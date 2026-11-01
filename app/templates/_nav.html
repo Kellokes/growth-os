@@ -1,9 +1,14 @@
-    <div class="brand"><span class="logo">◆</span> Growth OS</div>
-    <nav class="nav">
-      <a {% if active == 'chat' %}class="active" {% endif %}href="/">Threads</a>
-      <a {% if active == 'dashboard' %}class="active" {% endif %}href="/dashboard">Dashboard</a>
-      <a {% if active == 'plan' %}class="active" {% endif %}href="/plan">Plano do dia</a>
-      <a {% if active == 'agents' %}class="active" {% endif %}href="/agents">Agentes</a>
-      <a {% if active == 'projects' %}class="active" {% endif %}href="/projects">Projetos</a>
-      <button class="link" id="show-audit" type="button">Auditoria</button>
-    </nav>
+{% from "_icons.html" import ic %}
+<header class="topnav">
+  <a class="brand" href="/" aria-label="Growth OS"><span class="logo">◆</span><span class="brand-name">Growth OS</span></a>
+  <nav class="nav" aria-label="Seções">
+    {% for key, href, icon, label in [("chat", "/", "threads", "Threads"), ("dashboard", "/dashboard", "grid", "Dashboard"), ("plan", "/plan", "plan", "Plano do dia"), ("agents", "/agents", "agents", "Agentes"), ("projects", "/projects", "projects", "Projetos")] %}
+    <a class="nav-item{% if active == key %} active{% endif %}" href="{{ href }}"{% if active == key %} aria-current="page"{% endif %} title="{{ label }}">{{ ic(icon) }}<span>{{ label }}</span></a>
+    {% endfor %}
+  </nav>
+  <div class="top-actions">
+    <button class="icon-btn" id="show-audit" type="button" aria-label="Auditoria" title="Auditoria">{{ ic("audit") }}</button>
+    <button class="icon-btn theme-btn" type="button" data-theme-toggle aria-label="Alternar tema" title="Alternar tema claro/escuro"><span class="i-sun">{{ ic("sun") }}</span><span class="i-moon">{{ ic("moon") }}</span></button>
+    <button class="icon-btn" id="logout" type="button" aria-label="Sair" title="Sair">{{ ic("logout") }}</button>
+  </div>
+</header>

@@ -219,3 +219,99 @@ def test_openrouter_key_is_cleaned_and_401_is_explained(monkeypatch):
         assert seen["auth"] == "Bearer sk-or-teste"
     finally:
         get_settings.cache_clear()
+
+
+@pytest.fixture()
+def openrouter(monkeypatch):
+    """OpenRouter falso: cada item da lista é uma resposta (ou exceção) na ordem."""
+    import httpx
+    from app.config import get_settings
+    from app.providers import openrouter as orr
+
+    monkeypatch.setenv("GOS_OPENROUTER_API_KEY", "sk-or-teste")
+    get_settings.cache_clear()
+    monkeypatch.setattr(orr, "RETRY_DELAYS", (0, 0))
+    real_client = httpx.AsyncClient
+    calls = []
+
+    def setup(responses):
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        class FakeClient(real_client):
+            def __init__(self, *a, **kw):
+                super().__init__(transport=httpx.MockTransport(handler), timeout=kw.get("timeout"))
+
+        monkeypatch.setattr(orr.httpx, "AsyncClient", FakeClient)
+        return calls
+
+    yield setup
+    get_settings.cache_clear()
+
+
+def _ask():
+    import asyncio
+    from app.providers import openrouter as orr
+
+    return asyncio.run(orr.OpenRouterProvider().complete([orr.ChatTurn("user", "oi")]))
+
+
+def _ok(text):
+    import httpx
+
+    return httpx.Response(200, json={"choices": [{"message": {"content": text}, "finish_reason": "stop"}]})
+
+
+def test_openrouter_retries_502_then_succeeds(openrouter):
+    import httpx
+
+    calls = openrouter([httpx.Response(502, json={"error": {"code": 502, "message": "Provider returned error"}}), _ok("oi!")])
+    assert _ask() == "oi!" and len(calls) == 2
+
+
+def test_openrouter_persistent_502_is_retryable_and_explained(openrouter):
+    import httpx
+    from app.providers.base import ProviderError
+
+    bad = {"error": {"code": 502, "message": "Provider returned error", "metadata": {"provider_name": "X"}}}
+    calls = openrouter([httpx.Response(502, json=bad) for _ in range(3)])
+    with pytest.raises(ProviderError) as e:
+        _ask()
+    assert e.value.retryable and "502" in str(e.value) and "Tentar de novo" in str(e.value)
+    assert len(calls) == 3
+    assert "sk-or-teste" not in str(e.value)
+
+
+def test_openrouter_error_inside_200_body_is_not_a_crash(openrouter):
+    import httpx
+
+    openrouter([httpx.Response(200, json={"error": {"code": 502, "message": "upstream died"}}), _ok("ok")])
+    assert _ask() == "ok"
+
+
+def test_openrouter_timeout_and_empty_content(openrouter):
+    import httpx
+    from app.providers.base import ProviderError
+
+    openrouter([httpx.ReadTimeout("lento")])
+    with pytest.raises(ProviderError, match="não respondeu") as e:
+        _ask()
+    assert e.value.retryable
+
+    openrouter([httpx.Response(200, json={"choices": [{"message": {"content": None}, "finish_reason": "length"}]})])
+    with pytest.raises(ProviderError, match="limite de saída"):
+        _ask()
+
+
+def test_openrouter_context_too_long_is_explained(openrouter):
+    import httpx
+    from app.providers.base import ProviderError
+
+    openrouter([httpx.Response(400, json={"error": {"code": 400, "message": "This endpoint's maximum context length is 200000 tokens"}})])
+    with pytest.raises(ProviderError, match="grande demais") as e:
+        _ask()
+    assert not e.value.retryable

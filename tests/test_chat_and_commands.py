@@ -101,13 +101,95 @@ def test_blocked_command_never_runs_and_agent_is_told(logged, use):
     assert "BLOQUEADO" in p.seen[1][-1][1]
 
 
-def test_agent_stops_after_max_steps(logged, use):
-    from app.agent import MAX_STEPS
+def test_agent_stops_after_max_steps_and_continue_resumes(logged, use):
+    from app.config import get_settings
 
-    use([sh("echo x")] * (MAX_STEPS + 2))
+    steps = get_settings().agent_max_steps
+    p = use([sh("echo x")] * steps + ["Terminei."])
+    cid = new_conv(logged)
+    evs = events(say(logged, cid))
+    assert types(evs).count("step") == steps
+    notice = [e for e in evs if e["type"] == "notice"][0]
+    assert notice["continue"] is True
+    # Continuar (sem nova mensagem) segue de onde parou e termina
+    evs2 = events(logged.post(f"/api/conversations/{cid}/continue", json={"provider": "fake"}))
+    assert types(evs2)[-1] == "done" and evs2[-2]["content"] == "Terminei."
+    assert "Código de saída: 0" in p.seen[-1][-1][1]
+
+
+class FailingProvider(ScriptedProvider):
+    async def complete(self, history):
+        self.seen.append(history)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def test_provider_failure_is_retryable_with_continue(logged, monkeypatch):
+    from app.providers.base import ProviderError
+
+    p = FailingProvider([ProviderError("OpenRouter respondeu 502", retryable=True), "Agora foi."])
+    monkeypatch.setattr("app.main.all_providers", lambda: {"fake": p})
+    cid = new_conv(logged)
+    evs = events(say(logged, cid))
+    assert evs[-1]["type"] == "error" and evs[-1]["retry"] is True
+    evs2 = events(logged.post(f"/api/conversations/{cid}/continue", json={"provider": "fake"}))
+    assert types(evs2)[-1] == "done" and evs2[-2]["content"] == "Agora foi."
+
+
+def test_unexpected_provider_exception_becomes_error_event(logged, monkeypatch):
+    p = FailingProvider([TimeoutError("boom")])
+    monkeypatch.setattr("app.main.all_providers", lambda: {"fake": p})
     evs = events(say(logged, new_conv(logged)))
-    assert types(evs).count("step") == MAX_STEPS
-    assert any(e["type"] == "notice" for e in evs)
+    assert evs[-1]["type"] == "error" and evs[-1]["retry"] is True and "boom" not in evs[-1]["message"]
+
+
+def test_continue_is_refused_while_a_command_waits_for_2fa(logged, use):
+    use([sh("rm -rf pasta"), "x"])
+    cid = new_conv(logged)
+    events(say(logged, cid))
+    r = logged.post(f"/api/conversations/{cid}/continue", json={"provider": "fake"})
+    assert r.status_code == 409 and "2FA" in r.json()["detail"]
+
+
+def test_heartbeat_while_provider_thinks(logged, monkeypatch):
+    import asyncio
+
+    import app.agent as agent
+
+    class Slow(ScriptedProvider):
+        async def complete(self, history):
+            await asyncio.sleep(0.05)
+            return "pronto"
+
+    monkeypatch.setattr(agent, "HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr("app.main.all_providers", lambda: {"fake": Slow([])})
+    evs = events(say(logged, new_conv(logged)))
+    assert "ping" in types(evs) and types(evs)[-1] == "done"
+
+
+def test_history_fits_budget_and_keeps_the_original_ask(logged, use):
+    from app.agent import build_history
+    from app.db import Message
+    from app.main import new_session
+
+    cid = new_conv(logged)
+    db = new_session()
+    try:
+        db.add(Message(conversation_id=cid, role="user", content="PEDIDO ORIGINAL"))
+        for i in range(60):
+            db.add(Message(conversation_id=cid, role="assistant", content=f"passo {i}"))
+            db.add(Message(conversation_id=cid, role="tool", content=f"saida {i} " + "z" * 5000))
+        db.commit()
+        hist = build_history(db, cid, budget=30_000)
+    finally:
+        db.close()
+    assert hist[0].content == "PEDIDO ORIGINAL"
+    assert "omitidas" in hist[1].content
+    assert sum(len(t.content) for t in hist) < 31_000
+    assert hist[-1].content.startswith("saida 59")  # o mais recente fica inteiro
+    assert len(hist[-1].content) > 5000
 
 
 def test_tool_messages_are_hidden_from_the_conversation_view(logged, use):

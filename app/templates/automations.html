@@ -100,10 +100,15 @@
     <label>O que fazer<input id="au-title" required minlength="3" maxlength="200" placeholder="Ex.: Checar a saúde dos sites"></label>
     <label>Detalhes (opcional)<textarea id="au-steps" rows="3" maxlength="4000"></textarea></label>
     <div class="two three">
-      <label>Repetir<select id="au-freq"><option value="daily">Todo dia</option><option value="weekly">Toda semana</option><option value="monthly">Todo mês</option></select></label>
+      <label>Repetir<select id="au-freq"><option value="daily">Todo dia</option><option value="weekly">Toda semana</option><option value="monthly">Todo mês</option><option value="event">Quando acontecer…</option></select></label>
       <label id="au-wd-wrap">Dia da semana<select id="au-weekday"></select></label>
       <label id="au-md-wrap">Dia do mês<select id="au-monthday"></select></label>
-      <label>Hora<select id="au-hour"></select></label>
+      <label id="au-hour-wrap">Hora<select id="au-hour"></select></label>
+    </div>
+    <div class="two three" id="au-event-wrap" hidden>
+      <label>Evento<select id="au-event"></select></label>
+      <label>Só para (KPI ou integração, opcional)<input id="au-evfilter" maxlength="100" placeholder="ex.: visitantes, postiz"></label>
+      <label id="au-evmin-wrap">Piora mínima (%)<input id="au-evmin" type="number" min="1" max="100" value="20"></label>
     </div>
     <label class="inline auto-approve"><span class="switch"><input type="checkbox" id="au-auto"><span></span></span><span>Rodar sem pedir aprovação<small class="muted" id="au-auto-note">Desligado: cada vez entra como proposta e espera você aprovar.</small></span></label>
     <div class="row">

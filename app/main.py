@@ -1229,6 +1229,7 @@ def routines_catalog(auth: Auth = Depends(current_auth)):
         "automations": [{"title": t, "agent": a, "skill_template": sk, "frequency": f, "weekday": w, "monthday": m, "hour": h}
                         for t, a, sk, f, w, m, h in routines.AUTOMATION_TEMPLATES],
         "weekdays": routines.WEEKDAYS,
+        "events": [{"key": k, "label": v} for k, v in routines.EVENTS.items()],
     }
 
 
@@ -1362,7 +1363,10 @@ class AutomationIn(BaseModel):
     steps: str | None = Field(default=None, max_length=4000)
     skill_id: int | None = None
     skill_template: str | None = Field(default=None, max_length=48)
-    frequency: str | None = Field(default=None, pattern=r"^(daily|weekly|monthly)$")
+    frequency: str | None = Field(default=None, pattern=r"^(daily|weekly|monthly|event)$")
+    event_type: str | None = Field(default=None, max_length=32)
+    event_filter: str | None = Field(default=None, max_length=100)
+    event_min: int | None = Field(default=None, ge=1, le=100)
     weekday: int | None = Field(default=None, ge=0, le=6)
     monthday: int | None = Field(default=None, ge=1, le=28)
     hour: int | None = Field(default=None, ge=0, le=23)
@@ -1389,9 +1393,14 @@ def _apply_automation(db: DB, project: GrowthProject, a: Automation, body: Autom
         if data["skill_id"] is not None:
             _skill_or_404(db, project, data["skill_id"])
         a.skill_id = data["skill_id"]
-    for k in ("title", "steps", "frequency", "weekday", "monthday", "hour", "auto_approve", "enabled"):
+    if data.get("event_type") is not None and data["event_type"] not in routines.EVENTS:
+        raise HTTPException(422, "evento desconhecido")
+    for k in ("title", "steps", "frequency", "weekday", "monthday", "hour", "auto_approve", "enabled", "event_type",
+              "event_filter", "event_min"):
         if data.get(k) is not None:
             setattr(a, k, data[k].strip() if isinstance(data[k], str) else data[k])
+    if a.frequency == "event" and a.event_type not in routines.EVENTS:
+        raise HTTPException(422, "escolha o evento que dispara a rotina")
     # Criada (ou remarcada) depois da hora de hoje: começa na próxima vez, não dispara na hora.
     now = _now_local()
     if routines.scheduled_today(a, now.date()) and now.hour > a.hour:
@@ -1658,6 +1667,8 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
         c.status, c.note = "failed", f"Falhou ao publicar: {a.error}"[:1000]
     cnt.touch(c)
     db.commit()
+    if c.status == "sent":
+        appr.emit(db, c.project_id, "content.sent", "content", c.id, {"channel": c.channel, "title": c.title[:120], "link": c.link})
     return {**_content_json(db, c), "action": {"id": a.id, "status": a.status, "error": a.error}}
 
 
@@ -1671,6 +1682,7 @@ def mark_content_sent(cid: int, body: ContentSentIn, request: Request,
     c.status, c.sent_at, c.link = "sent", utcnow(), body.link.strip()
     cnt.touch(c)
     db.commit()
+    appr.emit(db, c.project_id, "content.sent", "content", c.id, {"channel": c.channel, "title": c.title[:120], "link": c.link})
     audit(db, auth.user.username, "content_sent", f"#{c.id} {c.channel} {c.link}"[:500], client_ip(request))
     return _content_json(db, c)
 

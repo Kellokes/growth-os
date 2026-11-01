@@ -223,6 +223,9 @@ KPI_SOURCES = {
 }
 
 
+SITE_DOWN_BELOW = 99.0  # uptime (%) abaixo disso na coleta diária vira o evento site.down
+
+
 async def collect_kpis(db: DB, transport: httpx.AsyncBaseTransport | None = None) -> list[str]:
     """Lê as integrações prontas de cada projeto e grava os KPIs do dia, sem gastar token de IA."""
     done = []
@@ -243,6 +246,9 @@ async def collect_kpis(db: DB, transport: httpx.AsyncBaseTransport | None = None
                     try:
                         growth.record_point(db, project.id, kpi, float(value), growth.local_today(), source=f"integração:{kind}")
                         done.append(f"{project.slug}/{kpi}")
+                        if kpi == "uptime" and float(value) < SITE_DOWN_BELOW:
+                            approvals.emit(db, project.id, "site.down", "integration", None,
+                                           {"integration": kind, "site": project.slug, "uptime": float(value)})
                     except KeyError:
                         pass  # o projeto não tem esse KPI
     return done

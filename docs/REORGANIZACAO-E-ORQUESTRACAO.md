@@ -330,7 +330,7 @@ um texto malicioso lido por um agente não consegue publicar nem enviar nada soz
 
 ## 6. Ordem de entrega (um PR por fase)
 
-> Andamento: fases 1 e 2 (PR #24) e 3 (PR #26) mergeadas; 4 (#27) mergeadas. Fase 5 no PR seguinte: Coordenador, missões a partir do chat (bloco ```missao```), dependências, `"esperar": true` nos pedidos, aprovação herdada (risco baixo dentro de missão aprovada), orçamento da missão, tarefa que espera a ação externa e continua com o desfecho, `GOS_RUNNER_WORKERS` (padrão 2, no máximo uma tarefa por agente e projeto). Falta a fase 6 (rotinas por evento).
+> Andamento: fases 1 e 2 (PR #24) e 3 (PR #26) mergeadas; 4 (#27) mergeadas. Fase 5 no PR seguinte: Coordenador, missões a partir do chat (bloco ```missao```), dependências, `"esperar": true` nos pedidos, aprovação herdada (risco baixo dentro de missão aprovada), orçamento da missão, tarefa que espera a ação externa e continua com o desfecho, `GOS_RUNNER_WORKERS` (padrão 2, no máximo uma tarefa por agente e projeto). 5 (#28) mergeada. Fase 6 no PR seguinte: rotina com `frequency = event` (site.down, kpi.updated com piora mínima em %, content.sent, action.failed), filtro opcional por KPI ou integração, execução entra como proposta ou na fila se liberada, nunca empilha. Limite: `content.sent` dispara na hora (o "24h depois" fica no texto da rotina).
 
 1. **Base de dados e Aprovações (backend)**: tabelas `missions`, `approvals`, `actions`, `events`;
    colunas novas; migração dos itens pendentes; API `/api/approvals`. Testes de migração e da fila.

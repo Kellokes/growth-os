@@ -91,7 +91,7 @@
     return `<article class="tile card ${a.enabled ? "" : "off"}" data-auto="${a.id}">
       <header><span class="tile-icon">${icon("repeat")}</span><div class="grow"><h2>${esc(a.title)}</h2><span class="muted">${esc(agentLabel(a.agent))}</span></div>
         <label class="switch" title="Ligada"><input type="checkbox" data-auto-toggle ${a.enabled ? "checked" : ""}><span></span></label></header>
-      <div class="sched"><span class="sched-chip">${icon("calendar")} ${esc(a.schedule)}</span>${a.enabled ? `<span class="muted">próxima: ${esc(fmtNext(a.next_run))}</span>` : '<span class="muted">pausada</span>'}</div>
+      <div class="sched"><span class="sched-chip">${icon("calendar")} ${esc(a.schedule)}</span>${a.enabled ? `<span class="muted">${a.frequency === "event" ? "espera o evento" : "próxima: " + esc(fmtNext(a.next_run))}</span>` : '<span class="muted">pausada</span>'}</div>
       <div class="task-tags">${a.skill ? `<span class="tag">${icon("spark")} ${esc(a.skill)}</span>` : ""}<span class="tag ${a.auto_approve ? "r-medio" : ""}">${a.auto_approve ? "roda sem pedir aprovação" : "pede sua aprovação"}</span>${last}</div>
       <div class="tile-foot"><button class="btn small ghost" type="button" data-auto-del aria-label="Excluir" title="Excluir">${icon("trash")}</button><button class="btn small" type="button" data-auto-edit>${icon("edit")} Editar</button><button class="btn small primary" type="button" data-auto-run>${icon("play")} Rodar agora</button></div>
     </article>`;
@@ -107,6 +107,9 @@
   function syncFreq() {
     const f = $("#au-freq").value;
     $("#au-wd-wrap").hidden = f !== "weekly"; $("#au-md-wrap").hidden = f !== "monthly";
+    const ev = f === "event";
+    $("#au-hour-wrap").hidden = ev; $("#au-event-wrap").hidden = !ev;
+    $("#au-evmin-wrap").hidden = !ev || $("#au-event").value !== "kpi.updated";
   }
   function openAuto(a = null, tpl = null) {
     editingAuto = a;
@@ -127,6 +130,9 @@
     $("#au-monthday").value = String(src.monthday ?? 1);
     $("#au-hour").innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, "0")}:00</option>`).join("");
     $("#au-hour").value = String(src.hour ?? 9);
+    $("#au-event").innerHTML = (catalog.events || []).map((e) => `<option value="${esc(e.key)}">${esc(e.label)}</option>`).join("");
+    $("#au-event").value = src.event_type || "site.down";
+    $("#au-evfilter").value = src.event_filter || ""; $("#au-evmin").value = String(src.event_min || 20);
     $("#au-auto").checked = !!src.auto_approve; syncAutoNote();
     syncFreq();
     $("#auto-dialog").showModal();
@@ -138,6 +144,7 @@
   }
   $("#au-auto").onchange = syncAutoNote;
   $("#au-freq").onchange = syncFreq;
+  $("#au-event").onchange = syncFreq;
   $("#new-auto").onclick = () => openAuto();
   $("#au-cancel").onclick = () => $("#auto-dialog").close();
   $("#auto-form").onsubmit = async (ev) => {
@@ -146,6 +153,7 @@
     const body = { agent: $("#au-agent").value, title: $("#au-title").value, steps: $("#au-steps").value,
       frequency: $("#au-freq").value, weekday: Number($("#au-weekday").value), monthday: Number($("#au-monthday").value),
       hour: Number($("#au-hour").value), auto_approve: $("#au-auto").checked };
+    if (body.frequency === "event") Object.assign(body, { event_type: $("#au-event").value, event_filter: $("#au-evfilter").value.trim(), event_min: Number($("#au-evmin").value) || 20 });
     if (sk.startsWith("tpl:")) body.skill_template = sk.slice(4); else body.skill_id = sk ? Number(sk) : null;
     try {
       if (editingAuto) await api(`/api/gprojects/${project}/automations/${editingAuto.id}`, { method: "PATCH", body: JSON.stringify(body) });

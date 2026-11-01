@@ -218,3 +218,13 @@ def _try(fn, errors):
         fn()
     except Exception as e:  # noqa: BLE001
         errors.append(e)
+
+
+def test_sidebar_menu_has_sections_then_threads_on_every_page(logged):
+    for path in ("/", "/dashboard", "/plan", "/board", "/agents", "/automations", "/projects", "/settings"):
+        html = logged.get(path).text
+        side = html.split('id="sidenav"')[1].split("</aside>")[0]
+        # primeiro as seções do menu, depois a lista de threads, e no rodapé auditoria/tema/sair
+        assert side.index('class="nav"') < side.index('id="conv-list"') < side.index('id="logout"')
+        assert 'href="/settings"' in side and 'href="/automations"' in side
+        assert html.count('id="conv-list"') == 1

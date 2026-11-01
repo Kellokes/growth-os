@@ -39,6 +39,16 @@ class Session(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class LoginChallenge(Base):
+    """Login em duas etapas: senha certa gera um desafio curto que só o código 2FA completa."""
+    __tablename__ = "login_challenges"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

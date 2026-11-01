@@ -7,13 +7,13 @@
   <form class="card login-card" method="post" action="/login" autocomplete="on">
     <div class="orb small" aria-hidden="true"><i></i></div>
     <div class="brand"><span class="logo">◆</span><span class="brand-name">Growth OS</span></div>
+    <ol class="login-steps" aria-label="Etapa 1 de 2"><li class="on">Senha</li><li>Código 2FA</li></ol>
     <h1 class="login-title">Bem-vindo de volta</h1>
     <p class="muted">Acesso restrito ao owner.</p>
-    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-    <label>Usuário<input name="username" autocomplete="username" required autofocus></label>
-    <label>Senha<input name="password" type="password" autocomplete="current-password" required></label>
-    <label>Código 2FA<input name="totp" inputmode="numeric" pattern="[0-9 ]{6,8}" autocomplete="one-time-code" required></label>
-    <button class="btn primary big" type="submit">Entrar {{ ic("arrow") }}</button>
+    {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+    <label>Usuário<input name="username" autocomplete="username" value="{{ username or '' }}" required {% if not username %}autofocus{% endif %}></label>
+    <label>Senha<input name="password" type="password" autocomplete="current-password" required {% if username %}autofocus{% endif %}></label>
+    <button class="btn primary big" type="submit">Continuar {{ ic("arrow") }}</button>
   </form>
 </main>
 {% endblock %}

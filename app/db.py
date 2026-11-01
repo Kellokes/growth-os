@@ -279,6 +279,37 @@ class Automation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+# ---------- central de conteúdo (sempre de um projeto) ----------
+
+class ContentItem(Base):
+    """Peça que vai sair para fora: post de rede social, e-mail de contato/parceria, artigo...
+
+    Nasce de um bloco ```conteudo``` de um agente (ou do owner) e SEMPRE espera a aprovação do owner.
+    Nada aqui é publicado ou enviado sozinho: até as integrações de envio existirem, o owner publica e
+    marca como enviado.
+    """
+    __tablename__ = "content_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    agent_slug: Mapped[str] = mapped_column(String(32), default="")  # vazio = criado pelo owner
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("agent_tasks.id"), nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(24), default="instagram")  # ver app/content.py CHANNELS
+    title: Mapped[str] = mapped_column(String(200), default="")  # assunto do e-mail / título do post
+    body: Mapped[str] = mapped_column(Text, default="")
+    recipient: Mapped[str] = mapped_column(String(300), default="")  # e-mail: para quem; post: público
+    purpose: Mapped[str] = mapped_column(String(60), default="")  # parceria, contato, lançamento...
+    media: Mapped[str] = mapped_column(Text, default="")  # descrição da imagem/vídeo que acompanha
+    # pending (aguardando aprovação) | approved | sent | rejected | failed
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)  # hora local do owner
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    link: Mapped[str] = mapped_column(String(500), default="")  # onde saiu (URL do post), opcional
+    note: Mapped[str] = mapped_column(Text, default="")  # motivo da rejeição / da falha
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 _SessionLocal = None
 
 

@@ -27,6 +27,7 @@ from .db import (
     Task, TaskLink, new_session, utcnow,
 )
 from .providers import ChatTurn, Provider, ProviderError, all_providers
+from . import content
 from . import modelcfg
 from . import routines
 
@@ -577,6 +578,9 @@ nunca na main. Se descobrir números reais de KPIs deste projeto, informe num bl
 ```kpi
 {{"chave_do_kpi": 123}}
 ```
+
+{content.guide()}
+
 Ao terminar, responda sem blocos bash com um resumo curto do resultado e o próximo passo recomendado."""
 
 
@@ -598,7 +602,9 @@ def sync_task(db: DB, task: Task) -> None:
         task.finished_at = utcnow()
         ingest_kpi_blocks(db, task.project_id, last.content, f"agente:{task.agent_slug}")
         db.commit()
-        process_collaboration(db, task, conversation_text(db, task.conversation_id))
+        full = conversation_text(db, task.conversation_id)
+        content.ingest_blocks(db, task, full)
+        process_collaboration(db, task, full)
         reply_to_requester(db, task)
     db.commit()
 

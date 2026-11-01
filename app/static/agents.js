@@ -35,12 +35,20 @@
     fillProject();
     [providers, metrics, agents] = await Promise.all([api("/api/providers"), api(`/api/gprojects/${project}/metrics?days=7`), api(`/api/gprojects/${project}/agents`)]);
     $("#agents").innerHTML = agents.map(card).join("");
+    const notes = await api(`/api/gprojects/${project}/notes?limit=30`);
+    const who = (s) => { const a = agents.find((x) => x.slug === s); return a ? `${a.icon} ${a.name}` : s; };
+    const KIND = { pedido: "pediu a", resposta: "respondeu a", nota: "deixou recado para" };
+    $("#notes").innerHTML = notes.length ? notes.map((n) => `<div class="note ${esc(n.kind)}">
+        <div class="note-head"><b>${esc(who(n.from))}</b> <span class="muted">${esc(KIND[n.kind] || "→")}</span> <b>${n.to ? esc(who(n.to)) : "o time"}</b>
+        <span class="muted note-time">${new Date(n.at + "Z").toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+        <div class="note-text">${esc(n.text)}</div></div>`).join("")
+      : '<div class="muted pad">Ainda sem conversa. Quando um agente pedir algo a outro ou deixar um recado, aparece aqui.</div>';
     const tasks = await api(`/api/tasks?project=${project}&limit=30`);
     const names = Object.fromEntries(agents.map((a) => [a.slug, `${a.icon} ${a.name}`]));
     $("#tasks").innerHTML = tasks.length ? tasks.map((t) => `<div class="task-row">
         <span class="badge t-${t.status}">${esc(STATUS[t.status] || t.status)}</span>
         <span class="muted">${esc(names[t.agent] || t.agent)}</span>
-        <span class="grow">${esc(t.title)}</span>
+        <span class="grow">${t.requested_by ? `<span class="tag handoff">🤝 de ${esc(names[t.requested_by] || t.requested_by)}</span> ` : ""}${esc(t.title)}</span>
         ${t.conversation_id ? `<a href="/?c=${t.conversation_id}">conversa →</a>` : ""}
       </div>`).join("") : '<div class="muted pad">Nenhuma tarefa ainda neste projeto. O primeiro plano sai amanhã cedo, ou gere agora em Plano do dia.</div>';
   }

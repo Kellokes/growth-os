@@ -175,7 +175,29 @@ class Task(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-_engine = None
+
+class TaskLink(Base):
+    """Tarefa pedida por outro agente (handoff). Tabela à parte para não alterar agent_tasks."""
+    __tablename__ = "task_links"
+    task_id: Mapped[int] = mapped_column(ForeignKey("agent_tasks.id"), primary_key=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("agent_tasks.id"), nullable=True, index=True)
+    requested_by: Mapped[str] = mapped_column(String(32))  # slug do agente que pediu
+    depth: Mapped[int] = mapped_column(Integer, default=1)  # 1 = pedido direto de uma tarefa do plano
+
+
+class AgentNote(Base):
+    """Recado de um agente para outro (ou para o time) dentro de um projeto."""
+    __tablename__ = "agent_notes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    from_agent: Mapped[str] = mapped_column(String(32))
+    to_agent: Mapped[str] = mapped_column(String(32), default="")  # vazio = time todo
+    kind: Mapped[str] = mapped_column(String(16), default="nota")  # nota | pedido | resposta
+    text: Mapped[str] = mapped_column(Text)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("agent_tasks.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 _SessionLocal = None
 
 

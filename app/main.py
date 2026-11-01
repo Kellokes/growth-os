@@ -16,8 +16,8 @@ from .agent import cmd_json, execute_run, run_agent, tool_message
 from .audit import audit
 from .config import get_settings
 from .db import (
-    Agent, AuditLog, CommandRun, Conversation, GrowthProject, Message, Metric, Plan, ProjectAgent, Task, get_db,
-    init_db, new_session, utcnow,
+    Agent, AgentNote, AuditLog, CommandRun, Conversation, GrowthProject, Message, Metric, Plan, ProjectAgent, Task,
+    TaskLink, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
 from . import growth
@@ -447,14 +447,21 @@ def _project_json(p: GrowthProject) -> dict:
             "domains": p.domains, "compose_project": p.compose_project, "enabled": p.enabled}
 
 
-def _task_json(t: Task, projects: dict[int, GrowthProject] | None = None) -> dict:
+def _task_json(t: Task, projects: dict[int, GrowthProject] | None = None, links: dict[int, TaskLink] | None = None) -> dict:
     proj_ = (projects or {}).get(t.project_id)
+    link = (links or {}).get(t.id)
     return {
+        "requested_by": link.requested_by if link else "", "parent_id": link.parent_id if link else None,
         "id": t.id, "plan_id": t.plan_id, "project": proj_.slug if proj_ else "", "agent": t.agent_slug,
         "title": t.title, "rationale": t.rationale, "steps": t.steps, "risk": t.risk, "kpi": t.kpi_key,
         "status": t.status, "result": t.result, "conversation_id": t.conversation_id,
         "created_at": t.created_at.isoformat(),
     }
+
+
+def _links(db: DB, tasks: list[Task]) -> dict[int, TaskLink]:
+    ids = [t.id for t in tasks]
+    return {lk.task_id: lk for lk in db.query(TaskLink).filter(TaskLink.task_id.in_(ids)).all()} if ids else {}
 
 
 def _projects_by_id(db: DB) -> dict[int, GrowthProject]:
@@ -579,19 +586,21 @@ def plan_today(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     plan = db.query(Plan).filter(Plan.day == today).one_or_none()
     projects = _projects_by_id(db)
     tasks = db.query(Task).filter(Task.plan_id == plan.id).order_by(Task.project_id, Task.id).all() if plan else []
-    # Tarefas avulsas ou de outros dias que ainda pedem atenção (fila, rodando, 2FA pendente).
+    # Fora do plano de hoje mas pedindo atenção: pedidos entre agentes esperando aprovação, fila, rodando, 2FA.
     open_tasks = (
         db.query(Task).filter(
-            Task.status.in_(("waiting", "running", "approved")),
             or_(Task.plan_id.is_(None), Task.plan_id != (plan.id if plan else -1)),
-        ).order_by(Task.id.desc()).limit(30).all()
+            or_(Task.status.in_(("waiting", "running", "approved")),
+                (Task.status == "proposed") & Task.plan_id.is_(None)),
+        ).order_by(Task.id.desc()).limit(40).all()
     )
+    links = _links(db, tasks + open_tasks)
     s = get_settings()
     return {
         "day": today.isoformat(),
         "plan": {"id": plan.id, "status": plan.status, "error": plan.error} if plan else None,
-        "tasks": [_task_json(t, projects) for t in tasks],
-        "carryover": [_task_json(t, projects) for t in open_tasks],
+        "tasks": [_task_json(t, projects, links) for t in tasks],
+        "carryover": [_task_json(t, projects, links) for t in open_tasks],
         "schedule": {"hour": s.plan_hour, "timezone": s.timezone, "enabled": s.scheduler_enabled,
                      "telegram": bool(s.telegram_bot_token and s.telegram_chat_id)},
     }
@@ -630,7 +639,11 @@ def decide_tasks(body: DecideIn, request: Request, auth: Auth = Depends(current_
               f"#{t.id} {projects[t.project_id].slug}/{t.agent_slug}: {t.title}", client_ip(request))
         if body.approve:
             growth.runner.submit(t.id)
-    return {"changed": [_task_json(t, projects) for t in changed]}
+        elif (link := db.get(TaskLink, t.id)) is not None:
+            db.add(AgentNote(project_id=t.project_id, from_agent=t.agent_slug, to_agent=link.requested_by,
+                             kind="resposta", text=f"o owner rejeitou o pedido \"{t.title}\"", task_id=t.id))
+            db.commit()
+    return {"changed": [_task_json(t, projects, _links(db, changed)) for t in changed]}
 
 
 class TaskIn(BaseModel):
@@ -662,7 +675,20 @@ def list_tasks(project: str | None = None, limit: int = 50, auth: Auth = Depends
         q = q.filter(Task.project_id == _project_or_404(db, project).id)
     rows = q.order_by(Task.id.desc()).limit(max(1, min(limit, 200))).all()
     projects = _projects_by_id(db)
-    return [_task_json(t, projects) for t in rows]
+    links = _links(db, rows)
+    return [_task_json(t, projects, links) for t in rows]
+
+
+@app.get("/api/gprojects/{slug}/notes")
+def project_notes(slug: str, limit: int = 40, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Conversa do time: pedidos, recados e respostas entre os agentes do projeto."""
+    p = _project_or_404(db, slug)
+    rows = (
+        db.query(AgentNote).filter(AgentNote.project_id == p.id).order_by(AgentNote.id.desc())
+        .limit(max(1, min(limit, 200))).all()
+    )
+    return [{"id": n.id, "from": n.from_agent, "to": n.to_agent, "kind": n.kind, "text": n.text,
+             "task_id": n.task_id, "at": n.created_at.isoformat()} for n in rows]
 
 
 @app.get("/api/gprojects/{slug}/metrics")

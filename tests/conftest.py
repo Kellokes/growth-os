@@ -20,6 +20,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("GOS_DATABASE_URL", url)
     monkeypatch.setenv("GOS_WORKSPACE_DIR", str(tmp_path / "ws"))
     monkeypatch.setenv("GOS_COOKIE_SECURE", "false")
+    monkeypatch.setenv("GOS_SCHEDULER_ENABLED", "false")
     get_settings.cache_clear()
     engine = dbmod.init_db()
     dbmod.Base.metadata.drop_all(engine)

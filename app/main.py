@@ -1,4 +1,6 @@
+import asyncio
 import json
+from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,13 +9,17 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session as DB
 
 from .agent import cmd_json, execute_run, run_agent, tool_message
 from .audit import audit
 from .config import get_settings
-from .db import AuditLog, CommandRun, Conversation, Message, get_db, init_db, new_session
+from .db import (
+    Agent, AuditLog, CommandRun, Conversation, Message, Metric, Plan, Task, get_db, init_db, new_session, utcnow,
+)
 from .executor import classify
+from . import growth
 from . import projects as proj
 from .providers import all_providers
 from .security import (
@@ -64,7 +70,15 @@ async def lifespan(_app: FastAPI):
     _protect_process_memory()
     _write_github_token()
     init_db()
+    db = new_session()
+    try:
+        growth.seed_defaults(db)
+    finally:
+        db.close()
+    scheduler = asyncio.create_task(growth.scheduler_loop()) if get_settings().scheduler_enabled else None
     yield
+    if scheduler:
+        scheduler.cancel()
 
 
 app = FastAPI(title="Growth OS", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -152,6 +166,21 @@ def home(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "chat.html", "chat")
 
 
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "dashboard.html", "dashboard")
+
+
+@app.get("/plan", response_class=HTMLResponse)
+def plan_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "plan.html", "plan")
+
+
+@app.get("/agents", response_class=HTMLResponse)
+def agents_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "agents.html", "agents")
+
+
 @app.get("/projects", response_class=HTMLResponse)
 def projects_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "projects.html", "projects")
@@ -225,6 +254,7 @@ def _stream(cid: int, provider, actor: str, ip: str) -> StreamingResponse:
         try:
             async for event in run_agent(db, cid, provider, actor, ip):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
+            growth.sync_task_for_conversation(db, cid)
         except Exception as e:  # noqa: BLE001 - o stream já começou; reporta como evento
             yield json.dumps({"type": "error", "message": f"erro interno: {type(e).__name__}"}) + "\n"
         finally:
@@ -399,4 +429,180 @@ async def container_restart(
         audit(db, auth.user.username, "restart_failed", f"{name}: {e}", ip)
         raise HTTPException(502, str(e)) from e
     audit(db, auth.user.username, "container_restart", name, ip)
+    return {"ok": True}
+
+
+# ---------- etapa 3: agentes, plano do dia e KPIs ----------
+
+def _agent_json(a: Agent) -> dict:
+    return {"slug": a.slug, "name": a.name, "area": a.area, "icon": a.icon, "mission": a.mission,
+            "enabled": a.enabled, "provider": a.provider or ""}
+
+
+def _task_json(t: Task) -> dict:
+    return {
+        "id": t.id, "plan_id": t.plan_id, "agent": t.agent_slug, "title": t.title, "rationale": t.rationale,
+        "steps": t.steps, "risk": t.risk, "kpi": t.kpi_key, "status": t.status, "result": t.result,
+        "conversation_id": t.conversation_id, "created_at": t.created_at.isoformat(),
+    }
+
+
+@app.get("/api/agents")
+def list_agents(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    agents = db.query(Agent).order_by(Agent.id).all()
+    stats: dict[str, dict] = {}
+    for slug, status in db.query(Task.agent_slug, Task.status).all():
+        s = stats.setdefault(slug, {})
+        s[status] = s.get(status, 0) + 1
+    return [{**_agent_json(a), "stats": stats.get(a.slug, {})} for a in agents]
+
+
+class AgentIn(BaseModel):
+    enabled: bool | None = None
+    mission: str | None = Field(default=None, min_length=10, max_length=4000)
+    provider: str | None = Field(default=None, max_length=32)
+
+
+@app.patch("/api/agents/{slug}")
+def update_agent(slug: str, body: AgentIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    a = db.query(Agent).filter(Agent.slug == slug).one_or_none()
+    if a is None:
+        raise HTTPException(404, "not_found")
+    if body.provider is not None and body.provider and body.provider not in all_providers():
+        raise HTTPException(400, "provider_desconhecido")
+    if body.enabled is not None:
+        a.enabled = body.enabled
+    if body.mission is not None:
+        a.mission = body.mission.strip()
+    if body.provider is not None:
+        a.provider = body.provider or None
+    db.commit()
+    audit(db, auth.user.username, "agent_update", f"{slug}: {body.model_dump(exclude_none=True)}"[:500], client_ip(request))
+    return _agent_json(a)
+
+
+@app.get("/api/plans/today")
+def plan_today(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    today = growth.local_today()
+    plan = db.query(Plan).filter(Plan.day == today).one_or_none()
+    tasks = db.query(Task).filter(Task.plan_id == plan.id).order_by(Task.id).all() if plan else []
+    # Tarefas de dias anteriores que ainda pedem atenção (2FA pendente, rodando, falhas recentes).
+    open_tasks = (
+        db.query(Task).filter(
+            Task.status.in_(("waiting", "running", "approved")),
+            or_(Task.plan_id.is_(None), Task.plan_id != (plan.id if plan else -1)),
+        )
+        .order_by(Task.id.desc()).limit(20).all()
+    )
+    s = get_settings()
+    return {
+        "day": today.isoformat(),
+        "plan": {"id": plan.id, "status": plan.status, "error": plan.error} if plan else None,
+        "tasks": [_task_json(t) for t in tasks],
+        "carryover": [_task_json(t) for t in open_tasks],
+        "schedule": {"hour": s.plan_hour, "timezone": s.timezone, "enabled": s.scheduler_enabled,
+                     "telegram": bool(s.telegram_bot_token and s.telegram_chat_id)},
+    }
+
+
+@app.post("/api/plans/generate")
+async def plan_generate(request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    plan = db.query(Plan).filter(Plan.day == growth.local_today()).one_or_none()
+    if plan is not None and plan.status == "ready":
+        # Refazer o plano descarta só as tarefas ainda não decididas.
+        db.query(Task).filter(Task.plan_id == plan.id, Task.status == "proposed").delete()
+        plan.status = "failed"
+        db.commit()
+    audit(db, auth.user.username, "plan_generate_manual", "", client_ip(request))
+    asyncio.create_task(growth.generate_plan(actor=auth.user.username))
+    return {"ok": True}
+
+
+class DecideIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=100)
+    approve: bool
+
+
+@app.post("/api/tasks/decide")
+def decide_tasks(body: DecideIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Aprovar é o portão: só tarefa aprovada pelo owner roda. Comandos perigosos ainda pedem 2FA."""
+    changed = []
+    for t in db.query(Task).filter(Task.id.in_(body.ids), Task.status == "proposed").all():
+        t.status = "approved" if body.approve else "rejected"
+        t.decided_at = utcnow()
+        changed.append(t)
+    db.commit()
+    for t in changed:
+        audit(db, auth.user.username, "task_approved" if body.approve else "task_rejected",
+              f"#{t.id} {t.agent_slug}: {t.title}", client_ip(request))
+        if body.approve:
+            growth.runner.submit(t.id)
+    return {"changed": [_task_json(t) for t in changed]}
+
+
+class TaskIn(BaseModel):
+    agent: str
+    title: str = Field(min_length=3, max_length=200)
+    steps: str = Field(default="", max_length=4000)
+
+
+@app.post("/api/tasks")
+def create_task(body: TaskIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Tarefa avulsa criada pelo owner para um agente (já nasce aprovada e entra na fila)."""
+    if db.query(Agent).filter(Agent.slug == body.agent).count() == 0:
+        raise HTTPException(404, "agente não existe")
+    t = Task(agent_slug=body.agent, title=body.title.strip(), steps=body.steps.strip(), status="approved",
+             rationale="Pedido direto do owner.", decided_at=utcnow())
+    db.add(t)
+    db.commit()
+    audit(db, auth.user.username, "task_created", f"#{t.id} {t.agent_slug}: {t.title}", client_ip(request))
+    growth.runner.submit(t.id)
+    return _task_json(t)
+
+
+@app.get("/api/tasks")
+def list_tasks(limit: int = 50, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    rows = db.query(Task).order_by(Task.id.desc()).limit(max(1, min(limit, 200))).all()
+    return [_task_json(t) for t in rows]
+
+
+@app.get("/api/metrics")
+def metrics(days: int = 90, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    return growth.metric_series(db, max(7, min(days, 730)))
+
+
+class PointIn(BaseModel):
+    value: float
+    day: date | None = None
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/metrics/{key}/points")
+def add_point(key: str, body: PointIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    try:
+        p = growth.record_point(db, key, body.value, body.day, source="manual", note=body.note)
+    except KeyError as e:
+        raise HTTPException(404, "KPI não existe") from e
+    audit(db, auth.user.username, "kpi_point", f"{key}={body.value} ({p.day})", client_ip(request))
+    return {"key": key, "day": p.day.isoformat(), "value": p.value}
+
+
+class MetricIn(BaseModel):
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{1,47}$")
+    name: str = Field(min_length=2, max_length=80)
+    area: str = Field(default="growth", max_length=32)
+    unit: str = Field(default="number", pattern=r"^(number|currency|percent)$")
+    direction: str = Field(default="up", pattern=r"^(up|down)$")
+    target: float | None = None
+
+
+@app.post("/api/metrics")
+def upsert_metric(body: MetricIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    m = db.query(Metric).filter(Metric.key == body.key).one_or_none()
+    if m is None:
+        m = Metric(key=body.key)
+        db.add(m)
+    m.name, m.area, m.unit, m.direction, m.target = body.name, body.area, body.unit, body.direction, body.target
+    db.commit()
+    audit(db, auth.user.username, "kpi_upsert", body.key, client_ip(request))
     return {"ok": True}

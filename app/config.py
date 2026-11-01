@@ -33,7 +33,17 @@ class Settings(BaseSettings):
     caddy_vars: str = ""
     # Token fine-grained do GitHub só com os repos dos projetos (Contents + Pull requests).
     github_token: str = ""
-    github_token_file: Path = Path("/tmp/gos-secrets/github_token")  # ex.: "DOMAIN=exemplo.com" para resolver {$DOMAIN} do Caddyfile
+    github_token_file: Path = Path("/tmp/gos-secrets/github_token")
+
+    # Etapa 3: plano da manhã dos agentes.
+    scheduler_enabled: bool = True
+    timezone: str = "America/Sao_Paulo"
+    plan_hour: int = 7  # hora local em que o plano do dia é gerado
+    agent_provider: str = "claude"  # provider padrão dos agentes (cai no primeiro disponível)
+    agent_concurrency: int = 2
+    public_url: str = ""  # ex.: https://os.exemplo.com, para o link no aviso
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""  # ex.: "DOMAIN=exemplo.com" para resolver {$DOMAIN} do Caddyfile
 
 
 @lru_cache

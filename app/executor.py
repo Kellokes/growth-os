@@ -21,6 +21,7 @@ SAFE_COMMANDS = {
     "whoami", "date", "uname", "uptime", "free", "echo", "stat", "file", "which",
     "ps", "sort", "uniq", "cut", "diff", "basename", "dirname",
     "gos-docker",  # ps/logs pelo gateway; restart cai em approval antes de chegar aqui
+    "gos-int",  # integrações do projeto: leitura roda; ação externa só vira pedido em Aprovações
 }
 SAFE_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch", "remote"}
 
@@ -112,13 +113,13 @@ class RunResult:
     output: str
 
 
-def run_command(command: str, workdir: Path, timeout: int, max_bytes: int) -> RunResult:
+def run_command(command: str, workdir: Path, timeout: int, max_bytes: int, extra_env: dict[str, str] | None = None) -> RunResult:
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.run(
             ["bash", "-lc", command],
             cwd=workdir,
-            env=_clean_env(),
+            env={**_clean_env(), **(extra_env or {})},
             capture_output=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,

@@ -20,7 +20,7 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [tool.setuptools]
-packages = ["app", "app.providers"]
+packages = ["app", "app.providers", "app.connectors"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

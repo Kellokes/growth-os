@@ -27,6 +27,7 @@ from .db import (
     Task, TaskLink, new_session, utcnow,
 )
 from .providers import ChatTurn, Provider, ProviderError, all_providers
+from . import modelcfg
 from . import routines
 
 log = logging.getLogger("growth")
@@ -249,12 +250,19 @@ def ingest_kpi_blocks(db: DB, project_id: int, text: str, source: str) -> list[s
 
 # ---------- providers ----------
 
-def pick_provider(pa: ProjectAgent | None = None) -> Provider:
+def pick_provider(pa: ProjectAgent | None = None, activity: str = "agents_run", db: DB | None = None) -> Provider:
+    """Escolha do agente > configuração de modelos da atividade > padrão > GOS_AGENT_PROVIDER > qualquer um."""
     providers = all_providers()
-    for pid in [pa.provider if pa else None, get_settings().agent_provider]:
-        p = providers.get(pid or "")
+    choices = []
+    if pa is not None and pa.provider:
+        choices.append(modelcfg.Choice(pa.provider, pa.model or "", pa.reasoning or ""))
+    if db is not None:
+        choices.append(modelcfg.resolve(db, activity))
+    choices.append(modelcfg.Choice(get_settings().agent_provider))
+    for c in choices:
+        p = providers.get(c.provider or "")
         if p and p.available()[0]:
-            return p
+            return p.configured(c.model, c.reasoning)
     for p in providers.values():
         if p.available()[0]:
             return p
@@ -360,7 +368,7 @@ def parse_tasks(text: str) -> list[dict]:
 
 
 async def plan_for_agent(db: DB, project: GrowthProject, agent: Agent, pa: ProjectAgent, plan: Plan, today: date) -> int:
-    provider = pick_provider(pa)
+    provider = pick_provider(pa, "agents_plan", db)
     reply = await provider.complete([ChatTurn("user", planning_prompt(db, project, agent, pa, today))])
     tasks = parse_tasks(reply)
     for t in tasks:
@@ -615,7 +623,7 @@ async def execute_task(task_id: int) -> None:
             ProjectAgent.project_id == project.id, ProjectAgent.agent_slug == agent.slug
         ).one_or_none()
         try:
-            provider = pick_provider(pa)
+            provider = pick_provider(pa, "agents_run", db)
         except ProviderError as e:
             task.status, task.result = "failed", str(e)
             db.commit()

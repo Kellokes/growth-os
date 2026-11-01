@@ -26,9 +26,7 @@
           <h1 id="conv-title">Nova thread</h1>
           <button class="icon-btn" id="conv-edit" type="button" aria-label="Organizar thread" title="Renomear, categoria ou excluir" hidden>{{ ic("more") }}</button>
         </div>
-        <label class="provider"><span>Provider</span>
-          <select id="provider"></select>
-        </label>
+        <button class="model-pill" id="model-btn" type="button" aria-haspopup="dialog" title="Provider, modelo e raciocínio desta thread">{{ ic("sliders") }}<span id="model-label">Carregando…</span></button>
         <button class="icon-btn conv-new-m" id="new-conv-m" type="button" aria-label="Nova thread">{{ ic("plus") }}</button>
       </header>
 
@@ -95,7 +93,22 @@
   </form>
 </dialog>
 
+<dialog id="model-dialog" class="card">
+  <form method="dialog" id="model-form">
+    <h3>Modelo desta thread</h3>
+    <p class="muted small-print">Vale para as próximas mensagens desta thread, e ela lembra a escolha. O ponto de partida das threads novas fica em <a href="/settings">Modelos</a>.</p>
+    <div id="model-fields"></div>
+    <div class="row">
+      <button class="btn ghost" type="button" id="model-reset">Usar o padrão</button>
+      <span class="grow"></span>
+      <button class="btn ghost" type="button" id="model-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Aplicar</button>
+    </div>
+  </form>
+</dialog>
+
 {% include "_audit.html" %}
 
+<script src="/static/modelpick.js"></script>
 <script src="/static/app.js"></script>
 {% endblock %}

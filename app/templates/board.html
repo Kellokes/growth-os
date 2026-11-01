@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Kanban · Growth OS{% endblock %}
+{% block body %}
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
+  <main class="main">
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Kanban</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1 id="page-title">Kanban</h1><p class="lede muted">Em que etapa está cada atividade dos agentes deste projeto: da proposta até concluída. Arraste uma proposta para “Na fila” para aprovar.</p></div>
+        <div class="actions">
+          <div class="seg" id="period" role="group" aria-label="Período das concluídas">
+            <button type="button" data-days="7">7 dias</button><button type="button" data-days="14" class="on">14 dias</button><button type="button" data-days="30">30 dias</button>
+          </div>
+          <a class="btn" href="/plan">Plano do dia {{ ic("arrow") }}</a>
+        </div>
+      </div>
+    </header>
+    {% include "_project_switch.html" %}
+    <section class="page">
+      <div class="board-filters" id="agent-filter"></div>
+      <div class="board" id="board" aria-live="polite"><div class="muted pad">Carregando…</div></div>
+    </section>
+  </main>
+</div>
+
+<dialog id="card-dialog" class="card">
+  <div class="dialog-head"><h3 id="cd-title"></h3><button class="icon-btn" type="button" id="cd-close" aria-label="Fechar">{{ ic("close") }}</button></div>
+  <div id="cd-body" class="cd-body"></div>
+</dialog>
+
+{% include "_audit.html" %}
+<script src="/static/board.js"></script>
+{% endblock %}

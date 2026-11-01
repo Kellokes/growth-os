@@ -27,6 +27,7 @@ from .db import (
     Task, TaskLink, new_session, utcnow,
 )
 from .providers import ChatTurn, Provider, ProviderError, all_providers
+from . import routines
 
 log = logging.getLogger("growth")
 
@@ -308,6 +309,7 @@ Seu time neste projeto:
 Recados e pedidos recentes para você (leve em conta ao planejar):
 {notes_for(db, project.id, agent.slug)}
 
+{_toolbox_section(db, project, agent.slug)}
 Proponha de 1 a {MAX_TASKS_PER_AGENT} tarefas para HOJE, concretas e de alto impacto na sua área, só para este projeto.
 Cada tarefa precisa ser executável por você com o que o Growth OS oferece (shell no /workspace, gos-docker,
 git e gos-pr no repositório do projeto, internet), ou preparar algo para o owner decidir.
@@ -316,6 +318,11 @@ Não repita tarefas já concluídas. Risco "alto" é para o que mexe em produç�
 
 Responda SOMENTE com JSON válido, sem texto antes ou depois:
 {{"tarefas": [{{"titulo": "...", "porque": "impacto esperado e KPI", "passos": "passo 1; passo 2; ...", "risco": "baixo|medio|alto", "kpi": "chave do KPI ou vazio"}}]}}"""
+
+
+def _toolbox_section(db: DB, project: GrowthProject, slug: str) -> str:
+    box = routines.toolbox(db, project, slug, full=False)
+    return box + "\n" if box else ""
 
 
 def parse_tasks(text: str) -> list[dict]:
@@ -541,7 +548,8 @@ def conversation_text(db: DB, cid: int) -> str:
 
 # ---------- execução das tarefas aprovadas ----------
 
-def task_brief(project: GrowthProject, agent: Agent, pa: ProjectAgent | None, task: Task, team: str = "") -> str:
+def task_brief(project: GrowthProject, agent: Agent, pa: ProjectAgent | None, task: Task, team: str = "",
+               tools: str = "") -> str:
     return f"""Você está agindo como o agente **{agent.name}** ({agent.area}) do projeto **{project.name}**.
 Missão: {mission(agent, pa)}
 
@@ -551,6 +559,8 @@ O owner APROVOU esta tarefa do plano:
 Título: {task.title}
 Por quê: {task.rationale}
 Passos sugeridos: {task.steps}
+
+{tools}
 
 {team}
 
@@ -618,7 +628,8 @@ async def execute_task(task_id: int) -> None:
         db.commit()
         task.conversation_id, task.status = conv.id, "running"
         guide = collaboration_guide(db, project, agent.slug)
-        db.add(Message(conversation_id=conv.id, role="user", content=task_brief(project, agent, pa, task, guide)))
+        tools = routines.toolbox(db, project, agent.slug, task)
+        db.add(Message(conversation_id=conv.id, role="user", content=task_brief(project, agent, pa, task, guide, tools)))
         db.commit()
         error = ""
         async for ev in run_agent(db, conv.id, provider, f"agente:{agent.slug}", "agendador"):
@@ -639,19 +650,40 @@ async def execute_task(task_id: int) -> None:
 
 
 class TaskRunner:
-    """Fila única: uma tarefa por vez, para não sobrecarregar o VPS nem os limites dos providers."""
+    """Fila única: uma tarefa por vez, para não sobrecarregar o VPS nem os limites dos providers.
+
+    As rotas síncronas do FastAPI rodam numa thread do pool, sem event loop. Por isso o runner guarda o
+    loop do app (bind, no startup) e, fora dele, agenda a entrada na fila com call_soon_threadsafe.
+    """
 
     def __init__(self):
         self.queue: asyncio.Queue[int] = asyncio.Queue()
         self.worker: asyncio.Task | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def bind(self, loop: asyncio.AbstractEventLoop) -> None:
+        if loop is not self.loop:  # loop novo (startup): fila e worker nascem nele
+            self.loop, self.queue, self.worker = loop, asyncio.Queue(), None
 
     def start(self) -> None:
         if self.worker is None or self.worker.done():
             self.worker = asyncio.create_task(self._loop())
 
-    def submit(self, task_id: int) -> None:
+    def _enqueue(self, task_id: int) -> None:
         self.queue.put_nowait(task_id)
         self.start()
+
+    def submit(self, task_id: int) -> None:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and (self.loop is None or running is self.loop):
+            self._enqueue(task_id)
+        elif self.loop is not None:
+            self.loop.call_soon_threadsafe(self._enqueue, task_id)
+        else:
+            raise RuntimeError("fila de tarefas ainda não iniciou")
 
     async def _loop(self):
         while True:
@@ -663,6 +695,15 @@ class TaskRunner:
 
 
 runner = TaskRunner()
+
+
+def requeue_approved(db: DB, hours: int = 48) -> list[int]:
+    """No startup: tarefas aprovadas recentemente que ficaram sem rodar (restart, erro) voltam para a fila."""
+    since = utcnow() - timedelta(hours=hours)
+    ids = [t.id for t in db.query(Task).filter(Task.status == "approved", Task.decided_at >= since).order_by(Task.id)]
+    for tid in ids:
+        runner.submit(tid)
+    return ids
 
 
 # ---------- agendador e avisos ----------
@@ -684,7 +725,32 @@ async def scheduler_loop() -> None:
                     await generate_plan(now.date())
         except Exception:  # noqa: BLE001 - o agendador nunca pode morrer
             log.exception("agendador")
+        try:
+            await run_automations(datetime.now(tz))
+        except Exception:  # noqa: BLE001
+            log.exception("automações")
         await asyncio.sleep(60)
+
+
+async def run_automations(now: datetime) -> list[int]:
+    """Atividades rotineiras que chegaram na hora viram tarefas (propostas, ou já na fila se o owner liberou)."""
+    db = new_session()
+    try:
+        created = routines.run_due(db, now)
+        waiting = []
+        for t in created:
+            if t.status == "approved":
+                runner.submit(t.id)
+            else:
+                waiting.append(t)
+        if waiting:
+            names = {p.id: p.name for p in db.query(GrowthProject).all()}
+            lines = "\n".join(f"• {names.get(t.project_id, '?')}: {t.title}" for t in waiting)
+            await notify(f"🔁 Atividades rotineiras esperando sua aprovação:\n{lines}"
+                         + (f"\n{get_settings().public_url.rstrip('/')}/board" if get_settings().public_url else ""))
+        return [t.id for t in created]
+    finally:
+        db.close()
 
 
 async def notify(text: str) -> bool:

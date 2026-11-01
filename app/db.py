@@ -187,6 +187,8 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Tarefa criada por uma automação (atividade rotineira); vazio = plano, pedido ou avulsa.
+    automation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
 
 
@@ -212,6 +214,54 @@ class AgentNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
+# ---------- habilidades, integrações e automações (sempre de um projeto) ----------
+
+class Skill(Base):
+    """Playbook reutilizável: instruções que os agentes escolhidos recebem quando planejam e executam."""
+    __tablename__ = "skills"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(300), default="")
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    agents: Mapped[str] = mapped_column(String(400), default="")  # slugs separados por vírgula; vazio = time todo
+    template: Mapped[str] = mapped_column(String(48), default="")  # chave do modelo da biblioteca, se veio de lá
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Integration(Base):
+    """Ferramenta externa ligada a um projeto. Só guarda configuração NÃO secreta; a chave fica no .env do VPS."""
+    __tablename__ = "integrations"
+    __table_args__ = (UniqueConstraint("project_id", "kind", name="uq_project_integration"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))  # chave do catálogo (umami, meta_graph...)
+    config: Mapped[str] = mapped_column(Text, default="{}")  # JSON com os campos públicos
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Automation(Base):
+    """Atividade rotineira: vira uma tarefa do agente no dia e hora marcados."""
+    __tablename__ = "automations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    agent_slug: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(200))
+    steps: Mapped[str] = mapped_column(Text, default="")
+    skill_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    frequency: Mapped[str] = mapped_column(String(8), default="daily")  # daily | weekly | monthly
+    weekday: Mapped[int] = mapped_column(Integer, default=0)  # 0 = segunda (weekly)
+    monthday: Mapped[int] = mapped_column(Integer, default=1)  # 1..28 (monthly)
+    hour: Mapped[int] = mapped_column(Integer, default=9)  # hora local do owner
+    # False (padrão): cada execução entra como proposta e espera o owner aprovar.
+    auto_approve: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 _SessionLocal = None
 
 
@@ -220,6 +270,9 @@ _NEW_COLUMNS = {
     "conversations": {
         "category": "VARCHAR(40) NOT NULL DEFAULT ''",
         "deleted_at": "TIMESTAMP NULL",
+    },
+    "agent_tasks": {
+        "automation_id": "INTEGER NULL",
     },
 }
 

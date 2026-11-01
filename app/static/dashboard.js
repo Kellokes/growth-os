@@ -155,16 +155,16 @@
       const t = plan.value.tasks.filter((x) => x.project === project);
       const c = (s) => t.filter((x) => x.status === s).length;
       const st = plan.value.plan?.status;
-      items.push(["Plano de hoje", st === "ready" ? `${c("proposed")} para decidir` : st === "generating" ? "gerando…" : "não gerado", "/plan", c("proposed") ? "warn" : "ok"]);
-      items.push(["Tarefas concluídas hoje", String(c("done")), "/plan", "ok"]);
+      items.push(["Plano de hoje", st === "ready" ? `${c("proposed")} para decidir` : st === "generating" ? "gerando…" : "não gerado", "/approvals", c("proposed") ? "warn" : "ok"]);
+      items.push(["Tarefas concluídas hoje", String(c("done")), "/approvals", "ok"]);
       const waiting = t.concat(plan.value.carryover.filter((x) => x.project === project)).filter((x) => x.status === "waiting").length;
-      items.push(["Esperando seu 2FA", String(waiting), "/plan", waiting ? "warn" : "ok"]);
+      items.push(["Esperando seu 2FA", String(waiting), "/approvals", waiting ? "warn" : "ok"]);
     }
     if (proj.status === "fulfilled") {
       const mine = proj.value.projects.filter((p) => p.name === projectInfo?.compose_project);
       const all = mine.flatMap((p) => p.containers);
       const bad = all.filter((c) => c.state !== "running" || c.health === "unhealthy").length;
-      if (!projectInfo?.compose_project) items.push(["Containers", "não ligado ao VPS", "/agents", "warn"]);
+      if (!projectInfo?.compose_project) items.push(["Containers", "não ligado ao VPS", "/automations#agentes", "warn"]);
       else if (proj.value.errors.length && !all.length) items.push(["Containers", "gateway indisponível", "/projects", "down"]);
       else items.push(["Containers", bad ? `${bad} com problema` : `${all.length} no ar`, "/projects", bad ? "down" : "ok"]);
     }

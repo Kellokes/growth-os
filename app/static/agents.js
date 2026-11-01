@@ -1,8 +1,8 @@
 (() => {
-  const { $, esc, api, initProjects } = window.GOS;
+  const { $, esc, api } = window.GOS;
   const M = window.GOSModels;
   const pickers = {};
-  let providers = []; let metrics = []; let agents = []; let project = null; let info = null; let switcher = null;
+  let providers = []; let metrics = []; let agents = []; let project = null; let info = null; let getSwitcher = () => null;
   const STATUS = { proposed: "aguardando", approved: "na fila", rejected: "rejeitada", running: "executando", waiting: "esperando 2FA", done: "concluída", failed: "falhou" };
 
   function card(a) {
@@ -58,7 +58,7 @@
         <span class="muted">${esc(names[t.agent] || t.agent)}</span>
         <span class="grow">${t.requested_by ? `<span class="tag handoff">🤝 de ${esc(names[t.requested_by] || t.requested_by)}</span> ` : ""}${esc(t.title)}</span>
         ${t.conversation_id ? `<a href="/?c=${t.conversation_id}">thread →</a>` : ""}
-      </div>`).join("") : '<div class="muted pad">Nenhuma tarefa ainda neste projeto. O primeiro plano sai amanhã cedo, ou gere agora em Plano do dia.</div>';
+      </div>`).join("") : '<div class="muted pad">Nenhuma tarefa ainda neste projeto. O primeiro plano sai amanhã cedo, ou gere agora em Aprovações.</div>';
   }
 
   async function patch(slug, body, btn) {
@@ -80,14 +80,14 @@
     ev.preventDefault();
     try {
       await api(`/api/gprojects/${project}`, { method: "PATCH", body: JSON.stringify({ name: $("#pf-name").value, icon: $("#pf-icon").value || "◆", description: $("#pf-desc").value, repo: $("#pf-repo").value, domains: $("#pf-domains").value, enabled: $("#pf-enabled").checked }) });
-      $("#project-card").open = false; await switcher.reload();
+      $("#project-card").open = false; await getSwitcher().reload();
     } catch (e) { alert(e.message); }
   };
   const openNew = () => { $("#np-name").value = ""; $("#np-desc").value = ""; $("#np-dialog").showModal(); };
   $("#new-project").onclick = openNew;
   $("#np-cancel").onclick = () => $("#np-dialog").close();
   $("#np-import").onclick = async () => {
-    try { const r = await api("/api/gprojects/import", { method: "POST" }); alert(r.created.length ? `Importados: ${r.created.join(", ")}` : "Nenhum projeto novo no VPS."); $("#np-dialog").close(); await switcher.reload(); }
+    try { const r = await api("/api/gprojects/import", { method: "POST" }); alert(r.created.length ? `Importados: ${r.created.join(", ")}` : "Nenhum projeto novo no VPS."); $("#np-dialog").close(); await getSwitcher().reload(); }
     catch (e) { alert(e.message); }
   };
   $("#np-form").onsubmit = async (ev) => {
@@ -95,16 +95,16 @@
     try {
       const p = await api("/api/gprojects", { method: "POST", body: JSON.stringify({ name: $("#np-name").value, description: $("#np-desc").value }) });
       try { localStorage.setItem("gos.project", p.slug); } catch { /* ok */ }
-      $("#np-dialog").close(); await switcher.reload();
+      $("#np-dialog").close(); await getSwitcher().reload();
     } catch (e) { alert(e.message); }
   };
 
-  (async () => {
-    switcher = await initProjects((slug, p) => {
-      project = slug; info = p;
-      document.querySelector(".page").hidden = !slug;
+  // Aba "Agentes" da tela Automações: quem controla o projeto selecionado é o automations.js.
+  window.GOSAgents = {
+    show(slug, p, switcher) {
+      project = slug; info = p; getSwitcher = () => switcher();
       if (slug) load().catch((e) => { $("#agents").innerHTML = `<div class="alert">${esc(e.message)}</div>`; });
-    });
-    if (location.hash === "#novo") openNew();
-  })();
+    },
+    openNew,
+  };
 })();

@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 {% from "_icons.html" import ic %}
+{% block title %}Aprovações · Growth OS{% endblock %}
 {% block body %}
 <div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
   {% include "_nav.html" %}
   <main class="main">
     <header class="page-head">
-      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Plano do dia</span></div>
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Aprovações</span></div>
       <div class="head-row">
-        <div class="title-stack"><h1 id="page-title">Plano do dia</h1><span class="day-chip" id="plan-day"></span><p class="lede muted" id="sched-note">Em cada projeto, cada agente lê os KPIs daquele projeto e propõe as tarefas do dia. Nada roda sem a sua aprovação.</p></div>
+        <div class="title-stack"><h1 id="page-title">Aprovações</h1><span class="day-chip" id="plan-day"></span><p class="lede muted" id="sched-note">Tudo que espera a sua decisão: o plano do dia, pedidos dos agentes, missões, conteúdo e ações fora do OS. Nada roda nem sai sem o seu ok.</p></div>
         <div class="actions">
           <button class="btn ghost" id="new-task" type="button">{{ ic("plus") }} Tarefa avulsa</button>
           <button class="btn primary" id="generate" type="button">{{ ic("wand") }} <span class="lbl">Gerar plano</span></button>
@@ -16,16 +17,20 @@
     </header>
     {% include "_project_switch.html" %}
     <section class="page">
+      <div class="board-filters" id="kind-filter" role="group" aria-label="Tipo"></div>
       <div class="plan-bar card" id="plan-bar" hidden>
-        <div><strong id="pending-count">0</strong> <span class="muted">tarefas esperando sua decisão</span></div>
+        <div><strong id="pending-count">0</strong> <span class="muted" id="pending-label">itens esperando sua decisão</span></div>
         <div class="actions">
-          <button class="btn small danger" id="reject-all" type="button">Rejeitar restantes</button>
-          <button class="btn small primary" id="approve-all" type="button">Aprovar todas</button>
+          <button class="btn small danger" id="reject-all" type="button">Rejeitar todos</button>
+          <button class="btn small primary" id="approve-all" type="button">Aprovar todos</button>
         </div>
       </div>
       <div id="plan-state"></div>
-      <div id="plan-tasks"></div>
-      <div id="carry"></div>
+      <div id="queue"></div>
+      <details class="card history" id="history-box">
+        <summary>Decisões recentes <span class="muted">(o que você aprovou ou rejeitou)</span></summary>
+        <div id="history" class="task-list"></div>
+      </details>
     </section>
   </main>
 </div>
@@ -48,5 +53,5 @@
 </dialog>
 
 {% include "_audit.html" %}
-<script src="/static/plan.js"></script>
+<script src="/static/approvals.js"></script>
 {% endblock %}

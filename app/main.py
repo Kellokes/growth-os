@@ -18,9 +18,10 @@ from .audit import audit
 from .config import get_settings
 from .db import (
     Agent, AgentNote, AuditLog, Automation, CommandRun, ContentItem, Conversation, GrowthProject, Integration, Message, Metric,
-    Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
+    Mission, Action, Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
+from . import approvals as appr
 from . import content as cnt
 from . import growth
 from . import modelcfg
@@ -228,14 +229,26 @@ def dashboard_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "dashboard.html", "dashboard")
 
 
-@app.get("/plan", response_class=HTMLResponse)
-def plan_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "plan.html", "plan")
+@app.get("/approvals", response_class=HTMLResponse)
+def approvals_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "approvals.html", "approvals")
 
 
-@app.get("/agents", response_class=HTMLResponse)
-def agents_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "agents.html", "agents")
+def _moved(request: Request, db: DB, to: str):
+    """Rotas antigas viram redirecionamento (links salvos e avisos do Telegram continuam funcionando)."""
+    if lookup_session(db, request.cookies.get(SESSION_COOKIE)) is None:
+        return RedirectResponse("/login", status_code=303)
+    return RedirectResponse(to, status_code=303)
+
+
+@app.get("/plan")
+def plan_moved(request: Request, db: DB = Depends(get_db)):
+    return _moved(request, db, "/approvals")
+
+
+@app.get("/agents")
+def agents_moved(request: Request, db: DB = Depends(get_db)):
+    return _moved(request, db, "/automations#agentes")
 
 
 @app.get("/board", response_class=HTMLResponse)
@@ -245,12 +258,12 @@ def board_page(request: Request, db: DB = Depends(get_db)):
 
 @app.get("/automations", response_class=HTMLResponse)
 def automations_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "automations.html", "routines")
+    return _page(request, db, "automations.html", "automations")
 
 
 @app.get("/content", response_class=HTMLResponse)
 def content_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "content.html", "content")
+    return _page(request, db, "content.html", "board")
 
 
 @app.get("/projects", response_class=HTMLResponse)
@@ -677,7 +690,8 @@ def _task_json(t: Task, projects: dict[int, GrowthProject] | None = None, links:
         "created_at": t.created_at.isoformat(),
         "decided_at": t.decided_at.isoformat() if t.decided_at else None,
         "finished_at": t.finished_at.isoformat() if t.finished_at else None,
-        "automation_id": t.automation_id,
+        "automation_id": t.automation_id, "type": "task", "wait_reason": t.wait_reason or "",
+        "mission_id": t.mission_id,
         # de onde veio: plano do dia, automação, pedido de outro agente ou pedido direto do owner
         "origin": "automation" if t.automation_id else "handoff" if link else "plan" if t.plan_id else "owner",
     }
@@ -707,8 +721,8 @@ async def list_gprojects(auth: Auth = Depends(current_auth), db: DB = Depends(ge
             pass
     rows = db.query(GrowthProject).order_by(GrowthProject.id).all()
     pending: dict[int, int] = {}
-    for pid, in db.query(Task.project_id).filter(Task.status == "proposed").all():
-        pending[pid] = pending.get(pid, 0) + 1
+    for card in appr.pending(db):  # tudo que espera decisão: tarefas, missões, conteúdo e ações externas
+        pending[card["project_id"]] = pending.get(card["project_id"], 0) + 1
     return [{**_project_json(p), "pending": pending.get(p.id, 0)} for p in rows]
 
 
@@ -868,20 +882,99 @@ def decide_tasks(body: DecideIn, request: Request, auth: Auth = Depends(current_
     projects = _projects_by_id(db)
     changed = []
     for t in db.query(Task).filter(Task.id.in_(body.ids), Task.status == "proposed").all():
-        t.status = "approved" if body.approve else "rejected"
-        t.decided_at = utcnow()
+        appr.decide_task(db, t, body.approve)
         changed.append(t)
-    db.commit()
     for t in changed:
         audit(db, auth.user.username, "task_approved" if body.approve else "task_rejected",
               f"#{t.id} {projects[t.project_id].slug}/{t.agent_slug}: {t.title}", client_ip(request))
         if body.approve:
             growth.runner.submit(t.id)
-        elif (link := db.get(TaskLink, t.id)) is not None:
-            db.add(AgentNote(project_id=t.project_id, from_agent=t.agent_slug, to_agent=link.requested_by,
-                             kind="resposta", text=f"o owner rejeitou o pedido \"{t.title}\"", task_id=t.id))
-            db.commit()
     return {"changed": [_task_json(t, projects, _links(db, changed)) for t in changed]}
+
+
+# ---------- aprovações: a fila única do owner ----------
+
+class ApprovalItem(BaseModel):
+    kind: str = Field(pattern=r"^(task|mission|content|action)$")
+    ref_id: int
+
+
+class ApprovalDecideIn(BaseModel):
+    items: list[ApprovalItem] = Field(min_length=1, max_length=300)
+    approve: bool
+    note: str = Field(default="", max_length=1000)
+    totp: str = Field(default="", max_length=12)
+
+
+@app.get("/api/approvals")
+def list_approvals(project: str = "all", kind: str = "all", auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Tudo que espera uma decisão: tarefas do plano e pedidos, missões, conteúdo e ações externas."""
+    if kind != "all" and kind not in appr.KINDS:
+        raise HTTPException(422, "tipo inválido")
+    pid = _scope(db, project)
+    projects = _projects_by_id(db)
+    cards = appr.pending(db, pid, None if kind == "all" else kind)
+    return {"items": [appr.card_json(c, projects) for c in cards], "counts": appr.counts(db, pid)}
+
+
+@app.get("/api/approvals/history")
+def approvals_history(project: str = "all", limit: int = 50, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    projects = _projects_by_id(db)
+    return [{"id": a.id, "kind": a.kind, "ref_id": a.ref_id, "title": a.title, "requested_by": a.requested_by,
+             "risk": a.risk, "status": a.status, "via": a.decided_via, "note": a.note,
+             "project": projects[a.project_id].slug if a.project_id in projects else "",
+             "at": a.decided_at.isoformat()} for a in appr.history(db, _scope(db, project), limit)]
+
+
+@app.post("/api/approvals/decide")
+def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Aprova ou rejeita cartões de qualquer tipo. Ação externa de risco alto exige o código 2FA (consumido uma vez)."""
+    ip = client_ip(request)
+    seen: set[tuple[str, int]] = set()
+    done, errors = [], []
+    totp_ok: bool | None = None
+    for it in body.items:
+        key = (it.kind, it.ref_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if it.kind == "task":
+                t = db.get(Task, it.ref_id)
+                if t is None:
+                    raise appr.ApprovalError("não encontrado", 404)
+                appr.decide_task(db, t, body.approve)
+                if body.approve:
+                    growth.runner.submit(t.id)
+                detail = f"#{t.id} {t.agent_slug}: {t.title}"
+            elif it.kind == "content":
+                c = _content_or_404(db, it.ref_id)
+                appr.decide_content(db, c, body.approve, body.note)
+                detail = f"#{c.id} {c.channel}"
+            elif it.kind == "mission":
+                m = db.get(Mission, it.ref_id)
+                if m is None:
+                    raise appr.ApprovalError("não encontrado", 404)
+                appr.decide_mission(db, m, body.approve, body.note)
+                detail = f"#{m.id} {m.title}"
+            else:
+                a = db.get(Action, it.ref_id)
+                if a is None:
+                    raise appr.ApprovalError("não encontrado", 404)
+                if body.approve and a.risk == "alto" and a.status == "awaiting_approval" and totp_ok is None:
+                    totp_ok = consume_totp(db, auth.user, body.totp)  # um código vale para o lote inteiro
+                appr.decide_action(db, a, body.approve, bool(totp_ok), body.note)
+                detail = f"#{a.id} {a.integration}.{a.operation}"
+        except appr.ApprovalError as e:
+            errors.append({"kind": it.kind, "ref_id": it.ref_id, "error": str(e), "code": e.code})
+            if e.code == 403:
+                audit(db, auth.user.username, "approve_failed", f"{it.kind}#{it.ref_id}", ip)
+            continue
+        done.append({"kind": it.kind, "ref_id": it.ref_id})
+        audit(db, auth.user.username, f"approval_{it.kind}_" + ("approved" if body.approve else "rejected"), detail[:500], ip)
+    if not done and errors:
+        raise HTTPException(errors[0]["code"], errors[0]["error"])
+    return {"decided": done, "errors": errors}
 
 
 class TaskIn(BaseModel):
@@ -999,7 +1092,48 @@ def board(project: str = "all", days: int = 14, auth: Auth = Depends(current_aut
         j = _task_json(t, projects, links)
         j["automation"] = autos.get(t.automation_id, "") if t.automation_id else ""
         out.append(j)
+    out += _board_extras(db, project, since, projects)
     return {"tasks": out, "days": days}
+
+
+_CONTENT_STAGE = {"pending": "proposed", "approved": "approved", "sent": "done", "rejected": "rejected", "failed": "failed"}
+_ACTION_STAGE = {"awaiting_approval": "proposed", "requested": "approved", "approved": "approved", "running": "running",
+                 "done": "done", "failed": "failed", "rejected": "rejected"}
+
+
+def _board_extras(db: DB, project: str, since: datetime, projects: dict[int, GrowthProject]) -> list[dict]:
+    """Conteúdo e ações em integrações entram no mesmo quadro, com o tipo no cartão (filtro "Conteúdo" etc.)."""
+    pid = None if project == "all" else _project_or_404(db, project).id
+    out = []
+    cq = db.query(ContentItem)
+    aq = db.query(Action)
+    if pid is not None:
+        cq, aq = cq.filter(ContentItem.project_id == pid), aq.filter(Action.project_id == pid)
+    stamp = func.coalesce(ContentItem.sent_at, ContentItem.decided_at, ContentItem.created_at)
+    for c in cq.filter(or_(ContentItem.status.in_(cnt.EDITABLE), stamp >= since)).order_by(ContentItem.id.desc()).limit(300).all():
+        p = projects.get(c.project_id)
+        out.append({
+            "type": "content", "id": c.id, "project": p.slug if p else "", "agent": c.agent_slug,
+            "title": c.title or (c.body or "")[:90], "channel": c.channel, "status": _CONTENT_STAGE[c.status],
+            "risk": "baixo", "origin": "content", "requested_by": "", "automation": "", "rationale": c.purpose,
+            "steps": c.body, "result": c.note, "conversation_id": None, "wait_reason": "",
+            "scheduled_at": c.scheduled_at.isoformat() if c.scheduled_at else None,
+            "created_at": c.created_at.isoformat(), "decided_at": c.decided_at.isoformat() if c.decided_at else None,
+            "finished_at": c.sent_at.isoformat() if c.sent_at else None,
+        })
+    astamp = func.coalesce(Action.finished_at, Action.created_at)
+    open_actions = ("awaiting_approval", "requested", "approved", "running")
+    for a in aq.filter(or_(Action.status.in_(open_actions), astamp >= since)).order_by(Action.id.desc()).limit(300).all():
+        p = projects.get(a.project_id)
+        out.append({
+            "type": "action", "id": a.id, "project": p.slug if p else "", "agent": "",
+            "title": a.title or f"{a.integration}: {a.operation}", "channel": a.integration, "status": _ACTION_STAGE[a.status],
+            "risk": a.risk, "origin": "action", "requested_by": "", "automation": "", "rationale": f"{a.integration} · {a.operation}",
+            "steps": a.params, "result": a.error or a.result, "conversation_id": None, "wait_reason": "",
+            "created_at": a.created_at.isoformat(), "decided_at": None,
+            "finished_at": a.finished_at.isoformat() if a.finished_at else None,
+        })
+    return out
 
 
 @app.post("/api/tasks/{tid}/retry")
@@ -1377,13 +1511,10 @@ def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Dep
 def decide_content(cid: int, body: ContentDecideIn, request: Request,
                    auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     c = _content_or_404(db, cid)
-    if c.status != "pending":
-        raise HTTPException(409, "este conteúdo não está aguardando aprovação")
-    c.status = "approved" if body.approve else "rejected"
-    c.note = "" if body.approve else body.note.strip()
-    c.decided_at = utcnow()
-    cnt.touch(c)
-    db.commit()
+    try:
+        appr.decide_content(db, c, body.approve, body.note)
+    except appr.ApprovalError as e:
+        raise HTTPException(e.code, str(e)) from e
     audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}",
           client_ip(request))
     return _content_json(db, c)

@@ -14,7 +14,7 @@
   </div>
 
   <nav class="nav" aria-label="Seções">
-    {% for key, href, icon, label in [("dashboard", "/dashboard", "grid", "Dashboard"), ("plan", "/plan", "plan", "Plano do dia"), ("board", "/board", "kanban", "Kanban"), ("content", "/content", "send", "Conteúdo"), ("agents", "/agents", "agents", "Agentes"), ("routines", "/automations", "bolt", "Automações")] %}
+    {% for key, href, icon, label in [("dashboard", "/dashboard", "grid", "Dashboard"), ("approvals", "/approvals", "check", "Aprovações"), ("board", "/board", "kanban", "Kanban"), ("automations", "/automations", "bolt", "Automações")] %}
     <a class="nav-item{% if active == key %} active{% endif %}" href="{{ href }}"{% if active == key %} aria-current="page"{% endif %} title="{{ label }}">{{ ic(icon) }}<span>{{ label }}</span></a>
     {% endfor %}
   </nav>

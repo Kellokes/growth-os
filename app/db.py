@@ -206,6 +206,9 @@ class Task(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Tarefa criada por uma automação (atividade rotineira); vazio = plano, pedido ou avulsa.
     automation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    mission_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Por que está em "waiting": 2fa | acao | agente | horario (vazio = sem motivo registrado).
+    wait_reason: Mapped[str] = mapped_column(String(12), default="", server_default="")
 
 
 
@@ -310,6 +313,81 @@ class ContentItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+# ---------- missões, aprovações, ações em integrações e eventos (sempre de um projeto) ----------
+
+class Mission(Base):
+    """Objetivo que envolve vários agentes. O Coordenador quebra em tarefas (fase de orquestração)."""
+    __tablename__ = "missions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    goal: Mapped[str] = mapped_column(Text, default="")
+    origin: Mapped[str] = mapped_column(String(16), default="chat")  # chat | plan | owner | event
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
+    lead_agent: Mapped[str] = mapped_column(String(32), default="coordenador")
+    # draft | awaiting_approval | active | done | failed | cancelled
+    status: Mapped[str] = mapped_column(String(20), default="awaiting_approval", index=True)
+    budget_tasks: Mapped[int] = mapped_column(Integer, default=12)
+    budget_steps: Mapped[int] = mapped_column(Integer, default=80)
+    used_tasks: Mapped[int] = mapped_column(Integer, default=0)
+    used_steps: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Action(Base):
+    """Uma chamada a uma integração. Efeito `external` só roda depois da aprovação do owner."""
+    __tablename__ = "actions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("agent_tasks.id"), nullable=True, index=True)
+    integration: Mapped[str] = mapped_column(String(32))
+    operation: Mapped[str] = mapped_column(String(48))
+    effect: Mapped[str] = mapped_column(String(10), default="external")  # read | internal | external
+    risk: Mapped[str] = mapped_column(String(8), default="alto")  # baixo | medio | alto (alto exige 2FA)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    params: Mapped[str] = mapped_column(Text, default="{}")  # JSON já validado pelo esquema da operação
+    # requested | awaiting_approval | approved | running | done | failed | rejected
+    status: Mapped[str] = mapped_column(String(20), default="awaiting_approval", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    result: Mapped[str] = mapped_column(Text, default="")
+    external_ref: Mapped[str] = mapped_column(String(300), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Approval(Base):
+    """Registro de cada decisão do owner (tarefa, missão, conteúdo ou ação). A fila pendente é calculada ao vivo
+    a partir das tabelas de origem (app/approvals.py), então esta tabela nunca fica fora de sincronia com elas."""
+    __tablename__ = "approvals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))  # task | mission | content | action
+    ref_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    requested_by: Mapped[str] = mapped_column(String(48), default="")  # agente:social | rotina:12 | chat:34 | owner
+    risk: Mapped[str] = mapped_column(String(8), default="baixo")
+    status: Mapped[str] = mapped_column(String(10), default="approved")  # approved | rejected | expired
+    decided_via: Mapped[str] = mapped_column(String(10), default="clique")  # clique | 2fa | herdada | rotina
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class Event(Base):
+    """Linha do tempo do projeto e barramento que liga uma parte do sistema à outra."""
+    __tablename__ = "events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    type: Mapped[str] = mapped_column(String(48), index=True)  # task.done, action.failed, content.sent...
+    subject_kind: Mapped[str] = mapped_column(String(16), default="")
+    subject_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload: Mapped[str] = mapped_column(Text, default="{}")  # JSON pequeno, nunca com segredos
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 _SessionLocal = None
 
 
@@ -329,6 +407,8 @@ _NEW_COLUMNS = {
     },
     "agent_tasks": {
         "automation_id": "INTEGER NULL",
+        "mission_id": "INTEGER NULL",
+        "wait_reason": "VARCHAR(12) NOT NULL DEFAULT ''",  # 2fa | acao | agente | horario
     },
 }
 

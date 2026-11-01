@@ -430,7 +430,7 @@ async def generate_plan(today: date | None = None, actor: str = "agendador") -> 
             if plan.status == "ready":
                 projects = len({j[0] for j in jobs})
                 await notify(f"☀️ Plano de hoje pronto: {count} tarefas em {projects} projetos esperando sua aprovação."
-                             + (f"\n{get_settings().public_url.rstrip('/')}/plan" if get_settings().public_url else ""))
+                             + (f"\n{get_settings().public_url.rstrip('/')}/approvals" if get_settings().public_url else ""))
             return plan.id
         finally:
             db.close()
@@ -595,9 +595,9 @@ def sync_task(db: DB, task: Task) -> None:
         db.query(Message).filter(Message.conversation_id == task.conversation_id).order_by(Message.id.desc()).first()
     )
     if pending:
-        task.status = "waiting"
+        task.status, task.wait_reason = "waiting", "2fa"
     elif last is not None and last.role == "assistant":
-        task.status = "done"
+        task.status, task.wait_reason = "done", ""
         task.result = last.content[-4000:]
         task.finished_at = utcnow()
         ingest_kpi_blocks(db, task.project_id, last.content, f"agente:{task.agent_slug}")

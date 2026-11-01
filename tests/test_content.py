@@ -25,8 +25,8 @@ def test_content_pages_need_login(client):
 
 def test_content_page_renders_in_nav(logged):
     html = logged.get("/content").text
-    assert '<h1 id="page-title">Conteúdo</h1>' in html and 'href="/content"' in html
-    assert 'href="/content" aria-current="page"' in html
+    assert '<h1 id="page-title">Conteúdo</h1>' in html
+    assert 'href="/board" aria-current="page"' in html  # a central de conteúdo mora dentro do Kanban
     assert "/static/content.js" in html
 
 

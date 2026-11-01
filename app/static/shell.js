@@ -23,7 +23,7 @@
       if (!list.length) {
         box.innerHTML = `<div class="pswitch-empty"><span>Nenhum projeto cadastrado ainda.</span>
           <button class="btn small" type="button" data-import>Importar do VPS</button>
-          <a class="btn small ghost" href="/agents#novo">Criar projeto</a></div>`;
+          <a class="btn small ghost" href="/automations#novo">Criar projeto</a></div>`;
         box.querySelector("[data-import]").onclick = async () => {
           try { await api("/api/gprojects/import", { method: "POST" }); await reload(); } catch (e) { alert(e.message); }
         };

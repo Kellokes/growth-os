@@ -8,16 +8,44 @@
     <header class="page-head">
       <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Automações</span></div>
       <div class="head-row">
-        <div class="title-stack"><h1 id="page-title">Automações</h1><p class="lede muted">O que os agentes deste projeto sabem fazer, as ferramentas ligadas a ele e as atividades que se repetem sozinhas. Nada roda sem a sua aprovação, a não ser que você libere.</p></div>
+        <div class="title-stack"><h1 id="page-title">Automações</h1><p class="lede muted">O time de agentes do projeto, o que cada um sabe fazer, as ferramentas ligadas a ele e as atividades que se repetem sozinhas. Ações fora do OS sempre esperam a sua aprovação.</p></div>
         <div class="actions">
+          <button class="btn ghost" id="new-project" type="button">{{ ic("plus") }} Novo projeto</button>
           <div class="seg" id="tabs" role="tablist" aria-label="Seções">
-            <button type="button" role="tab" data-tab="habilidades">{{ ic("spark") }} Habilidades</button><button type="button" role="tab" data-tab="integracoes">{{ ic("plug") }} Integrações</button><button type="button" role="tab" data-tab="rotinas">{{ ic("repeat") }} Rotinas</button>
+            <button type="button" role="tab" data-tab="agentes">{{ ic("agents") }} Agentes</button><button type="button" role="tab" data-tab="habilidades">{{ ic("spark") }} Habilidades</button><button type="button" role="tab" data-tab="integracoes">{{ ic("plug") }} Integrações</button><button type="button" role="tab" data-tab="rotinas">{{ ic("repeat") }} Rotinas</button>
           </div>
         </div>
       </div>
     </header>
     {% include "_project_switch.html" %}
     <section class="page">
+      <div class="tab-panel" data-panel="agentes" hidden>
+      <details class="card project-card" id="project-card">
+        <summary><span id="project-summary">Dados do projeto</span><span class="muted">editar</span></summary>
+        <form id="project-form" class="project-form">
+          <div class="two">
+            <label>Nome<input id="pf-name" required maxlength="80"></label>
+            <label>Ícone<input id="pf-icon" maxlength="8"></label>
+          </div>
+          <label>Sobre o projeto (os agentes leem isto)<textarea id="pf-desc" rows="3" maxlength="4000" placeholder="O que é, público, modelo de receita, momento atual…"></textarea></label>
+          <div class="two">
+            <label>Repositório no GitHub<input id="pf-repo" placeholder="dono/repo" pattern="[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+"></label>
+            <label>Domínios<input id="pf-domains" maxlength="1000" placeholder="exemplo.com, app.exemplo.com"></label>
+          </div>
+          <div class="agent-foot">
+            <label class="inline"><span class="switch"><input type="checkbox" id="pf-enabled"><span></span></span> Projeto ativo no plano diário</label>
+            <button class="btn small primary" type="submit">Salvar projeto</button>
+          </div>
+        </form>
+      </details>
+      <h3 class="section-title">Time de agentes deste projeto</h3>
+      <div class="agents" id="agents"><div class="muted">Carregando…</div></div>
+      <h3 class="section-title">Conversa do time</h3>
+      <div class="card team-feed" id="notes"></div>
+      <h3 class="section-title" id="tarefas">Últimas tarefas deste projeto</h3>
+      <div class="card task-list" id="tasks"></div>
+      </div>
+
       <div class="tab-panel" data-panel="habilidades" hidden>
         <div class="panel-head">
           <p class="muted">Habilidades são playbooks: passos que o agente segue quando a tarefa pede. Cada uma vale só para os agentes que você marcar.</p>
@@ -85,6 +113,22 @@
   </form>
 </dialog>
 
+<dialog id="np-dialog" class="card">
+  <form method="dialog" id="np-form">
+    <h3>Novo projeto</h3>
+    <p class="muted">Ele ganha o time completo de agentes e os KPIs padrão; depois é só ajustar.</p>
+    <label>Nome<input id="np-name" required minlength="2" maxlength="80"></label>
+    <label>Sobre o projeto<textarea id="np-desc" rows="3" maxlength="4000"></textarea></label>
+    <div class="row">
+      <button class="btn ghost" type="button" id="np-import">Importar do VPS</button>
+      <button class="btn ghost" type="button" id="np-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Criar</button>
+    </div>
+  </form>
+</dialog>
+
 {% include "_audit.html" %}
+<script src="/static/modelpick.js"></script>
+<script src="/static/agents.js"></script>
 <script src="/static/automations.js"></script>
 {% endblock %}

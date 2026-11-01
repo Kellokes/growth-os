@@ -1131,3 +1131,17 @@ dialog.wide-ish { max-width: 680px; }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   @view-transition { navigation: none; }
 }
+
+/* ---------- aprovações ---------- */
+.approval.flash { animation: flash 1.8s var(--ease) 1; }
+@keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--lime, #e4f58a) 45%, transparent); } 100% { background: transparent; } }
+.tag.kind-task { background: var(--panel-2); }
+.tag.kind-mission { background: color-mix(in srgb, #b9a6f2 35%, var(--panel-2)); }
+.tag.kind-content { background: color-mix(in srgb, #9fd3a6 35%, var(--panel-2)); }
+.tag.kind-action { background: color-mix(in srgb, #f2b36b 40%, var(--panel-2)); }
+.approval .totp { display: inline-flex; align-items: center; gap: 6px; }
+.approval .totp input { width: 96px; padding: 7px 10px; }
+.history { margin-top: 18px; padding: 14px 18px; }
+.history summary { cursor: pointer; }
+.pre { white-space: pre-wrap; }
+.tag.card-link { text-decoration: none; }

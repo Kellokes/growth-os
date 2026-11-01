@@ -63,7 +63,11 @@ class ChatTurn:
 
 
 class ProviderError(RuntimeError):
-    pass
+    """Falha do provider. retryable=True quando tentar de novo tem chance de dar certo (timeout, 5xx, 429)."""
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def render_transcript(history: list[ChatTurn]) -> str:
@@ -97,7 +101,7 @@ async def run_cli(args: list[str], cwd: Path, timeout: int, stdin: str | None = 
         )
     except asyncio.TimeoutError as e:
         proc.kill()
-        raise ProviderError(f"{args[0]} excedeu {timeout}s") from e
+        raise ProviderError(f"{args[0]} excedeu {timeout}s", retryable=True) from e
     if proc.returncode != 0:
         msg = (err or out).decode(errors="replace").strip()[-800:]
         raise ProviderError(f"{args[0]} falhou (código {proc.returncode}): {msg}")

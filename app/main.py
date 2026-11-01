@@ -514,12 +514,22 @@ async def continue_conversation(
     cid: int, body: ContinueIn, request: Request,
     auth: Auth = Depends(current_auth), db: DB = Depends(get_db),
 ):
-    """Retoma o laço depois que o owner aprovou ou rejeitou um comando."""
-    if db.get(Conversation, cid) is None:
+    """Retoma o laço de onde parou, sem nova mensagem do owner.
+
+    Serve para: depois do 2FA (aprovou/rejeitou), depois do limite de passos e para tentar de novo quando a
+    IA falhou (timeout, 502...). Só faz sentido se a última mensagem não é uma resposta final da IA.
+    """
+    c = db.get(Conversation, cid)
+    if c is None:
         raise HTTPException(404, "not_found")
+    if c.deleted_at is not None:
+        raise HTTPException(409, "conversa na lixeira: restaure antes de continuar")
     provider = _provider_or_400(body.provider, body.model, body.reasoning)
+    pending = db.query(CommandRun).filter(CommandRun.conversation_id == cid, CommandRun.status == "pending").first()
+    if pending is not None:
+        raise HTTPException(409, "há um comando esperando o seu 2FA: aprove ou rejeite antes de continuar")
     last = db.query(Message).filter(Message.conversation_id == cid).order_by(Message.id.desc()).first()
-    if last is None or last.role != "tool":
+    if last is None or last.role not in ("tool", "user"):
         raise HTTPException(409, "nada para continuar")
     return _stream(cid, provider, auth.user.username, client_ip(request))
 

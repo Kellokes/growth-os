@@ -458,6 +458,7 @@ dialog.mpb { max-width: 880px; }
 .msg.user .avatar { background: var(--panel-solid); color: var(--text-2); box-shadow: var(--shadow); }
 .msg.assistant .avatar.logo { width: 36px; height: 36px; }
 .msg .body { min-width: 0; flex: 1; }
+.msg .msg-actions { margin-top: 8px; display: flex; gap: 8px; }
 .msg.user .body {
   flex: 0 1 auto; max-width: min(640px, 85%); background: var(--panel-solid); border-radius: 22px 22px 6px 22px;
   padding: 11px 16px; box-shadow: var(--shadow);

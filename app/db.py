@@ -80,6 +80,7 @@ class AuditLog(Base):
 # ---------- etapa 3: agentes, KPIs e plano diário ----------
 
 class Agent(Base):
+    """Catálogo das áreas (papéis). Cada projeto tem o seu time em ProjectAgent."""
     __tablename__ = "agents"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     slug: Mapped[str] = mapped_column(String(32), unique=True)
@@ -92,12 +93,41 @@ class Agent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class Metric(Base):
-    __tablename__ = "metrics"
+class GrowthProject(Base):
+    """Um negócio do owner (ex.: takeone, zombie-party). Agentes, KPIs e tarefas são sempre de um projeto."""
+    __tablename__ = "growth_projects"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    key: Mapped[str] = mapped_column(String(48), unique=True)
+    slug: Mapped[str] = mapped_column(String(48), unique=True)
     name: Mapped[str] = mapped_column(String(80))
-    area: Mapped[str] = mapped_column(String(32), default="growth")  # slug do agente dono
+    icon: Mapped[str] = mapped_column(String(8), default="◆")
+    description: Mapped[str] = mapped_column(Text, default="")
+    repo: Mapped[str] = mapped_column(String(120), default="")  # DONO/REPO no GitHub
+    domains: Mapped[str] = mapped_column(Text, default="")  # separados por vírgula
+    compose_project: Mapped[str] = mapped_column(String(64), default="")  # liga aos containers
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ProjectAgent(Base):
+    """O agente de uma área dentro de um projeto (time próprio, missão própria)."""
+    __tablename__ = "project_agents"
+    __table_args__ = (UniqueConstraint("project_id", "agent_slug", name="uq_project_agent"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    agent_slug: Mapped[str] = mapped_column(String(32))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    mission: Mapped[str] = mapped_column(Text, default="")  # vazio = missão padrão da área
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class Metric(Base):
+    __tablename__ = "kpis"
+    __table_args__ = (UniqueConstraint("project_id", "key", name="uq_project_kpi"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    key: Mapped[str] = mapped_column(String(48))
+    name: Mapped[str] = mapped_column(String(80))
+    area: Mapped[str] = mapped_column(String(32), default="growth")  # slug da área/agente dono
     unit: Mapped[str] = mapped_column(String(16), default="number")  # number | currency | percent
     direction: Mapped[str] = mapped_column(String(8), default="up")  # up | down (qual lado é bom)
     target: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -105,10 +135,10 @@ class Metric(Base):
 
 
 class MetricPoint(Base):
-    __tablename__ = "metric_points"
-    __table_args__ = (UniqueConstraint("metric_id", "day", name="uq_metric_day"),)
+    __tablename__ = "kpi_points"
+    __table_args__ = (UniqueConstraint("metric_id", "day", name="uq_kpi_day"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    metric_id: Mapped[int] = mapped_column(ForeignKey("metrics.id"), index=True)
+    metric_id: Mapped[int] = mapped_column(ForeignKey("kpis.id"), index=True)
     day: Mapped[date] = mapped_column(Date)
     value: Mapped[float] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String(48), default="manual")
@@ -117,7 +147,7 @@ class MetricPoint(Base):
 
 
 class Plan(Base):
-    __tablename__ = "plans"
+    __tablename__ = "daily_plans"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     day: Mapped[date] = mapped_column(Date, unique=True)
     status: Mapped[str] = mapped_column(String(16), default="generating")  # generating | ready | failed
@@ -126,9 +156,10 @@ class Plan(Base):
 
 
 class Task(Base):
-    __tablename__ = "tasks"
+    __tablename__ = "agent_tasks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    plan_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True, index=True)
+    plan_id: Mapped[int | None] = mapped_column(ForeignKey("daily_plans.id"), nullable=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
     agent_slug: Mapped[str] = mapped_column(String(32), index=True)
     title: Mapped[str] = mapped_column(String(200))
     rationale: Mapped[str] = mapped_column(Text, default="")

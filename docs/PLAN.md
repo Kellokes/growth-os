@@ -30,7 +30,11 @@ roda em Docker no VPS da Hostinger atrás do Caddy que já está lá.
 - Código dos projetos via GitHub: a IA clona no /workspace, cria branch, dá push e abre PR (`gos-pr`) com um
   token fine-grained só dos repos dos projetos. Nunca push na main, nunca merge.
 
-## Etapa 3 — Agentes por área + plano da manhã + dashboard (feita)
+## Etapa 3 — Agentes por área + plano da manhã + dashboard (feita, tudo POR PROJETO)
+
+- Cada projeto (TakeOne, Zombie Party, A Ilha, novos) tem o seu time de agentes, os seus KPIs e as suas
+  tarefas. Os projetos vêm do VPS (projetos do compose) ou são criados à mão; o seletor de projeto fica
+  sempre visível no topo do Dashboard, do Plano do dia e de Agentes.
 
 - 9 agentes (Growth, CRM, Marketing, Social, Design, Produto, Tech, CS, Financeiro), cada um com missão
   editável, liga/desliga e provider próprio (tela **Agentes**).

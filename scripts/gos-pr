@@ -15,6 +15,29 @@ import urllib.request
 
 TOKEN_FILE = os.environ.get("GITHUB_TOKEN_FILE", "/tmp/gos-secrets/github_token")
 API = "https://api.github.com"
+SELF_REPO = os.environ.get("GROWTH_OS_REPO", "Kellokes/growth-os")
+
+# Arquivos que mudam deploy, permissões ou a política de segurança: o PR avisa para o owner revisar com calma.
+SENSITIVE = (".github/", "scripts/", "deploy/", "Dockerfile", "docker-compose", "compose.y", "Caddyfile", ".env")
+SENSITIVE_SELF = ("app/executor.py", "app/security.py", "app/agent.py", "app/providers/", "gateway/")
+
+
+def sensitive_files(repo: str, files: list[str]) -> list[str]:
+    marks = SENSITIVE + (SENSITIVE_SELF if repo.lower() == SELF_REPO.lower() else ())
+    return [f for f in files if any(f.startswith(m) or ("/" + m) in f or f.split("/")[-1].startswith(m) for m in marks)]
+
+
+def warning_for(repo: str, base: str, head: str) -> str:
+    try:
+        cmp = call("GET", f"/repos/{repo}/compare/{base}...{head}")
+    except SystemExit:  # sem a comparação o PR sai sem o aviso, mas sai
+        return ""
+    hits = sensitive_files(repo, [f["filename"] for f in (cmp or {}).get("files") or []])
+    if not hits:
+        return ""
+    lines = "\n".join(f"- `{f}`" for f in hits[:30])
+    return ("> [!WARNING]\n> Este PR mexe em arquivos de deploy, permissões ou segurança. "
+            "Revise com calma antes do merge.\n\n" + lines + "\n\n")
 
 
 def token() -> str:
@@ -67,7 +90,7 @@ def main(argv: list[str]) -> None:
         body = opt(rest, "--body", "")
         if opt(rest, "--body-file"):
             body = open(opt(rest, "--body-file"), encoding="utf-8").read()
-        body = (body or "") + "\n\n---\n_Aberto pelo Growth OS_"
+        body = warning_for(repo, base, head) + (body or "") + "\n\n---\n_Aberto pelo Growth OS_"
         pr = call("POST", f"/repos/{repo}/pulls", {"title": title, "head": head, "base": base, "body": body})
         print(f"PR #{pr['number']} aberto: {pr['html_url']}")
     else:

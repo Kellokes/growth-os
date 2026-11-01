@@ -8,8 +8,8 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Ferramentas da etapa 2: Docker pelo gateway, git com token restrito e PRs.
-COPY scripts/gos-docker scripts/gos-pr scripts/gos-git-credential /usr/local/bin/
-RUN chmod 755 /usr/local/bin/gos-docker /usr/local/bin/gos-pr /usr/local/bin/gos-git-credential \
+COPY scripts/gos-docker scripts/gos-pr scripts/gos-git-credential scripts/gos-self /usr/local/bin/
+RUN chmod 755 /usr/local/bin/gos-docker /usr/local/bin/gos-pr /usr/local/bin/gos-git-credential /usr/local/bin/gos-self \
  && git config --system credential.https://github.com.helper /usr/local/bin/gos-git-credential \
  && git config --system user.name "Growth OS" \
  && git config --system user.email "growth-os@users.noreply.github.com" \
@@ -19,7 +19,14 @@ RUN useradd --create-home --uid 10001 gos
 WORKDIR /app
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --no-cache-dir .
+# pytest entra para a IA rodar os testes da cópia do próprio código (gos-self test) antes de abrir PR.
+RUN pip install --no-cache-dir . "pytest>=8"
+
+# Repositório e versão do próprio Growth OS (o deploy.sh passa o commit). Sem prefixo GOS_ de
+# propósito: o executor tira as variáveis GOS_ dos comandos, e estas não são segredo.
+ARG GROWTH_OS_COMMIT=""
+ENV GROWTH_OS_REPO=Kellokes/growth-os \
+    GROWTH_OS_COMMIT=${GROWTH_OS_COMMIT}
 
 # Os volumes nomeados herdam o dono destas pastas; sem isso /data fica do root
 # e o app (usuário gos) não consegue criar o banco e reinicia em loop.

@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""O código do próprio Growth OS, para a IA ler e propor mudanças nele.
+
+  gos-self info                    repo, versão rodando, estado da cópia e se o token alcança o repo
+  gos-self sync                    clona (ou atualiza) a cópia em /workspace/growth-os
+  gos-self branch NOME             cria a branch gos/NOME a partir da main mais recente
+  gos-self test [args do pytest]   roda os testes da cópia (banco SQLite temporário)
+  gos-self pr --title "..." [--body "..." | --body-file ARQ]
+                                   roda os testes, dá push da branch atual e abre o PR
+
+A cópia é um clone do GitHub, nunca a pasta do servidor (que tem o .env). O que roda em produção só muda
+quando o owner faz merge do PR na main; aí o deploy automático publica.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = os.environ.get("GROWTH_OS_REPO", "Kellokes/growth-os")
+COMMIT = os.environ.get("GROWTH_OS_COMMIT", "") or "desconhecida"
+WORKSPACE = Path(os.environ.get("GROWTH_OS_WORKSPACE", "/workspace"))
+CHECKOUT = WORKSPACE / "growth-os"
+REMOTE = os.environ.get("GROWTH_OS_REMOTE", f"https://github.com/{REPO}.git")  # os testes trocam
+TOKEN_FILE = os.environ.get("GITHUB_TOKEN_FILE", "/tmp/gos-secrets/github_token")
+PROTECTED = {"main", "master", "production", "prod"}
+
+
+def git(*args: str, check: bool = True, cwd: Path = CHECKOUT) -> str:
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if check and p.returncode != 0:
+        sys.exit(f"git {' '.join(args)} falhou:\n{(p.stderr or p.stdout).strip()}")
+    return p.stdout.strip()
+
+
+def has_checkout() -> bool:
+    return (CHECKOUT / ".git").is_dir()
+
+
+def need_checkout() -> None:
+    if not has_checkout():
+        sys.exit(f"Ainda não existe cópia em {CHECKOUT}. Rode: gos-self sync")
+
+
+def token_access() -> str:
+    try:
+        t = open(TOKEN_FILE, encoding="utf-8").read().strip()
+    except OSError:
+        t = ""
+    if not t:
+        return "sem token do GitHub configurado (GOS_GITHUB_TOKEN no .env do VPS)"
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{REPO}",
+        headers={"Authorization": f"Bearer {t}", "Accept": "application/vnd.github+json", "User-Agent": "growth-os"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            perms = (json.loads(r.read()) or {}).get("permissions") or {}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return f"o token NÃO alcança {REPO}: o owner precisa incluir este repo no token fine-grained"
+        return f"GitHub respondeu {e.code}"
+    except OSError as e:
+        return f"GitHub indisponível ({e})"
+    return "leitura e push ok" if perms.get("push") else "só leitura (falta Contents: Read and write no token)"
+
+
+def status_lines() -> list[str]:
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    head = git("rev-parse", "--short", "HEAD")
+    dirty = git("status", "--porcelain")
+    behind = git("rev-list", "--count", "HEAD..origin/main", check=False) or "?"
+    return [
+        f"cópia:           {CHECKOUT} (branch {branch} em {head})",
+        f"atrás da main:   {behind} commit(s)",
+        f"alterações:      {'sim, não commitadas' if dirty else 'nenhuma pendente'}",
+    ]
+
+
+def cmd_info() -> None:
+    print(f"repositório:     github.com/{REPO}")
+    print(f"versão rodando:  {COMMIT[:12]}")
+    if has_checkout():
+        print("\n".join(status_lines()))
+    else:
+        print(f"cópia:           ainda não existe (gos-self sync cria em {CHECKOUT})")
+    print(f"acesso do token: {token_access()}")
+
+
+def cmd_sync() -> None:
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    if not has_checkout():
+        if CHECKOUT.exists() and any(CHECKOUT.iterdir()):
+            sys.exit(f"{CHECKOUT} existe mas não é um clone do git; mova ou renomeie a pasta antes.")
+        git("clone", "--quiet", REMOTE, str(CHECKOUT), cwd=WORKSPACE)
+        print(f"clonado em {CHECKOUT}")
+    else:
+        git("fetch", "--quiet", "--prune", "origin")
+        branch = git("rev-parse", "--abbrev-ref", "HEAD")
+        if branch == "main" and not git("status", "--porcelain"):
+            git("merge", "--quiet", "--ff-only", "origin/main")
+            print("main atualizada")
+        else:
+            print(f"fetch feito; a branch {branch} não foi mexida (seu trabalho fica como está)")
+    if COMMIT != "desconhecida":
+        ahead = git("rev-list", "--count", f"{COMMIT}..origin/main", check=False)
+        if ahead and ahead != "0":
+            print(f"atenção: a main tem {ahead} commit(s) que ainda não estão rodando em produção")
+    print("\n".join(status_lines()))
+
+
+def cmd_branch(name: str) -> None:
+    need_checkout()
+    if git("status", "--porcelain"):
+        sys.exit("há alterações não commitadas na cópia; faça commit (ou git stash) antes de trocar de branch.")
+    name = name.strip().removeprefix("gos/")
+    if not name or name in PROTECTED or not all(c.isalnum() or c in "-_." for c in name):
+        sys.exit("nome inválido: use letras, números, - _ .")
+    git("fetch", "--quiet", "origin", "main")
+    git("checkout", "--quiet", "-b", f"gos/{name}", "origin/main")
+    print(f"branch gos/{name} criada a partir da main ({git('rev-parse', '--short', 'HEAD')})")
+
+
+def run_tests(extra: list[str]) -> int:
+    need_checkout()
+    with tempfile.TemporaryDirectory(prefix="gos-self-test-") as tmp:
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("GOS_", "TEST_DATABASE"))}
+        # Os testes sobem o app; sem isto ele apagaria o arquivo do token do Growth OS que está rodando.
+        env.update(GOS_GITHUB_TOKEN_FILE=f"{tmp}/gh", GOS_WORKSPACE_DIR=f"{tmp}/ws",
+                   GOS_SCHEDULER_ENABLED="false", GOS_COOKIE_SECURE="false", PYTHONDONTWRITEBYTECODE="1")
+        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *extra]
+        return subprocess.run(cmd, cwd=CHECKOUT, env=env).returncode
+
+
+def opt(args: list[str], name: str) -> str | None:
+    if name in args:
+        i = args.index(name)
+        if i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def cmd_pr(args: list[str]) -> None:
+    need_checkout()
+    title = opt(args, "--title")
+    if not title:
+        sys.exit("informe --title")
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    if branch in PROTECTED or branch == "HEAD":
+        sys.exit("crie uma branch antes (gos-self branch NOME); nunca na main.")
+    if git("status", "--porcelain"):
+        sys.exit("há alterações não commitadas; faça git add + git commit antes do PR.")
+    if git("rev-list", "--count", "origin/main..HEAD") == "0":
+        sys.exit("a branch não tem commits novos em relação à main.")
+    if run_tests([]) != 0:
+        sys.exit("os testes falharam; corrija antes de abrir o PR.")
+    git("push", "--quiet", "-u", "origin", branch)
+    pr = ["gos-pr", "create", REPO, "--head", branch, "--base", "main", "--title", title]
+    for flag in ("--body", "--body-file"):
+        if opt(args, flag) is not None:
+            pr += [flag, opt(args, flag)]
+    sys.exit(subprocess.run(pr).returncode)
+
+
+def main(argv: list[str]) -> None:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "info":
+        cmd_info()
+    elif cmd == "sync":
+        cmd_sync()
+    elif cmd == "branch" and rest:
+        cmd_branch(rest[0])
+    elif cmd == "test":
+        sys.exit(run_tests(rest))
+    elif cmd == "pr":
+        cmd_pr(rest)
+    else:
+        sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

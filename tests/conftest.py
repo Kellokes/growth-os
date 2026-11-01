@@ -21,6 +21,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("GOS_WORKSPACE_DIR", str(tmp_path / "ws"))
     monkeypatch.setenv("GOS_COOKIE_SECURE", "false")
     monkeypatch.setenv("GOS_SCHEDULER_ENABLED", "false")
+    # Nunca o arquivo real: os testes também rodam dentro do container (gos-self test).
+    monkeypatch.setenv("GOS_GITHUB_TOKEN_FILE", str(tmp_path / "gh-token"))
     get_settings.cache_clear()
     engine = dbmod.init_db()
     dbmod.Base.metadata.drop_all(engine)

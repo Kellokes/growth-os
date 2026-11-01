@@ -67,10 +67,13 @@ def _card_content(c: ContentItem) -> dict:
     }
 
 
-def _card_mission(m: Mission) -> dict:
+def _card_mission(m: Mission, tasks: list[Task] | None = None) -> dict:
+    names = {t.id: i + 1 for i, t in enumerate(tasks or [])}
+    lines = [f"{i + 1}. {t.agent_slug}: {t.title}" + (f" (depois da {names[t.depends_on]})" if t.depends_on in names else "")
+             for i, t in enumerate(tasks or [])]
     return {
         "kind": "mission", "ref_id": m.id, "project_id": m.project_id, "agent": m.lead_agent,
-        "title": m.title, "preview": m.goal, "why": "", "risk": "medio",
+        "title": m.title, "preview": "\n".join(filter(None, [m.goal, *lines])), "why": "", "risk": "medio",
         "requested_by": f"chat:{m.conversation_id}" if m.conversation_id else m.origin, "origin": "missao",
         "mission_id": m.id, "needs_2fa": False, "at": m.created_at,
     }
@@ -98,13 +101,14 @@ def pending(db: DB, project_id: int | None = None, kind: str | None = None) -> l
     if kind in (None, "task"):
         rows = scoped(db.query(Task).filter(Task.status == "proposed"), Task.project_id).all()
         links = {lk.task_id: lk for lk in db.query(TaskLink).filter(TaskLink.task_id.in_([t.id for t in rows])).all()} if rows else {}
-        cards += [_card_task(t, links.get(t.id)) for t in rows]
+        # tarefa planejada de uma missão não tem cartão próprio: decide-se pela missão
+        cards += [_card_task(t, links.get(t.id)) for t in rows if not (t.mission_id and t.id not in links)]
     if kind in (None, "content"):
         cards += [_card_content(c) for c in scoped(db.query(ContentItem).filter(ContentItem.status == "pending"),
                                                   ContentItem.project_id).all()]
     if kind in (None, "mission"):
-        cards += [_card_mission(m) for m in scoped(db.query(Mission).filter(Mission.status == "awaiting_approval"),
-                                                  Mission.project_id).all()]
+        for m in scoped(db.query(Mission).filter(Mission.status == "awaiting_approval"), Mission.project_id).all():
+            cards.append(_card_mission(m, db.query(Task).filter(Task.mission_id == m.id).order_by(Task.id).all()))
     if kind in (None, "action"):
         cards += [_card_action(a) for a in scoped(db.query(Action).filter(Action.status == "awaiting_approval"),
                                                  Action.project_id).all()]
@@ -143,6 +147,10 @@ def decide_task(db: DB, t: Task, approve: bool, via: str = "clique") -> None:
     if t.status != "proposed":
         raise ApprovalError("esta tarefa não está aguardando aprovação")
     link = db.get(TaskLink, t.id)
+    if t.mission_id and link is None:
+        m = db.get(Mission, t.mission_id)
+        if m is not None and m.status == "awaiting_approval":
+            raise ApprovalError("esta tarefa faz parte de uma missão: aprove ou rejeite a missão")
     t.status = "approved" if approve else "rejected"
     t.decided_at = utcnow()
     db.commit()
@@ -152,6 +160,9 @@ def decide_task(db: DB, t: Task, approve: bool, via: str = "clique") -> None:
         db.commit()
     by = f"agente:{link.requested_by}" if link else f"rotina:{t.automation_id}" if t.automation_id else "plano" if t.plan_id else "owner"
     _record(db, t.project_id, "task", t.id, t.title, by, t.risk, approve, via)
+    if not approve:  # rejeitar encerra a tarefa: quem esperava por ela continua e a missão segue
+        from . import growth  # import tardio: growth não importa este módulo, mas importa missions
+        growth.finish(db, t, notify_requester=False)
 
 
 def decide_content(db: DB, c: ContentItem, approve: bool, note: str = "") -> None:
@@ -202,3 +213,10 @@ def counts(db: DB, project_id: int | None = None) -> dict[str, int]:
 def record_action_release(db: DB, a: Action, requested_by: str) -> None:
     """Ação que o owner já liberou de antemão (config da integração): entra no histórico como `liberada`."""
     _record(db, a.project_id, "action", a.id, a.title or f"{a.integration}: {a.operation}", requested_by, a.risk, True, "liberada")
+
+
+def record_inherited(db: DB, t: Task, via: str = "herdada") -> None:
+    """Tarefa liberada por uma missão já aprovada (ou pedido de risco baixo dentro dela): entra no histórico."""
+    link = db.get(TaskLink, t.id)
+    by = f"agente:{link.requested_by}" if link else f"missao:{t.mission_id}"
+    _record(db, t.project_id, "task", t.id, t.title, by, t.risk, True, via)

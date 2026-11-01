@@ -31,7 +31,7 @@
     return new Date(iso + "Z").toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
   }
 
-  const WAIT = { "2fa": "esperando o seu 2FA", acao: "esperando aprovar uma ação externa", agente: "esperando outro agente", horario: "esperando o horário" };
+  const WAIT = { "2fa": "esperando o seu 2FA", acao: "esperando aprovar uma ação externa", agente: "esperando outro agente", orcamento: "orçamento da missão estourado: libere em Aprovações", horario: "esperando o horário" };
 
   function origin(t) {
     if (t.type === "content") return `<span class="tag kind-content">✎ ${esc(t.channel || "conteúdo")}</span>`;

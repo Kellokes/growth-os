@@ -23,11 +23,13 @@ from sqlalchemy.orm import Session as DB
 from .audit import audit
 from .config import get_settings
 from .db import (
-    Agent, AgentNote, CommandRun, Conversation, GrowthProject, Message, Metric, MetricPoint, Plan, ProjectAgent,
-    Task, TaskLink, new_session, utcnow,
+    Action, Agent, AgentNote, CommandRun, Conversation, GrowthProject, Message, Metric, MetricPoint, Mission, Plan,
+    ProjectAgent, Task, TaskLink, new_session, utcnow,
 )
 from .providers import ChatTurn, Provider, ProviderError, all_providers
+from . import approvals as appr
 from . import content
+from . import missions
 from . import modelcfg
 from . import routines
 
@@ -37,6 +39,9 @@ MAX_TASKS_PER_AGENT = 3
 MAX_HANDOFFS_PER_TASK = 3   # pedidos que uma tarefa pode abrir para outros agentes
 MAX_HANDOFF_DEPTH = 3       # A pede a B, B pede a C, C pede a D: daí não passa (evita laço)
 MAX_NOTES_PER_TASK = 5
+
+COORDINATOR = "coordenador"
+RESUME_MARK = "[RETOMADA]"
 
 DEFAULT_AGENTS = [
     ("growth", "Growth", "Aquisição e conversão", "📈",
@@ -65,6 +70,9 @@ DEFAULT_AGENTS = [
     ("financeiro", "Financeiro", "Receita, custos e caixa", "💰",
      "Acompanhar MRR, receita, custos de infraestrutura e de mídia, e o caixa. Aponta desperdícios e riscos e "
      "propõe ações para melhorar margem."),
+    (COORDINATOR, "Coordenador", "Orquestração do time", "🧩",
+     "Quebrar um objetivo em tarefas para os agentes do projeto, na ordem certa, acompanhar os resultados e "
+     "garantir que o critério de pronto foi atingido. Não executa trabalho de área: delega ao agente certo."),
 ]
 
 # key, nome, área, unidade, direção
@@ -403,7 +411,7 @@ async def generate_plan(today: date | None = None, actor: str = "agendador") -> 
             jobs = [
                 (project.id, agent.id, pa.id, f"{project.name} · {agent.name}")
                 for project in db.query(GrowthProject).filter(GrowthProject.enabled.is_(True)).order_by(GrowthProject.id)
-                for agent, pa in team(db, project) if pa.enabled
+                for agent, pa in team(db, project) if pa.enabled and agent.slug != COORDINATOR
             ]
             sem = asyncio.Semaphore(max(1, get_settings().agent_concurrency))
             errors: list[str] = []
@@ -498,7 +506,9 @@ def process_collaboration(db: DB, task: Task, text: str) -> dict:
     }
     link = db.get(TaskLink, task.id)
     depth = (link.depth if link else 0) + 1
-    created, notes, refused = [], 0, []
+    mission = db.get(Mission, task.mission_id) if task.mission_id else None
+    inherit = mission is not None and mission.status == "active"
+    created, notes, refused, approved = [], 0, [], []
     for _, raw in _HANDOFF.findall(text or ""):
         for item in _json_items(raw):
             to = str(item.get("para", "")).strip().lower()
@@ -513,18 +523,23 @@ def process_collaboration(db: DB, task: Task, text: str) -> dict:
                 refused.append(f"mais de {MAX_HANDOFFS_PER_TASK} pedidos numa tarefa")
                 continue
             risk = str(item.get("risco", "baixo")).lower().replace("é", "e")
+            risk = risk if risk in ("baixo", "medio", "alto") else "medio"
             child = Task(
-                project_id=task.project_id, agent_slug=to, title=title, status="proposed",
+                project_id=task.project_id, agent_slug=to, title=title, status="proposed", mission_id=task.mission_id,
                 rationale=f"Pedido de {task.agent_slug} (tarefa #{task.id}: {task.title[:120]})",
                 steps=str(item.get("detalhes", "")).strip()[:4000],
-                risk=risk if risk in ("baixo", "medio", "alto") else "medio",
+                risk=risk,
             )
             db.add(child)
             db.flush()
-            db.add(TaskLink(task_id=child.id, parent_id=task.id, requested_by=task.agent_slug, depth=depth))
+            db.add(TaskLink(task_id=child.id, parent_id=task.id, requested_by=task.agent_slug, depth=depth,
+                            wait=1 if item.get("esperar") is True else 0))
             db.add(AgentNote(project_id=task.project_id, from_agent=task.agent_slug, to_agent=to, kind="pedido",
                              text=title, task_id=child.id))
             created.append(child)
+            if inherit and risk == "baixo":  # dentro de uma missão aprovada, pedido de risco baixo não pede de novo
+                child.status, child.decided_at = "approved", utcnow()
+                approved.append(child)
     for _, raw in _NOTE.findall(text or ""):
         for item in _json_items(raw):
             to = str(item.get("para", "") or "").strip().lower()
@@ -535,24 +550,101 @@ def process_collaboration(db: DB, task: Task, text: str) -> dict:
                              task_id=task.id))
             notes += 1
     db.commit()
-    return {"tasks": created, "notes": notes, "refused": refused}
+    for child in approved:
+        appr.record_inherited(db, child)
+    return {"tasks": created, "notes": notes, "refused": refused, "approved": [c.id for c in approved]}
 
 
-def reply_to_requester(db: DB, task: Task) -> None:
-    """Fecha o ciclo: quando uma tarefa pedida por outro agente termina, quem pediu recebe o resultado."""
+def reply_to_requester(db: DB, task: Task, note: bool = True) -> list[int]:
+    """Fecha o ciclo: quando uma tarefa pedida por outro agente termina, quem pediu recebe o resultado.
+
+    Se quem pediu estava esperando (`esperar`) e esta era a última resposta que faltava, ele volta para a fila."""
     link = db.get(TaskLink, task.id)
     if link is None:
-        return
-    status = "concluiu" if task.status == "done" else "não conseguiu concluir"
-    summary = re.sub(r"```.*?```", "", task.result or "", flags=re.S).strip()[:1200]
-    db.add(AgentNote(project_id=task.project_id, from_agent=task.agent_slug, to_agent=link.requested_by,
-                     kind="resposta", text=f"{status} \"{task.title}\": {summary}", task_id=task.id))
+        return []
+    if note:
+        status = "concluiu" if task.status == "done" else "não conseguiu concluir"
+        summary = re.sub(r"```.*?```", "", task.result or "", flags=re.S).strip()[:1200]
+        db.add(AgentNote(project_id=task.project_id, from_agent=task.agent_slug, to_agent=link.requested_by,
+                         kind="resposta", text=f"{status} \"{task.title}\": {summary}", task_id=task.id))
+        db.commit()
+    parent = db.get(Task, link.parent_id) if link.wait and link.parent_id else None
+    if parent is None or parent.status != "waiting" or parent.wait_reason != "agente":
+        return []
+    still = (
+        db.query(Task).join(TaskLink, TaskLink.task_id == Task.id)
+        .filter(TaskLink.parent_id == parent.id, TaskLink.wait == 1, Task.status.notin_(missions.TERMINAL)).count()
+    )
+    if still:
+        return []
+    parent.status, parent.wait_reason = "approved", ""
     db.commit()
+    return [parent.id]
+
+
+def _fire(text: str) -> None:
+    """Aviso no Telegram vindo de código síncrono (ou de uma thread do pool): agenda no loop do app, se houver."""
+    try:
+        asyncio.get_running_loop().create_task(notify(text))
+    except RuntimeError:
+        if runner.loop is not None:
+            runner.loop.call_soon_threadsafe(lambda: runner.loop.create_task(notify(text)))
+
+
+def _submit(ids: list[int]) -> None:
+    for tid in ids:
+        runner.submit(tid)
+
+
+def finish(db: DB, task: Task, notify_requester: bool = True) -> list[int]:
+    """Uma tarefa chegou ao fim: avisa quem pediu, libera as dependentes, fecha a missão e põe na fila o que destravou."""
+    ids = reply_to_requester(db, task, note=notify_requester)
+    more, notices = missions.settle(db, task)
+    ids += more
+    _submit(ids)
+    for text in notices:
+        _fire(text)
+    return ids
+
+
+def action_settled(db: DB, action: Action) -> list[int]:
+    """Uma ação externa foi decidida e executada: a tarefa que esperava por ela volta para a fila quando não resta nenhuma."""
+    task = db.get(Task, action.task_id) if action.task_id else None
+    if task is None or task.status != "waiting" or task.wait_reason != "acao":
+        return []
+    open_ = db.query(Action).filter(
+        Action.task_id == task.id, Action.status.in_(("awaiting_approval", "approved", "running"))
+    ).count()
+    if open_:
+        return []
+    task.status, task.wait_reason = "approved", ""
+    db.commit()
+    _submit([task.id])
+    return [task.id]
+
+
+def resume_context(db: DB, task: Task) -> str:
+    """O que o agente precisa saber ao ser retomado: respostas dos pedidos que esperava e o desfecho das suas ações."""
+    lines = []
+    kids = (
+        db.query(Task).join(TaskLink, TaskLink.task_id == Task.id)
+        .filter(TaskLink.parent_id == task.id, TaskLink.wait == 1).order_by(Task.id).all()
+    )
+    for k in kids:
+        res = re.sub(r"```.*?```", "", k.result or "", flags=re.S).strip()[:1500]
+        lines.append(f"- pedido a {k.agent_slug} \"{k.title}\": {k.status}" + (f"\n  {res}" if res else ""))
+    for a in db.query(Action).filter(Action.task_id == task.id).order_by(Action.id).all():
+        extra = a.error if a.status in ("failed", "rejected") else (a.external_ref or a.result)[:300]
+        lines.append(f"- ação {a.integration}.{a.operation}: {a.status}" + (f" ({extra})" if extra else ""))
+    return (f"{RESUME_MARK} Você estava esperando e agora há novidades:\n" + "\n".join(lines)
+            + "\nContinue de onde parou e conclua a tarefa; responda sem blocos bash quando terminar.")
 
 
 def conversation_text(db: DB, cid: int) -> str:
-    rows = db.query(Message).filter(Message.conversation_id == cid, Message.role == "assistant").all()
-    return "\n\n".join(m.content for m in rows)
+    """Respostas do agente nesta tarefa; depois de uma retomada, só o que veio depois dela (não reprocessa o antigo)."""
+    rows = db.query(Message).filter(Message.conversation_id == cid).order_by(Message.id).all()
+    start = max((i + 1 for i, m in enumerate(rows) if m.role == "user" and m.content.startswith(RESUME_MARK)), default=0)
+    return "\n\n".join(m.content for m in rows[start:] if m.role == "assistant")
 
 
 # ---------- execução das tarefas aprovadas ----------
@@ -604,14 +696,26 @@ def sync_task(db: DB, task: Task) -> None:
         db.commit()
         full = conversation_text(db, task.conversation_id)
         content.ingest_blocks(db, task, full)
-        process_collaboration(db, task, full)
-        reply_to_requester(db, task)
+        collab = process_collaboration(db, task, full)
+        ids = list(collab["approved"]) + missions.expand(db, task, full)
+        waiting_on = [c for c in collab["tasks"] if (lk := db.get(TaskLink, c.id)) is not None and lk.wait]
+        has_open_action = db.query(Action).filter(
+            Action.task_id == task.id, Action.status.in_(("awaiting_approval", "approved", "running"))
+        ).count()
+        if waiting_on or has_open_action:  # não terminou: espera outro agente ou a decisão sobre uma ação externa
+            task.status, task.wait_reason, task.finished_at = "waiting", "agente" if waiting_on else "acao", None
+            db.commit()
+            _submit(ids)
+            return
+        db.commit()
+        _submit(ids)
+        finish(db, task)
     db.commit()
 
 
 def sync_task_for_conversation(db: DB, cid: int) -> None:
     task = db.query(Task).filter(Task.conversation_id == cid).one_or_none()
-    if task is not None and task.status in ("running", "waiting"):
+    if task is not None and (task.status == "running" or (task.status == "waiting" and task.wait_reason in ("", "2fa"))):
         sync_task(db, task)
 
 
@@ -624,6 +728,9 @@ async def execute_task(task_id: int) -> None:
         task = db.get(Task, task_id)
         if task is None or task.status != "approved":
             return
+        resuming = task.conversation_id is not None  # voltou de uma espera (outro agente ou ação externa)
+        if not resuming and missions.hold_if_blocked(db, task):
+            return
         agent = db.query(Agent).filter(Agent.slug == task.agent_slug).one()
         project = db.get(GrowthProject, task.project_id)
         pa = db.query(ProjectAgent).filter(
@@ -632,19 +739,26 @@ async def execute_task(task_id: int) -> None:
         try:
             provider = pick_provider(pa, "agents_run", db)
         except ProviderError as e:
-            task.status, task.result = "failed", str(e)
+            task.status, task.result, task.finished_at = "failed", str(e), utcnow()
             db.commit()
+            finish(db, task)
             return
-        conv = Conversation(
-            title=f"{agent.icon} {project.name} · {agent.name}: {task.title}"[:200],
-            category=f"Agentes · {project.name}"[:40],
-        )
-        db.add(conv)
-        db.commit()
-        task.conversation_id, task.status = conv.id, "running"
-        guide = collaboration_guide(db, project, agent.slug)
-        tools = routines.toolbox(db, project, agent.slug, task)
-        db.add(Message(conversation_id=conv.id, role="user", content=task_brief(project, agent, pa, task, guide, tools)))
+        if resuming:
+            conv = db.get(Conversation, task.conversation_id)
+            task.status, task.wait_reason, task.finished_at = "running", "", None
+            db.add(Message(conversation_id=conv.id, role="user", content=resume_context(db, task)))
+        else:
+            conv = Conversation(
+                title=f"{agent.icon} {project.name} · {agent.name}: {task.title}"[:200],
+                category=f"Agentes · {project.name}"[:40],
+            )
+            db.add(conv)
+            db.commit()
+            task.conversation_id, task.status = conv.id, "running"
+            guide = collaboration_guide(db, project, agent.slug)
+            tools = routines.toolbox(db, project, agent.slug, task)
+            db.add(Message(conversation_id=conv.id, role="user",
+                           content=task_brief(project, agent, pa, task, guide, tools)))
         db.commit()
         error = ""
         ticket = actions.issue_ticket(task)  # permite `gos-int` enquanto esta tarefa roda
@@ -657,10 +771,12 @@ async def execute_task(task_id: int) -> None:
         if error:
             task.status, task.result, task.finished_at = "failed", error, utcnow()
             db.commit()
-            reply_to_requester(db, task)
+            finish(db, task)
         else:
             sync_task(db, task)
-        if task.status == "waiting":
+        if task.status == "waiting" and task.wait_reason == "acao":
+            await notify(f"↗ {project.name} · {agent.name} espera você aprovar uma ação externa: {task.title}")
+        elif task.status == "waiting" and task.wait_reason == "2fa":
             await notify(f"🔐 {project.name} · {agent.name} precisa do seu 2FA para continuar: {task.title}")
         elif task.status == "failed":
             await notify(f"⚠️ {project.name} · {agent.name} falhou em: {task.title}")
@@ -669,7 +785,10 @@ async def execute_task(task_id: int) -> None:
 
 
 class TaskRunner:
-    """Fila única: uma tarefa por vez, para não sobrecarregar o VPS nem os limites dos providers.
+    """Fila com `GOS_RUNNER_WORKERS` tarefas ao mesmo tempo (padrão 2), no máximo uma por agente e projeto.
+
+    Assim uma missão anda sem travar o resto e sem estourar os limites dos providers. Tarefa em espera
+    (`waiting`) não ocupa worker: ela só volta para a fila quando o que esperava termina.
 
     As rotas síncronas do FastAPI rodam numa thread do pool, sem event loop. Por isso o runner guarda o
     loop do app (bind, no startup) e, fora dele, agenda a entrada na fila com call_soon_threadsafe.
@@ -677,16 +796,18 @@ class TaskRunner:
 
     def __init__(self):
         self.queue: asyncio.Queue[int] = asyncio.Queue()
-        self.worker: asyncio.Task | None = None
+        self.workers: list[asyncio.Task] = []
+        self.busy: set[tuple[int, str]] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
-        if loop is not self.loop:  # loop novo (startup): fila e worker nascem nele
-            self.loop, self.queue, self.worker = loop, asyncio.Queue(), None
+        if loop is not self.loop:  # loop novo (startup): fila e workers nascem nele
+            self.loop, self.queue, self.workers, self.busy = loop, asyncio.Queue(), [], set()
 
     def start(self) -> None:
-        if self.worker is None or self.worker.done():
-            self.worker = asyncio.create_task(self._loop())
+        self.workers = [w for w in self.workers if not w.done()]
+        while len(self.workers) < max(1, get_settings().runner_workers):
+            self.workers.append(asyncio.create_task(self._loop()))
 
     def _enqueue(self, task_id: int) -> None:
         self.queue.put_nowait(task_id)
@@ -704,13 +825,31 @@ class TaskRunner:
         else:
             raise RuntimeError("fila de tarefas ainda não iniciou")
 
+    @staticmethod
+    def _key(task_id: int) -> tuple[int, str] | None:
+        db = new_session()
+        try:
+            t = db.get(Task, task_id)
+            return (t.project_id, t.agent_slug) if t is not None else None
+        finally:
+            db.close()
+
     async def _loop(self):
         while True:
             tid = await self.queue.get()
+            key = self._key(tid)
+            if key is not None and key in self.busy:  # esse agente já está trabalhando neste projeto: tenta depois
+                self.queue.put_nowait(tid)
+                await asyncio.sleep(0.2)  # volta para o fim da fila e deixa os outros passarem
+                continue
+            if key is not None:
+                self.busy.add(key)
             try:
                 await execute_task(tid)
             except Exception:  # noqa: BLE001
                 log.exception("tarefa %s falhou", tid)
+            finally:
+                self.busy.discard(key)
 
 
 runner = TaskRunner()

@@ -62,16 +62,16 @@ def only_agents(*slugs):
 def test_each_project_gets_its_own_team_and_kpis(client):
     a, b = make_projects("Zombie Party", "A Ilha")
     s = dbmod.new_session()
-    assert s.query(dbmod.Agent).count() == 9
+    assert s.query(dbmod.Agent).count() == 10
     for slug in (a, b):
         p = s.query(dbmod.GrowthProject).filter_by(slug=slug).one()
-        assert s.query(dbmod.ProjectAgent).filter_by(project_id=p.id).count() == 9
+        assert s.query(dbmod.ProjectAgent).filter_by(project_id=p.id).count() == 10
         assert s.query(dbmod.Metric).filter_by(project_id=p.id, key="mrr").count() == 1
     pa = s.query(dbmod.ProjectAgent).filter_by(project_id=pid(a), agent_slug="growth").one()
     pa.mission = "missão do zombie"
     s.commit()
     growth.seed_defaults(s)  # idempotente e não sobrescreve a missão do projeto
-    assert s.query(dbmod.ProjectAgent).count() == 18
+    assert s.query(dbmod.ProjectAgent).count() == 20
     assert s.query(dbmod.ProjectAgent).filter_by(project_id=pid(a), agent_slug="growth").one().mission == "missão do zombie"
     s.close()
 
@@ -289,7 +289,7 @@ def test_project_crud(logged):
     r = logged.patch("/api/gprojects/novo-negocio", json={"repo": "kellokes/agenda", "domains": "agenda.com"})
     assert r.json()["repo"] == "kellokes/agenda"
     assert logged.patch("/api/gprojects/novo-negocio", json={"repo": "não é repo"}).status_code == 422
-    assert len(logged.get("/api/gprojects/novo-negocio/agents").json()) == 9
+    assert len(logged.get("/api/gprojects/novo-negocio/agents").json()) == 10
 
 
 def test_notify_is_noop_without_telegram():

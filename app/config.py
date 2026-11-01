@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     plan_hour: int = 7  # hora local em que o plano do dia é gerado
     agent_provider: str = "claude"  # provider padrão dos agentes (cai no primeiro disponível)
     agent_concurrency: int = 2
+    runner_workers: int = 2  # tarefas rodando ao mesmo tempo (no máximo uma por agente e projeto)
     public_url: str = ""  # ex.: https://os.exemplo.com, para o link no aviso
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""  # ex.: "DOMAIN=exemplo.com" para resolver {$DOMAIN} do Caddyfile

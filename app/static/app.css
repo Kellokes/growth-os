@@ -479,3 +479,57 @@ textarea { resize: vertical; }
 .note-head { display: flex; flex-wrap: wrap; gap: 5px; align-items: baseline; }
 .note-time { margin-left: auto; font-size: 12px; }
 .note-text { color: var(--text-2); margin-top: 3px; white-space: pre-wrap; }
+
+/* ---------- gestão de conversas ---------- */
+.conv-panel { display: flex; flex-direction: column; gap: 10px; min-height: 0; flex: 1; }
+.conv-close, .conv-toggle, .conv-new-m { display: none; }
+.conv-search { padding: 8px 12px; font-size: 13.5px; }
+.conv-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px; }
+.conv-filters:empty { display: none; }
+.fchip { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); color: var(--text-2); cursor: pointer; display: inline-flex; gap: 6px; align-items: center; max-width: 100%; }
+.fchip span { font-size: 11px; color: var(--muted); }
+.fchip:hover { color: var(--text); border-color: var(--line-strong); }
+.fchip.active { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
+.fchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conv-list button { display: flex; flex-direction: column; gap: 1px; }
+.conv-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-cat { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-empty { padding: 10px 12px; font-size: 13px; color: var(--muted); }
+.conv-title-wrap { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+.conv-title-wrap .icon-btn { flex: none; width: 30px; height: 30px; }
+.conv-title-wrap .icon-btn[hidden] { display: none; }
+.trash-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 32px; font-size: 13.5px; color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+.trash-bar[hidden] { display: none; }
+.composer.disabled { opacity: .55; pointer-events: none; }
+.small-print { font-size: 12.5px; margin: 0; }
+.conv-backdrop[hidden] { display: none; }
+
+@media (max-width: 800px) {
+  /* a lista de conversas vira uma gaveta: abre pelo botão ☰ Conversas */
+  .conv-panel { position: fixed; inset: 0 auto 0 0; width: min(86vw, 340px); z-index: 40; background: var(--panel);
+    border-right: 1px solid var(--line); box-shadow: var(--shadow); padding: calc(14px + env(safe-area-inset-top)) 12px 14px;
+    transform: translateX(-102%); transition: transform .22s var(--ease); visibility: hidden; }
+  .shell.panel-open .conv-panel { transform: none; visibility: visible; }
+  .conv-backdrop { position: fixed; inset: 0; z-index: 39; background: rgba(5,7,12,.45); }
+  .conv-head { display: flex; gap: 8px; font-size: 12px; }
+  .conv-head span { flex: 1; }
+  .conv-close { display: inline-grid; width: 34px; height: 34px; }
+  .conv-search { font-size: 16px; }
+  .conv-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .conv-filters::-webkit-scrollbar { display: none; }
+  .fchip { flex: none; padding: 6px 12px; font-size: 13px; }
+  .conv-list { flex-direction: column; flex: 1; overflow-x: hidden; overflow-y: auto; gap: 2px; }
+  .conv-list li { flex: none; }
+  .conv-list button { width: 100%; max-width: none; border: 0; border-radius: 10px; padding: 11px 12px; font-size: 15px; }
+
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar, .main { min-width: 0; }
+
+  /* topo do chat: ☰ | título ⋯ | + Nova, e o provider embaixo */
+  .topbar.chat-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+  .chat-top .provider { grid-column: 1 / -1; }
+  .conv-toggle, .conv-new-m { display: inline-flex; padding: 8px 12px; font-size: 13.5px; }
+  .conv-toggle span { display: none; }
+  .trash-bar { padding: 10px 14px; flex-wrap: wrap; }
+}
+@media (max-width: 800px) and (min-width: 420px) { .conv-toggle span { display: inline; } }

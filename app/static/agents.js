@@ -49,7 +49,7 @@
         <span class="badge t-${t.status}">${esc(STATUS[t.status] || t.status)}</span>
         <span class="muted">${esc(names[t.agent] || t.agent)}</span>
         <span class="grow">${t.requested_by ? `<span class="tag handoff">🤝 de ${esc(names[t.requested_by] || t.requested_by)}</span> ` : ""}${esc(t.title)}</span>
-        ${t.conversation_id ? `<a href="/?c=${t.conversation_id}">conversa →</a>` : ""}
+        ${t.conversation_id ? `<a href="/?c=${t.conversation_id}">thread →</a>` : ""}
       </div>`).join("") : '<div class="muted pad">Nenhuma tarefa ainda neste projeto. O primeiro plano sai amanhã cedo, ou gere agora em Plano do dia.</div>';
   }
 

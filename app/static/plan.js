@@ -8,7 +8,7 @@
   const RISK = { baixo: "risco baixo", medio: "risco médio", alto: "risco alto" };
 
   function taskHtml(t, showProject = false) {
-    const conv = t.conversation_id ? `<a class="btn small ghost" href="/?c=${t.conversation_id}">Ver conversa</a>` : "";
+    const conv = t.conversation_id ? `<a class="btn small ghost" href="/?c=${t.conversation_id}">Ver thread</a>` : "";
     const actions = t.status === "proposed"
       ? `<button class="btn small danger" data-reject="${t.id}" type="button">Rejeitar</button><button class="btn small primary" data-approve="${t.id}" type="button">Aprovar</button>`
       : `<span class="badge t-${t.status}">${esc(STATUS[t.status] || t.status)}</span>${conv}`;

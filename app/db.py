@@ -2,7 +2,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine,
+    Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, inspect,
+    text as sql_text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -41,8 +42,11 @@ class Session(Base):
 class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    title: Mapped[str] = mapped_column(String(200), default="Nova conversa")
+    title: Mapped[str] = mapped_column(String(200), default="Nova thread")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    category: Mapped[str] = mapped_column(String(40), default="", server_default="")
+    # "Excluir" no app só esconde: a conversa (e a auditoria dela) continua no banco.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Message(Base):
@@ -201,6 +205,25 @@ class AgentNote(Base):
 _SessionLocal = None
 
 
+# Colunas novas em tabelas que já existem (create_all só cria tabelas). Só ADD COLUMN, nunca DROP.
+_NEW_COLUMNS = {
+    "conversations": {
+        "category": "VARCHAR(40) NOT NULL DEFAULT ''",
+        "deleted_at": "TIMESTAMP NULL",
+    },
+}
+
+
+def _add_missing_columns(engine):
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, cols in _NEW_COLUMNS.items():
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name, ddl in cols.items():
+                if name not in have:
+                    conn.execute(sql_text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+
 def init_db(url: str | None = None):
     global _engine, _SessionLocal
     url = url or get_settings().database_url
@@ -212,6 +235,7 @@ def init_db(url: str | None = None):
         # pool_pre_ping descarta conexões que o Postgres fechou (restart, timeout).
         _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
     Base.metadata.create_all(_engine)
+    _add_missing_columns(_engine)
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 

@@ -177,12 +177,12 @@ def test_board_columns_and_retry(logged, submitted):
     failed_id = next(t.id for t in rows if t.status == "failed")
     s.close()
 
-    data = logged.get(f"/api/board?project={a}").json()
+    data = logged.get(f"/api/board?project={a}&days=14").json()
     titles = {t["title"] for t in data["tasks"]}
     assert "de outro projeto" not in titles and "velha" not in titles
     assert {t["status"] for t in data["tasks"]} == {"proposed", "approved", "running", "waiting", "done", "failed", "rejected"}
     assert all(t["origin"] == "owner" for t in data["tasks"])
-    assert len(logged.get("/api/board?project=all").json()["tasks"]) == 8
+    assert len(logged.get("/api/board?project=all&days=14").json()["tasks"]) == 8
     assert logged.get("/api/board?project=nao-existe").status_code == 404
 
     r = logged.post(f"/api/tasks/{failed_id}/retry")
@@ -228,3 +228,44 @@ def test_sidebar_menu_has_sections_then_threads_on_every_page(logged):
         assert side.index('class="nav"') < side.index('id="conv-list"') < side.index('id="logout"')
         assert 'href="/settings"' in side and 'href="/automations"' in side
         assert html.count('id="conv-list"') == 1
+
+
+def test_board_complete_history_chat_and_no_duplicates(logged):
+    (project,) = make_projects("Projeto")
+    s = dbmod.new_session()
+    conv = dbmod.Conversation(title="Tarefa de agente")
+    chat = dbmod.Conversation(title="Chat")
+    s.add_all([conv, chat])
+    s.flush()
+    task = dbmod.Task(project_id=pid(project), agent_slug="growth", title="Tarefa",
+                      status="running", conversation_id=conv.id)
+    s.add(task)
+    for status in ("pending", "running", "done", "failed", "rejected", "blocked"):
+        s.add(dbmod.CommandRun(conversation_id=chat.id, command="chat-" + status,
+                               risk="approval", status=status, output="resultado"))
+    s.add(dbmod.CommandRun(conversation_id=conv.id, command="comando da tarefa", risk="safe", status="done"))
+    s.add(dbmod.CommandRun(command="comando sem thread", risk="safe", status="done"))
+    s.add(dbmod.CommandRun(conversation_id=chat.id, command="chat antigo", risk="safe", status="done",
+                           created_at=datetime(2020, 1, 1)))
+    s.add(dbmod.CommandRun(conversation_id=chat.id, command="pendente antigo", risk="approval", status="pending",
+                           created_at=datetime(2020, 1, 1)))
+    s.add_all([dbmod.Task(project_id=pid(project), agent_slug="growth", title=f"histórico {i}",
+                          status="done", created_at=datetime(2020, 1, 1)) for i in range(305)])
+    s.commit()
+    s.close()
+
+    all_rows = logged.get("/api/board").json()["tasks"]
+    commands = {r["title"]: r for r in all_rows if r["kind"] == "command"}
+    assert "comando da tarefa" not in commands
+    assert "comando sem thread" in commands and "chat antigo" in commands
+    assert {commands["chat-" + a]["status"] for a in ("pending", "running", "done", "failed", "rejected", "blocked")} == {
+        "waiting", "running", "done", "failed", "rejected"}
+    assert commands["chat-blocked"]["command_status"] == "blocked"
+    assert commands["chat-done"]["result"] == "resultado"
+    assert sum(r["kind"] == "task" for r in all_rows) == 306
+
+    recent = logged.get("/api/board?days=14").json()["tasks"]
+    assert not any(r["title"] in ("chat antigo", "histórico 0") for r in recent)
+    assert any(r["title"] == "pendente antigo" for r in recent)
+    project_rows = logged.get(f"/api/board?project={project}").json()["tasks"]
+    assert len(project_rows) == 306 and all(r["kind"] == "task" for r in project_rows)

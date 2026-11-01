@@ -967,28 +967,48 @@ def upsert_metric(slug: str, body: MetricIn, request: Request, auth: Auth = Depe
 # ---------- kanban das atividades dos agentes ----------
 
 @app.get("/api/board")
-def board(project: str = "all", days: int = 14, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    """Tudo que está aberto + o que fechou nos últimos `days` dias. As colunas são as etapas da tarefa."""
-    days = max(1, min(days, 90))
+def board(project: str = "all", days: int = 0, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Tarefas de todas as origens e ações avulsas do chat; days=0 inclui todo o histórico."""
+    days = max(0, min(days, 90))
     q = db.query(Task)
     if project != "all":
         q = q.filter(Task.project_id == _project_or_404(db, project).id)
-    since = utcnow() - timedelta(days=days)
-    open_rows = q.filter(Task.status.in_(routines.OPEN_STATUSES)).order_by(Task.id.desc()).limit(300).all()
-    closed = (
-        q.filter(Task.status.in_(("done", "failed", "rejected")),
-                 func.coalesce(Task.finished_at, Task.decided_at, Task.created_at) >= since)
-        .order_by(Task.id.desc()).limit(300).all()
-    )
-    rows = open_rows + closed
+    since = utcnow() - timedelta(days=days) if days else None
+    open_rows = q.filter(Task.status.in_(routines.OPEN_STATUSES)).order_by(Task.id.desc()).all()
+    closed_q = q.filter(Task.status.in_(("done", "failed", "rejected")))
+    if since:
+        closed_q = closed_q.filter(func.coalesce(Task.finished_at, Task.decided_at, Task.created_at) >= since)
+    rows = open_rows + closed_q.order_by(Task.id.desc()).all()
     projects = _projects_by_id(db)
     links = _links(db, rows)
     autos = {a.id: a.title for a in db.query(Automation).all()}
     out = []
     for t in rows:
         j = _task_json(t, projects, links)
+        j["kind"] = "task"
         j["automation"] = autos.get(t.automation_id, "") if t.automation_id else ""
         out.append(j)
+
+    # Comandos de uma thread de tarefa já estão representados pelo cartão da tarefa.
+    # As demais threads não guardam projeto; não inferir um a partir do texto.
+    if project == "all":
+        linked = db.query(Task.id).filter(Task.conversation_id == CommandRun.conversation_id).exists()
+        cq = db.query(CommandRun).filter(~linked)
+        if since:
+            cq = cq.filter(or_(CommandRun.status.in_(("running", "pending")), CommandRun.created_at >= since))
+        statuses = {"pending": "waiting", "running": "running", "done": "done",
+                    "failed": "failed", "rejected": "rejected", "blocked": "rejected"}
+        for r in cq.order_by(CommandRun.id.desc()).all():
+            if r.status not in statuses:
+                continue
+            out.append({
+                "kind": "command", "id": r.id, "project": "", "agent": "chat",
+                "title": r.command, "steps": r.command, "rationale": "",
+                "risk": "baixo", "status": statuses[r.status], "command_status": r.status,
+                "result": (r.output or "")[:3000], "conversation_id": r.conversation_id,
+                "created_at": r.created_at.isoformat(), "decided_at": None, "finished_at": None,
+                "origin": "chat", "automation": "",
+            })
     return {"tasks": out, "days": days}
 
 

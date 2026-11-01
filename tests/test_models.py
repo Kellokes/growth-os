@@ -137,3 +137,58 @@ def test_cli_flags(captured):
     a = captured["args"]
     assert a[a.index("--model") + 1] == "gpt-5-codex"
     assert 'model_reasoning_effort="xhigh"' in a and a[-1] == "-"
+
+
+SAMPLE = [
+    {"id": "google/gemini-2.5-flash-image", "name": "Gemini Image",
+     "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["image", "text"]},
+     "pricing": {"prompt": "0.0000003", "completion": "0.0000025", "image": "0.001238", "request": "0"}},
+    {"id": "openai/gpt-4o-audio-preview", "name": "GPT-4o Audio",
+     "architecture": {"input_modalities": ["text", "audio"], "output_modalities": ["text", "audio"]},
+     "pricing": {"prompt": "0.0000025", "completion": "0.00001", "audio": "0.00004"}},
+    {"id": "mistralai/voxtral-small", "name": "Voxtral (transcreve)",
+     "architecture": {"input_modalities": ["text", "audio"], "output_modalities": ["text"]},
+     "pricing": {"prompt": "0", "completion": "0"}},
+    {"id": "openrouter/auto", "name": "Auto", "architecture": {"output_modalities": ["text"]},
+     "pricing": {"prompt": "-1", "completion": "-1"}},
+    {"id": "ruim; rm -rf /", "name": "x", "pricing": {}},
+]
+
+
+def test_parse_openrouter_keeps_prices_and_modalities():
+    out = {m["id"]: m for m in modelcfg.parse_openrouter(SAMPLE)}
+    assert "ruim; rm -rf /" not in out
+    img = out["google/gemini-2.5-flash-image"]
+    assert img["kinds"] == ["text", "image"] and img["pricing"]["image"] == pytest.approx(0.001238)
+    assert "request" not in img["pricing"]  # zero não aparece
+    assert out["mistralai/voxtral-small"]["free"] is True
+    assert out["openrouter/auto"]["pricing"] == {"prompt": None, "completion": None}  # variável
+    models = list(out.values())
+    assert [m["id"] for m in modelcfg.for_kind(models, "image")] == ["google/gemini-2.5-flash-image"]
+    # áudio inclui quem gera e quem só entende (transcrição)
+    assert {m["id"] for m in modelcfg.for_kind(models, "audio")} == {"openai/gpt-4o-audio-preview", "mistralai/voxtral-small"}
+    assert modelcfg.for_kind(models, "video") == []
+
+
+def test_openrouter_endpoint(logged, monkeypatch):
+    async def fake():
+        return {"live": True, "updated_at": 1.0, "models": modelcfg.parse_openrouter(SAMPLE)}
+
+    monkeypatch.setattr(modelcfg, "openrouter_models", fake)
+    data = logged.get("/api/models/openrouter?kind=image").json()
+    assert data["live"] and [m["id"] for m in data["models"]] == ["google/gemini-2.5-flash-image"]
+
+
+def test_openrouter_falls_back_without_network(monkeypatch):
+    import httpx
+
+    class Down:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **k): raise httpx.ConnectError("sem rede")
+
+    monkeypatch.setattr(modelcfg, "_OR_CACHE", {"at": 0.0, "models": None})
+    monkeypatch.setattr(modelcfg.httpx, "AsyncClient", Down)
+    data = asyncio.run(modelcfg.openrouter_models())
+    assert data["live"] is False and data["models"] and data["models"][0]["pricing"] == {}

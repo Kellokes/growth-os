@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .audit import audit
 from .config import get_settings
+from .projects import GatewayError, restart_container, restart_target
 from .db import CommandRun, Message
 from .executor import classify, run_command
 from .providers import ChatTurn, Provider, ProviderError
@@ -59,6 +60,16 @@ def build_history(db: DB, cid: int) -> list[ChatTurn]:
 
 async def execute_run(db: DB, run: CommandRun) -> None:
     s = get_settings()
+    target = restart_target(run.command)
+    if target:  # só chega aqui depois do 2FA: restart não é safe/auto
+        try:
+            await restart_container(target)
+            run.exit_code, run.output = 0, f"container {target} reiniciado pelo gateway"
+        except GatewayError as e:
+            run.exit_code, run.output = 1, str(e)
+        run.status = "done" if run.exit_code == 0 else "failed"
+        db.commit()
+        return
     result = await run_in_threadpool(
         run_command, run.command, Path(s.workspace_dir), s.command_timeout_seconds, s.command_max_output_bytes
     )

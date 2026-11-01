@@ -20,12 +20,15 @@ roda em Docker no VPS da Hostinger atrás do Caddy que já está lá.
 - Log de auditoria de tudo (login, chat, comando, aprovação).
 - Nesta etapa o OS fica isolado: sem acesso ao socket do Docker nem aos 3 projetos.
 
-## Etapa 2 — Gestão dos projetos
+## Etapa 2 — Gestão dos projetos (feita)
 
-- Cadastro dos 3 projetos existentes (repositório, container, rota no Caddy, variáveis).
-- IA lê e altera código em branches git; status e logs dos containers.
-- Acesso ao Docker por um proxy de socket com permissões mínimas (ex.: docker-socket-proxy).
-- Deploy, restart e mudanças no Caddy só com aprovação.
+- Tela **Projetos**: containers agrupados por projeto do compose, saúde, domínios do Caddy com status HTTP,
+  logs e restart com 2FA.
+- Docker só por um **gateway próprio** (`gateway/`): lista sem variáveis de ambiente, logs e restart com
+  token que só o app tem. Sem exec, sem criar/remover containers, sem acesso a arquivos.
+- Caddyfile montado só leitura; a IA nunca recarrega o Caddy (mudanças nele são manuais, com o procedimento seguro).
+- Código dos projetos via GitHub: a IA clona no /workspace, cria branch, dá push e abre PR (`gos-pr`) com um
+  token fine-grained só dos repos dos projetos. Nunca push na main, nunca merge.
 
 ## Etapa 3 — Agentes por área + plan approval matinal + dashboard
 

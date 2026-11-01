@@ -19,6 +19,23 @@ services:
       - no-new-privileges:true
     mem_limit: 1g
 
+  # Único serviço com o socket do Docker. Só lista containers, lê logs e reinicia (com token).
+  docker-gateway:
+    build: ./gateway
+    container_name: growth-os-docker-gateway
+    restart: unless-stopped
+    environment:
+      GATEWAY_TOKEN: ${GOS_GATEWAY_TOKEN:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Sem "ports": só a rede interna do compose alcança.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 64
+
   growth-os:
     build: .
     container_name: growth-os
@@ -26,9 +43,12 @@ services:
     env_file: .env
     environment:
       GOS_DATABASE_URL: postgresql+psycopg://gos:${GOS_POSTGRES_PASSWORD}@postgres:5432/gos
+      DOCKER_GATEWAY_URL: http://docker-gateway:2375
     depends_on:
       postgres:
         condition: service_healthy
+      docker-gateway:
+        condition: service_started
     # Só o Caddy do host enxerga a porta; nada fica exposto direto na internet.
     ports:
       - "127.0.0.1:8100:8000"
@@ -38,7 +58,14 @@ services:
       - gos-workspace:/workspace
       # Login dos CLIs (claude login / codex login) persiste aqui.
       - gos-home:/home/gos
-    # Endurecimento: sem privilégios extras e sem acesso ao socket do Docker nesta etapa.
+      # Caddyfile compartilhado do VPS, só leitura (sem a pasta do projeto, que tem .env).
+      - type: bind
+        source: ${GOS_CADDYFILE_HOST:-/opt/takeone/Caddyfile}
+        target: /projects/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+    # Endurecimento: sem privilégios extras; o Docker só pelo gateway, nunca o socket.
     read_only: true
     tmpfs:
       - /tmp

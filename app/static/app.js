@@ -256,18 +256,6 @@
     $("#composer").requestSubmit();
   });
   $("#new-conv").onclick = newConversation;
-  $("#logout").onclick = async () => { await api("/logout", { method: "POST" }).catch(() => {}); location.href = "/login"; };
-  $("#show-audit").onclick = async () => {
-    const rows = await api("/api/audit");
-    const box = $("#audit-list"); box.innerHTML = "";
-    for (const r of rows) {
-      const d = el("div");
-      for (const v of [new Date(r.at + "Z").toLocaleString("pt-BR"), r.action, r.detail]) { const s = el("span"); s.textContent = v; s.title = v; d.appendChild(s); }
-      box.appendChild(d);
-    }
-    $("#audit-dialog").showModal();
-  };
-
   (async () => {
     await loadProviders();
     const convs = await loadConversations();

@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
 
+    # Etapa 2: gateway do Docker (único com o socket) e Caddyfile montado só para leitura.
+    gateway_url: str = "http://docker-gateway:2375"
+    gateway_token: str = ""
+    caddyfile_path: Path = Path("/projects/caddy/Caddyfile")
+    caddy_vars: str = ""
+    # Token fine-grained do GitHub só com os repos dos projetos (Contents + Pull requests).
+    github_token: str = ""
+    github_token_file: Path = Path("/tmp/gos-secrets/github_token")  # ex.: "DOMAIN=exemplo.com" para resolver {$DOMAIN} do Caddyfile
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -14,6 +14,7 @@ from .audit import audit
 from .config import get_settings
 from .db import AuditLog, CommandRun, Conversation, Message, get_db, init_db, new_session
 from .executor import classify
+from . import projects as proj
 from .providers import all_providers
 from .security import (
     SESSION_COOKIE, Auth, authenticate, client_ip, create_session, current_auth,
@@ -39,9 +40,29 @@ def _protect_process_memory() -> None:
         pass
 
 
+def _write_github_token() -> None:
+    """Deixa o token num arquivo do tmpfs para o credential helper do git e o gos-pr.
+
+    Ele nunca entra no ambiente dos comandos, e o executor bloqueia leitura direta do arquivo.
+    O escopo do token (só os repos dos projetos, sem admin) é o que limita o estrago.
+    """
+    s = get_settings()
+    path = Path(s.github_token_file)
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if s.github_token:
+            path.write_text(s.github_token.strip(), encoding="utf-8")
+            path.chmod(0o600)
+        elif path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _protect_process_memory()
+    _write_github_token()
     init_db()
     yield
 
@@ -119,12 +140,21 @@ def logout(request: Request, auth: Auth = Depends(current_auth), db: DB = Depend
     return resp
 
 
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request, db: DB = Depends(get_db)):
+def _page(request: Request, db: DB, template: str, active: str):
     sess = lookup_session(db, request.cookies.get(SESSION_COOKIE))
     if sess is None:
         return RedirectResponse("/login", status_code=303)
-    return templates.TemplateResponse(request, "chat.html", {"csrf": sess.csrf_token})
+    return templates.TemplateResponse(request, template, {"csrf": sess.csrf_token, "active": active})
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "chat.html", "chat")
+
+
+@app.get("/projects", response_class=HTMLResponse)
+def projects_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "projects.html", "projects")
 
 
 # ---------- API ----------
@@ -321,3 +351,52 @@ def audit_log(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
         {"at": r.at.isoformat(), "actor": r.actor, "action": r.action, "detail": r.detail, "ip": r.ip}
         for r in rows
     ]
+
+
+# ---------- projetos (etapa 2) ----------
+
+@app.get("/api/projects")
+async def projects_overview(auth: Auth = Depends(current_auth)):
+    sites, caddy_error = proj.read_caddy_sites()
+    try:
+        containers, gateway_error = await proj.list_containers(), ""
+    except proj.GatewayError as e:
+        containers, gateway_error = [], str(e)
+    return {
+        "projects": proj.group_projects(containers, sites),
+        "errors": [e for e in (gateway_error, caddy_error) if e],
+    }
+
+
+@app.get("/api/projects/domains")
+async def projects_domains(auth: Auth = Depends(current_auth)):
+    sites, _ = proj.read_caddy_sites()
+    hosts = sorted({h for s in sites for h in s["hosts"]})
+    return await proj.check_hosts(hosts)
+
+
+@app.get("/api/containers/{name}/logs")
+async def container_logs(name: str, request: Request, tail: int = 200, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    try:
+        text = await proj.container_logs(name, tail)
+    except proj.GatewayError as e:
+        raise HTTPException(502, str(e)) from e
+    audit(db, auth.user.username, "container_logs", name, client_ip(request))
+    return {"name": name, "logs": text}
+
+
+@app.post("/api/containers/{name}/restart")
+async def container_restart(
+    name: str, body: ApproveIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db),
+):
+    ip = client_ip(request)
+    if not consume_totp(db, auth.user, body.totp):
+        audit(db, auth.user.username, "restart_failed", f"{name}: 2FA inválido", ip)
+        raise HTTPException(403, "código 2FA inválido")
+    try:
+        await proj.restart_container(name)
+    except proj.GatewayError as e:
+        audit(db, auth.user.username, "restart_failed", f"{name}: {e}", ip)
+        raise HTTPException(502, str(e)) from e
+    audit(db, auth.user.username, "container_restart", name, ip)
+    return {"ok": True}

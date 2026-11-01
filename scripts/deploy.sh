@@ -5,6 +5,31 @@ set -euo pipefail
 
 # Tudo dentro de main(): o bash lê a função inteira antes de executar, então o
 # "git merge" que atualiza este próprio arquivo não corrompe a execução em andamento.
+# Etapa 2: prepara sozinho o que o compose precisa, sem sobrescrever nada que já exista.
+ensure_stage2() {
+  [ -n "$(tail -c1 .env)" ] && echo >> .env  # garante quebra de linha antes de acrescentar
+  if ! grep -q '^GOS_GATEWAY_TOKEN=.\+' .env; then
+    echo "GOS_GATEWAY_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')" >> .env
+    echo "==> Token do gateway do Docker gerado no .env"
+    ENV_CHANGED=1
+  fi
+  if ! grep -q '^GOS_CADDY_VARS=' .env; then
+    caddyfile="${GOS_CADDYFILE_HOST:-/opt/takeone/Caddyfile}"
+    caddy="${GOS_CADDY_CONTAINER:-takeone-caddy-1}"
+    vars=""
+    if [ -f "$caddyfile" ]; then
+      for name in $(grep -o '{\$[A-Za-z_][A-Za-z0-9_]*' "$caddyfile" | cut -c3- | sort -u); do
+        case "$name" in *KEY*|*SECRET*|*TOKEN*|*PASS*|*HASH*) continue ;; esac
+        val="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$caddy" 2>/dev/null | grep "^$name=" | head -1 | cut -d= -f2-)"
+        [ -n "$val" ] && vars="$vars${vars:+,}$name=$val"
+      done
+    fi
+    echo "GOS_CADDY_VARS=$vars" >> .env
+    echo "==> Variáveis do Caddyfile: ${vars:-nenhuma}"
+    ENV_CHANGED=1
+  fi
+}
+
 main() {
   cd "$(dirname "$0")/.."
   BRANCH="${DEPLOY_BRANCH:-main}"
@@ -14,6 +39,9 @@ main() {
     exit 1
   fi
 
+  ENV_CHANGED=0
+  ensure_stage2
+
   PREV="$(git rev-parse HEAD)"
   echo "==> Atualizando para origin/$BRANCH (atual: ${PREV:0:7})"
   git fetch --quiet origin "$BRANCH"
@@ -21,7 +49,7 @@ main() {
   git merge --ff-only "origin/$BRANCH"
   NEW="$(git rev-parse HEAD)"
 
-  if [ "$PREV" = "$NEW" ] && docker compose ps --status running --quiet growth-os | grep -q .; then
+  if [ "$PREV" = "$NEW" ] && [ "$ENV_CHANGED" = 0 ] && docker compose ps --status running --quiet growth-os | grep -q .; then
     echo "==> Nada novo e o container já está rodando. Fim."
     exit 0
   fi

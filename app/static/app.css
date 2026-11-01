@@ -213,6 +213,8 @@ input[type="checkbox"] { accent-color: var(--text); }
 }
 .side-foot { display: flex; align-items: center; gap: 8px; padding: 0 4px; flex: none; }
 .side-foot .icon-btn { width: 40px; height: 40px; }
+a.icon-btn { text-decoration: none; }
+.icon-btn.on { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
 
 /* altura: em telas baixas o menu fica mais compacto, e as threads usam o resto com rolagem própria */
 @media (min-width: 801px) and (max-height: 860px) {

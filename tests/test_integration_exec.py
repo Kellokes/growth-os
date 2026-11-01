@@ -31,8 +31,15 @@ def connect(slug, kind, config, monkeypatch=None, secret="chave-secreta"):
         monkeypatch.setenv(env, secret)
 
 
-def ticket_for(slug, task_id=1, agent="growth"):
-    return acts.Ticket(task_id, pid(slug), agent, 0)
+def ticket_for(slug, agent="growth"):
+    """Ticket de uma tarefa real (no Postgres a chave estrangeira de actions.task_id exige que ela exista)."""
+    s = dbmod.new_session()
+    t = dbmod.Task(project_id=pid(slug), agent_slug=agent, title="Tarefa do ticket", status="running")
+    s.add(t)
+    s.commit()
+    tid = t.id
+    s.close()
+    return acts.Ticket(tid, pid(slug), agent, 0)
 
 
 def run(slug, kind, op, params=None, transport=None):

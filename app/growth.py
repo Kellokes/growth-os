@@ -595,9 +595,9 @@ def sync_task(db: DB, task: Task) -> None:
         db.query(Message).filter(Message.conversation_id == task.conversation_id).order_by(Message.id.desc()).first()
     )
     if pending:
-        task.status = "waiting"
+        task.status, task.wait_reason = "waiting", "2fa"
     elif last is not None and last.role == "assistant":
-        task.status = "done"
+        task.status, task.wait_reason = "done", ""
         task.result = last.content[-4000:]
         task.finished_at = utcnow()
         ingest_kpi_blocks(db, task.project_id, last.content, f"agente:{task.agent_slug}")

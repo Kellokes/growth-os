@@ -184,6 +184,8 @@ def record_point(db: DB, project_id: int, key: str, value: float, day: date | No
     if metric is None:
         raise KeyError(key)
     day = day or local_today()
+    prev = (db.query(MetricPoint).filter(MetricPoint.metric_id == metric.id, MetricPoint.day < day)
+            .order_by(MetricPoint.day.desc()).first())
     point = db.query(MetricPoint).filter(MetricPoint.metric_id == metric.id, MetricPoint.day == day).one_or_none()
     if point is None:
         point = MetricPoint(metric_id=metric.id, day=day, value=value, source=source, note=note)
@@ -191,6 +193,12 @@ def record_point(db: DB, project_id: int, key: str, value: float, day: date | No
     else:
         point.value, point.source, point.note = value, source, note
     db.commit()
+    if prev is not None and prev.value:  # alimenta as rotinas por evento (kpi.updated): quanto piorou, em %
+        change = (value - prev.value) / abs(prev.value) * 100
+        worse = -change if metric.direction == "up" else change
+        appr.emit(db, project_id, "kpi.updated", "metric", metric.id,
+                  {"kpi": key, "value": value, "previous": prev.value, "change_pct": round(change, 1),
+                   "worse_pct": round(worse, 1)})
     return point
 
 
@@ -919,7 +927,7 @@ async def run_automations(now: datetime) -> list[int]:
     """Atividades rotineiras que chegaram na hora viram tarefas (propostas, ou já na fila se o owner liberou)."""
     db = new_session()
     try:
-        created = routines.run_due(db, now)
+        created = routines.run_due(db, now) + routines.dispatch_events(db)
         waiting = []
         for t in created:
             if t.status == "approved":

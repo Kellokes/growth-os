@@ -17,7 +17,7 @@ from datetime import date, datetime
 from sqlalchemy.orm import Session as DB
 
 from .audit import audit
-from .db import Agent, Automation, GrowthProject, Integration, ProjectAgent, Skill, Task, utcnow
+from .db import Agent, Automation, Event, GrowthProject, Integration, ProjectAgent, Skill, Task, utcnow
 
 log = logging.getLogger("routines")
 
@@ -243,7 +243,20 @@ def toolbox(db: DB, project: GrowthProject, slug: str, task: Task | None = None,
 
 # ---------- automações ----------
 
+EVENTS = {
+    "site.down": "Site fora do ar (Uptime Kuma abaixo de 99%)",
+    "kpi.updated": "KPI piorou (queda de um indicador que deve subir, alta de um que deve cair)",
+    "content.sent": "Peça de conteúdo enviada ou publicada",
+    "action.failed": "Ação numa integração falhou",
+}
+EVENT_MAX_AGE_HOURS = 24  # evento mais velho que isso não dispara rotina (ex.: o app ficou fora do ar)
+
+
 def describe_schedule(a: Automation) -> str:
+    if a.frequency == "event":
+        extra = f" · {a.event_filter}" if a.event_filter else ""
+        extra += f" · piora de {a.event_min}%+" if a.event_type == "kpi.updated" else ""
+        return f"Quando: {EVENTS.get(a.event_type, a.event_type)}{extra}"
     h = f"{a.hour}h"
     if a.frequency == "weekly":
         return f"Toda {WEEKDAYS[a.weekday % 7]} às {h}"
@@ -253,6 +266,8 @@ def describe_schedule(a: Automation) -> str:
 
 
 def scheduled_today(a: Automation, today: date) -> bool:
+    if a.frequency == "event":
+        return False
     if a.frequency == "weekly":
         return today.weekday() == a.weekday
     if a.frequency == "monthly":
@@ -282,10 +297,11 @@ def has_open_run(db: DB, a: Automation) -> bool:
     return db.query(Task).filter(Task.automation_id == a.id, Task.status.in_(OPEN_STATUSES)).count() > 0
 
 
-def create_run(db: DB, a: Automation, approved: bool, actor: str) -> Task:
+def create_run(db: DB, a: Automation, approved: bool, actor: str, context: str = "") -> Task:
     skill = db.get(Skill, a.skill_id) if a.skill_id else None
     t = Task(
-        project_id=a.project_id, agent_slug=a.agent_slug, title=a.title[:200], steps=a.steps,
+        project_id=a.project_id, agent_slug=a.agent_slug, title=a.title[:200],
+        steps=(a.steps + ("\n\n" + context if context else ""))[:4000],
         rationale=f"Atividade rotineira: {describe_schedule(a).lower()}" + (f" · habilidade {skill.name}" if skill else ""),
         status="approved" if approved else "proposed", decided_at=utcnow() if approved else None,
         automation_id=a.id,
@@ -314,6 +330,54 @@ def run_due(db: DB, now: datetime) -> list[Task]:
     return created
 
 
+def event_matches(a: Automation, ev: Event, payload: dict) -> bool:
+    if a.event_type != ev.type:
+        return False
+    if a.event_type == "kpi.updated":
+        if a.event_filter and payload.get("kpi") != a.event_filter:
+            return False
+        return float(payload.get("worse_pct", 0)) >= a.event_min
+    if a.event_filter and a.event_filter not in (payload.get("integration"), payload.get("site")):
+        return False
+    return True
+
+
+def dispatch_events(db: DB) -> list[Task]:
+    """Rotinas por evento: cada evento novo do projeto dispara as rotinas que o esperam (propostas, ou na fila se liberadas).
+
+    Mesmas regras das rotinas por horário: nunca empilha duas execuções abertas da mesma rotina."""
+    import json
+    from datetime import timedelta
+
+    events = db.query(Event).filter(Event.handled == 0).order_by(Event.id).limit(200).all()
+    if not events:
+        return []
+    autos = db.query(Automation).filter(Automation.enabled.is_(True), Automation.frequency == "event").all()
+    old = utcnow() - timedelta(hours=EVENT_MAX_AGE_HOURS)
+    created = []
+    for ev in events:
+        ev.handled = 1
+        if ev.created_at < old:
+            continue
+        try:
+            payload = json.loads(ev.payload or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        for a in autos:
+            if a.project_id != ev.project_id or not event_matches(a, ev, payload):
+                continue
+            project = db.get(GrowthProject, a.project_id)
+            pa = db.query(ProjectAgent).filter(
+                ProjectAgent.project_id == a.project_id, ProjectAgent.agent_slug == a.agent_slug
+            ).one_or_none()
+            if project is None or not project.enabled or pa is None or not pa.enabled or has_open_run(db, a):
+                continue
+            ctx = f"EVENTO que disparou esta rotina: {ev.type} em {ev.created_at:%d/%m %H:%M} UTC\n{json.dumps(payload, ensure_ascii=False)[:800]}"
+            created.append(create_run(db, a, a.auto_approve, "evento", ctx))
+    db.commit()
+    return created
+
+
 def automation_json(db: DB, a: Automation, now: datetime, agents: dict[str, Agent] | None = None) -> dict:
     last = db.query(Task).filter(Task.automation_id == a.id).order_by(Task.id.desc()).first()
     skill = db.get(Skill, a.skill_id) if a.skill_id else None
@@ -321,6 +385,7 @@ def automation_json(db: DB, a: Automation, now: datetime, agents: dict[str, Agen
         "id": a.id, "agent": a.agent_slug, "title": a.title, "steps": a.steps, "skill_id": a.skill_id,
         "skill": skill.name if skill else "", "frequency": a.frequency, "weekday": a.weekday, "monthday": a.monthday,
         "hour": a.hour, "auto_approve": a.auto_approve, "enabled": a.enabled,
+        "event_type": a.event_type, "event_filter": a.event_filter, "event_min": a.event_min,
         "schedule": describe_schedule(a), "next_run": next_run(a, now) if a.enabled else "",
         "last_run_on": a.last_run_on.isoformat() if a.last_run_on else None,
         "last_task": {"id": last.id, "status": last.status, "conversation_id": last.conversation_id} if last else None,

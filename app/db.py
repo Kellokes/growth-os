@@ -283,6 +283,10 @@ class Automation(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # frequency == "event": roda quando o evento acontece no projeto (site.down, kpi.updated, content.sent, action.failed).
+    event_type: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    event_filter: Mapped[str] = mapped_column(String(100), default="", server_default="")  # KPI ou integração; vazio = qualquer
+    event_min: Mapped[int] = mapped_column(Integer, default=20, server_default="20")  # kpi.updated: piora mínima em %
 
 
 # ---------- central de conteúdo (sempre de um projeto) ----------
@@ -389,6 +393,7 @@ class Event(Base):
     subject_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payload: Mapped[str] = mapped_column(Text, default="{}")  # JSON pequeno, nunca com segredos
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    handled: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 1 = rotinas por evento já olharam
 
 
 _SessionLocal = None
@@ -415,6 +420,12 @@ _NEW_COLUMNS = {
         "depends_on": "INTEGER NULL",
     },
     "task_links": {"wait": "INTEGER NOT NULL DEFAULT 0"},
+    "automations": {
+        "event_type": "VARCHAR(32) NOT NULL DEFAULT ''",
+        "event_filter": "VARCHAR(100) NOT NULL DEFAULT ''",
+        "event_min": "INTEGER NOT NULL DEFAULT 20",
+    },
+    "events": {"handled": "INTEGER NOT NULL DEFAULT 0"},
 }
 
 

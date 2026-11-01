@@ -170,12 +170,12 @@
 
   // ---------- lista de threads: fica no menu lateral (shell.js), aqui só reage ----------
   const T = window.GOS.threads;
-  const { ALL, TRASH } = T;
+  const { TRASH, NONE } = T;
   const NEW_TITLES = ["Nova thread", "Nova conversa"];
   const loadConversations = () => { T.setActive(state.conv?.id ?? null); return T.reload(); };
   const closePanel = T.closePanel;
   T.onPick = (id) => openConversation(id);
-  T.onNew = () => newConversation();
+  T.onNew = (category) => newConversation(category);
 
   // ---------- organizar: título, categoria, excluir (só do sistema), restaurar ----------
   function showConvMeta(c) {
@@ -218,7 +218,6 @@
       const c = await api(`/api/conversations/${state.conv.id}/restore`, { method: "POST" });
       Object.assign(state.conv, c); showConvMeta(state.conv);
       if ($("#conv-dialog").open) $("#conv-dialog").close();
-      T.setFilter(ALL);
       loadConversations();
     } catch (e) { alert(e.message); }
   }
@@ -248,16 +247,18 @@
   }
 
   // category: nome da categoria quando vem do "+" de um grupo; vazio = sem categoria.
+  // category: nome da categoria quando vem do "+" de um grupo; vazio = sem categoria.
   async function newConversation(category = NONE) {
     closePanel();
-    // Reaproveita a conversa vazia aberta em vez de empilhar várias "Nova conversa".
-    if (state.conv && !state.conv.deleted && NEW_TITLES.includes(state.conv.title) && !$("#messages .msg")) { $("#input").focus(); return; }
-    const c = await api("/api/conversations", { method: "POST" });
-    const filter = T.filter();
-    if (filter !== ALL && filter !== TRASH) {
-      // Nova conversa já nasce na categoria que está filtrada.
-      Object.assign(c, await api(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ category: filter }) }));
-    } else if (filter === TRASH) { T.setFilter(ALL); }
+    const want = typeof category === "string" ? category : NONE;
+    // Reaproveita a conversa vazia aberta em vez de empilhar várias "Nova thread".
+    const reuse = state.conv && !state.conv.deleted && NEW_TITLES.includes(state.conv.title) && !$("#messages .msg");
+    if (reuse && (state.conv.category || NONE) === want) { $("#input").focus(); return; }
+    const c = reuse ? state.conv : await api("/api/conversations", { method: "POST" });
+    if (want || reuse) {
+      Object.assign(c, await api(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ category: want }) }));
+    }
+    if (want) T.expand(want);
     await openConversation(c.id);
     $("#input").focus();
   }
@@ -344,7 +345,7 @@
     const params = new URLSearchParams(location.search);
     const wanted = Number(params.get("c"));
     if (params.has("c") || params.has("new")) history.replaceState(null, "", "/");
-    if (params.has("new")) await newConversation();
+    if (params.has("new")) await newConversation(params.get("cat") || NONE);
     else if (wanted) await openConversation(wanted);
     else if (convs.length) await openConversation(convs[0].id);
   })().catch((e) => console.error(e));

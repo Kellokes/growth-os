@@ -105,7 +105,7 @@
   function addMessage(m) {
     $("#empty")?.remove();
     const row = el("div", `msg ${m.role}${m.error ? " error" : ""}`);
-    row.appendChild(el("div", "avatar", m.role === "user" ? "Eu" : "◆"));
+    row.appendChild(el("div", m.role === "user" ? "avatar" : "avatar logo", m.role === "user" ? "Eu" : "◆"));
     const body = el("div", "body");
     body.appendChild(el("div", "meta", m.role === "user" ? "Você" : esc(`Growth OS · ${m.provider || ""}`)));
     const content = el("div", "content");
@@ -125,7 +125,7 @@
   ];
 
   function emptyState() {
-    const e = el("div", "empty", '<div class="logo">◆</div><h2>O que vamos operar hoje?</h2><p>A IA executa sozinha o que é comum e pede o seu 2FA só para o que é perigoso.</p>');
+    const e = el("div", "empty", '<div class="orb" aria-hidden="true"><i></i></div><h2>O que vamos operar hoje?</h2><p>A IA executa sozinha o que é comum e pede o seu 2FA só para o que é perigoso.</p>');
     e.id = "empty";
     const chips = el("div", "chips");
     for (const [label, prompt] of PROMPTS) {

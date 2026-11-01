@@ -18,12 +18,18 @@
     return `<span class="delta ${d.good ? "good" : "bad"}">${d.pct >= 0 ? "▲" : "▼"} ${Math.abs(d.pct).toFixed(1)}%</span>`;
   };
 
+  // "90.744" vira 90<span>.744</span>: a parte final fica mais clara, como nos números grandes do layout.
+  const big = (txt) => {
+    const m = /^(.*\d)([.,]\d+)(\D*)$/.exec(txt);
+    return m ? `${esc(m[1])}<span class="dim">${esc(m[2])}</span>${esc(m[3])}` : esc(txt);
+  };
+
   function spark(points) {
     if (points.length < 2) return '<div class="spark empty"></div>';
     const vals = points.map((p) => p.value); const min = Math.min(...vals); const max = Math.max(...vals);
     const w = 120, h = 34, r = max - min || 1;
     const d = vals.map((v, i) => `${i ? "L" : "M"}${(i / (vals.length - 1)) * w},${h - 3 - ((v - min) / r) * (h - 6)}`).join("");
-    return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}"/></svg>`;
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}" pathLength="1"/></svg>`;
   }
 
   function node(tag, attrs = {}, parent) {
@@ -77,8 +83,15 @@
     const defs = node("defs", {}, svg);
     const grad = node("linearGradient", { id: "area-grad", x1: 0, x2: 0, y1: 0, y2: 1 }, defs);
     node("stop", { offset: "0%", class: "grad-top" }, grad); node("stop", { offset: "100%", class: "grad-bottom" }, grad);
-    if (pts.length > 1) node("path", { d: `${line}L${X(pts[pts.length - 1].t)},${Y(y0)}L${X(pts[0].t)},${Y(y0)}Z`, class: "area", fill: "url(#area-grad)" }, svg);
-    node("path", { d: line, class: "line" }, svg);
+    // Área listrada (hachura) por cima do degradê, como no layout de referência.
+    const hatch = node("pattern", { id: "area-hatch", width: 8, height: 8, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, defs);
+    node("line", { x1: 0, y1: 0, x2: 0, y2: 8, class: "hatch-line" }, hatch);
+    if (pts.length > 1) {
+      const area = `${line}L${X(pts[pts.length - 1].t)},${Y(y0)}L${X(pts[0].t)},${Y(y0)}Z`;
+      node("path", { d: area, class: "area", fill: "url(#area-grad)" }, svg);
+      node("path", { d: area, class: "area hatch", fill: "url(#area-hatch)" }, svg);
+    }
+    node("path", { d: line, class: "line", pathLength: 1 }, svg);
     const last = pts[pts.length - 1];
     node("circle", { cx: X(last.t), cy: Y(last.v), r: 4.5, class: "last-dot" }, svg);
 
@@ -109,7 +122,7 @@
     const a = agents[m.area];
     $("#hero-area").textContent = a ? `${a.icon} ${a.name}` : m.area;
     $("#hero-name").textContent = m.name;
-    $("#hero-value").textContent = fmt(m.last, m.unit);
+    $("#hero-value").innerHTML = big(fmt(m.last, m.unit));
     $("#hero-delta").innerHTML = deltaHtml(m) + (m.target != null && m.last != null ? `<span class="muted"> · ${Math.round((m.last / m.target) * 100)}% da meta</span>` : "");
     drawChart(m);
     document.querySelectorAll(".kpi").forEach((el) => el.classList.toggle("on", el.dataset.key === m.key));
@@ -125,7 +138,7 @@
       return `<h3 class="section-title">${a ? `${esc(a.icon)} ${esc(a.name)}` : esc(area)}</h3><div class="kpis">${groups[area].map((m) => `
         <button class="kpi card ${m.points.length ? "" : "nodata"}" type="button" data-key="${esc(m.key)}">
           <span class="kpi-name">${esc(m.name)}</span>
-          <span class="kpi-row"><strong>${esc(fmt(m.last, m.unit))}</strong>${deltaHtml(m)}</span>
+          <span class="kpi-row"><strong>${big(fmt(m.last, m.unit))}</strong>${deltaHtml(m)}</span>
           ${m.points.length ? spark(m.points) : '<span class="muted kpi-empty">sem dados · lançar</span>'}
         </button>`).join("")}</div>`;
     }).join("");
@@ -217,7 +230,7 @@
 
   async function onProject(slug, info) {
     project = slug; projectInfo = info;
-    $("#page-title").textContent = info ? `Dashboard · ${info.name}` : "Dashboard";
+    $("#page-crumb").textContent = info ? info.name : "Dashboard";
     document.querySelector(".page").hidden = !slug;
     if (!slug) return;
     try { selected = localStorage.getItem(`gos.kpi.${slug}`); } catch { selected = null; }

@@ -1,18 +1,17 @@
 {% extends "base.html" %}
+{% from "_icons.html" import ic %}
 {% block body %}
-<div class="shell" id="app" data-csrf="{{ csrf }}">
-  <aside class="sidebar">
-    {% include "_nav.html" %}
-    <div class="side-note muted" id="sched-note">Em cada projeto, cada agente lê os KPIs daquele projeto e propõe as tarefas do dia. Nada roda sem a sua aprovação.</div>
-    <div class="grow"></div>
-    {% include "_side_foot.html" %}
-  </aside>
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
   <main class="main">
-    <header class="topbar">
-      <div class="title-stack"><h1 id="page-title">Plano do dia</h1><span class="muted" id="plan-day"></span></div>
-      <div class="actions">
-        <button class="btn small ghost" id="new-task" type="button">+ Tarefa avulsa</button>
-        <button class="btn small" id="generate" type="button">Gerar plano</button>
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Plano do dia</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1 id="page-title">Plano do dia</h1><span class="day-chip" id="plan-day"></span><p class="lede muted" id="sched-note">Em cada projeto, cada agente lê os KPIs daquele projeto e propõe as tarefas do dia. Nada roda sem a sua aprovação.</p></div>
+        <div class="actions">
+          <button class="btn ghost" id="new-task" type="button">{{ ic("plus") }} Tarefa avulsa</button>
+          <button class="btn primary" id="generate" type="button">{{ ic("wand") }} <span class="lbl">Gerar plano</span></button>
+        </div>
       </div>
     </header>
     {% include "_project_switch.html" %}

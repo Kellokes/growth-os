@@ -31,7 +31,7 @@
   }
 
   async function load() {
-    $("#page-title").textContent = `Agentes · ${info.name}`;
+    $("#page-crumb").textContent = info.name;
     fillProject();
     [providers, metrics, agents] = await Promise.all([api("/api/providers"), api(`/api/gprojects/${project}/metrics?days=7`), api(`/api/gprojects/${project}/agents`)]);
     $("#agents").innerHTML = agents.map(card).join("");

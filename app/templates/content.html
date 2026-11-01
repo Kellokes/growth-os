@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Conteúdo · Growth OS{% endblock %}
+{% block body %}
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
+  <main class="main">
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Conteúdo</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1 id="page-title">Conteúdo</h1><p class="lede muted">Tudo que os agentes deste projeto preparam para sair: posts, e-mails de contato e parceria, artigos. Nada é publicado nem enviado sem a sua aprovação.</p></div>
+        <div class="actions">
+          <div class="seg" id="tabs" role="tablist" aria-label="Seções">
+            <button type="button" role="tab" data-tab="pecas">{{ ic("send") }} Peças</button><button type="button" role="tab" data-tab="agenda">{{ ic("calendar") }} Agenda</button><button type="button" role="tab" data-tab="saidas">{{ ic("agents") }} Saídas</button>
+          </div>
+          <button class="btn primary" type="button" id="new-content">{{ ic("plus") }} Novo</button>
+        </div>
+      </div>
+    </header>
+    {% include "_project_switch.html" %}
+    <section class="page">
+      <div class="tab-panel" data-panel="pecas" hidden>
+        <div class="cstats" id="cstats"></div>
+        <div class="board-filters" id="group-filter"></div>
+        <div class="ctiles" id="pieces" aria-live="polite"><div class="muted pad">Carregando…</div></div>
+      </div>
+
+      <div class="tab-panel" data-panel="agenda" hidden>
+        <div class="panel-head">
+          <p class="muted">O que está programado: peças com data e as <a href="/automations#rotinas">rotinas</a> dos agentes. A hora é a de Brasília.</p>
+          <div class="seg" id="agenda-days" role="group" aria-label="Período">
+            <button type="button" data-adays="7" class="on">7 dias</button><button type="button" data-adays="14">14 dias</button><button type="button" data-adays="30">30 dias</button>
+          </div>
+        </div>
+        <div id="agenda" class="agenda" aria-live="polite"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="saidas" hidden>
+        <div class="panel-head">
+          <p class="muted">O que cada agente entregou: o resultado das tarefas concluídas (ou que falharam) e as peças que saíram delas.</p>
+          <div class="seg" id="out-days" role="group" aria-label="Período">
+            <button type="button" data-odays="7">7 dias</button><button type="button" data-odays="14" class="on">14 dias</button><button type="button" data-odays="30">30 dias</button>
+          </div>
+        </div>
+        <div class="board-filters" id="out-agents"></div>
+        <div id="outputs" class="outputs" aria-live="polite"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="content-dialog" class="card wide-ish">
+  <form method="dialog" id="content-form">
+    <div class="dialog-head"><h3 id="cf-title">Conteúdo</h3><button class="icon-btn" type="button" id="cf-close" aria-label="Fechar">{{ ic("close") }}</button></div>
+    <div class="task-tags" id="cf-tags"></div>
+    <div class="secret-note" id="cf-note" hidden></div>
+    <div class="two">
+      <label id="cf-project-wrap">Projeto<select id="cf-project"></select></label>
+      <label>Canal<select id="cf-channel"></select></label>
+    </div>
+    <label><span id="cf-title-label">Título</span><input id="cf-head" maxlength="200" placeholder="Opcional"></label>
+    <div class="two">
+      <label><span id="cf-to-label">Público</span><input id="cf-to" maxlength="300"></label>
+      <label>Objetivo<input id="cf-purpose" maxlength="60" placeholder="parceria, contato, lançamento…"></label>
+    </div>
+    <label>Texto<textarea id="cf-body" rows="9" required maxlength="20000"></textarea></label>
+    <label>Mídia (imagem ou vídeo que acompanha)<textarea id="cf-media" rows="2" maxlength="4000" placeholder="Descrição do criativo, se tiver"></textarea></label>
+    <label>Quando sai<input id="cf-when" type="datetime-local"><small class="muted">Vazio = sai quando você publicar. Hora de Brasília.</small></label>
+    <div class="sent-box" id="cf-sent-box" hidden>
+      <label>Link de onde saiu (opcional)<input id="cf-link" type="url" maxlength="500" placeholder="https://…"></label>
+      <div class="row"><button class="btn ghost" type="button" id="cf-sent-cancel">Voltar</button><button class="btn primary" type="button" id="cf-sent-ok">{{ ic("check") }} Confirmar envio</button></div>
+    </div>
+    <div class="row cf-actions" id="cf-actions"></div>
+  </form>
+</dialog>
+
+{% include "_audit.html" %}
+<script src="/static/content.js"></script>
+{% endblock %}

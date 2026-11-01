@@ -110,6 +110,18 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
     direto na fila (comandos perigosos continuam pedindo 2FA). Não empilham: se a anterior ainda está
     aberta, a rodada é pulada.
 
+## Central de conteúdo
+
+`/content`, por projeto ou todos. Junta tudo que sai para fora e o que os agentes entregam:
+
+- **Peças**: posts (Instagram, TikTok, LinkedIn, X...), e-mails de contato e parceria, artigos. Os agentes
+  entregam cada peça num bloco ```` ```conteudo ```` no fim da tarefa (o formato está no prompt da execução).
+  Toda peça de agente nasce "aguardando você", inclusive as de rotinas com auto-aprovação. Aprovada, ela fica
+  agendada (com data) ou pronta para sair. Até as integrações de envio existirem (etapa 4), o app não publica
+  nem envia nada: você copia o texto, publica e marca como enviada (com o link, se quiser).
+- **Agenda**: peças com data e as próximas execuções das rotinas, dia a dia (hora de Brasília).
+- **Saídas**: o resultado das tarefas concluídas ou que falharam, com as peças que cada uma gerou.
+
 ## Banco de dados
 
 Postgres 16 em container próprio (`growth-os-postgres`), sem porta publicada: só o app alcança, pela rede

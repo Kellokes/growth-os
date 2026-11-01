@@ -57,58 +57,101 @@
   // ---------- menu lateral: seções em cima, threads embaixo (em todas as páginas) ----------
   // Na página de Threads o app.js define onPick/onNew; nas outras, clicar leva para "/?c=<id>".
   const app = $("#app");
-  const TRASH = "__trash__", ALL = "__all__";
+  const TRASH = "__trash__", NONE = "";
   const isChat = app.classList.contains("chat-shell");
-  let filter = ALL, activeId = null, searchTimer = null;
-  try { filter = localStorage.getItem("gos.convFilter") || ALL; } catch { /* sem storage */ }
+  let activeId = null, searchTimer = null;
+  // Grupos fechados ficam lembrados neste navegador. A lixeira começa fechada.
+  let collapsed = new Set([TRASH]);
+  try { const saved = JSON.parse(localStorage.getItem("gos.convCollapsed") || "null"); if (Array.isArray(saved)) collapsed = new Set(saved); } catch { /* sem storage */ }
+  const saveCollapsed = () => { try { localStorage.setItem("gos.convCollapsed", JSON.stringify([...collapsed])); } catch { /* ok */ } };
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  const ICON = (n) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="/static/icons.svg#i-${n}"/></svg>`;
 
-  async function loadFilters() {
+  async function loadCategories() {
     const data = await api("/api/conversations/categories");
-    const box = $("#conv-filters"); box.innerHTML = "";
-    const total = data.categories.reduce((n, c) => n + c.count, 0);
-    const opts = [[ALL, "Todas", total], ...data.categories.map((c) => [c.name, c.name || "Sem categoria", c.count])];
-    if (data.trash) opts.push([TRASH, "🗑 Lixeira", data.trash]);
-    if (!opts.some(([v]) => v === filter)) filter = ALL;
-    for (const [value, label, count] of opts) {
-      const b = el("button", "fchip" + (value === filter ? " active" : ""));
-      b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", value === filter);
-      b.innerHTML = `${esc(label)} <span>${count}</span>`;
-      b.onclick = () => { setFilter(value); reloadThreads(); };
-      box.appendChild(b);
-    }
     const dl = $("#conv-cats");
     if (dl) { dl.innerHTML = ""; for (const c of data.categories) if (c.name) { const o = el("option"); o.value = c.name; dl.appendChild(o); } }
+    return data;
   }
-  function setFilter(value) { filter = value; try { localStorage.setItem("gos.convFilter", value); } catch { /* ok */ } }
+
+  function convItem(c) {
+    const li = el("li");
+    const b = el("button", "conv-item" + (activeId === c.id ? " active" : ""));
+    b.type = "button"; b.dataset.id = c.id;
+    if (activeId === c.id) b.setAttribute("aria-current", "true");
+    b.innerHTML = `<span class="conv-t">${esc(c.title)}</span>`;
+    b.onclick = () => pick(c.id);
+    li.appendChild(b);
+    return li;
+  }
+  function pick(id) {
+    closePanel();
+    if (threads.onPick) threads.onPick(id); else location.href = `/?c=${id}`;
+  }
+
+  // Um grupo: cabeçalho que abre/fecha + botão "+" para nova thread já na categoria.
+  function convGroup(key, label, items, { forceOpen = false, canAdd = true } = {}) {
+    const open = forceOpen || !collapsed.has(key);
+    const g = el("li", "conv-group" + (open ? " open" : "") + (key === TRASH ? " trash" : ""));
+    const head = el("div", "conv-group-head");
+    const toggle = el("button", "conv-group-toggle");
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", open);
+    toggle.innerHTML = `${ICON("chevron")}<span class="conv-group-name">${esc(label)}</span><span class="conv-group-count">${items.length}</span>`;
+    toggle.onclick = () => {
+      const nowOpen = !g.classList.contains("open");
+      g.classList.toggle("open", nowOpen); toggle.setAttribute("aria-expanded", nowOpen);
+      if (nowOpen) collapsed.delete(key); else collapsed.add(key);
+      saveCollapsed(); renderGroupBody(g, items, nowOpen);
+      if (nowOpen) setTimeout(() => g.scrollIntoView({ block: "nearest", behavior: "smooth" }), 320);
+    };
+    head.appendChild(toggle);
+    if (canAdd) {
+      const add = el("button", "conv-group-add", null);
+      add.innerHTML = ICON("plus");
+      add.type = "button"; add.title = `Nova thread em ${label}`; add.setAttribute("aria-label", add.title);
+      add.onclick = () => { closePanel(); if (threads.onNew) threads.onNew(key); else location.href = `/?new=1&cat=${encodeURIComponent(key)}`; };
+      head.appendChild(add);
+    }
+    g.appendChild(head);
+    const body = el("div", "conv-group-body"); body.appendChild(el("ul", "conv-items"));
+    g.appendChild(body);
+    renderGroupBody(g, items, open);
+    return g;
+  }
+
+  // Grupo fechado ainda mostra a thread aberta, como o Slack faz com o canal atual.
+  function renderGroupBody(g, items, open) {
+    const ul = g.querySelector(".conv-items"); ul.innerHTML = "";
+    const shown = open ? items : items.filter((c) => c.id === activeId);
+    g.classList.toggle("peek", !open && shown.length > 0);
+    for (const c of shown) ul.appendChild(convItem(c));
+  }
 
   async function reloadThreads() {
-    await loadFilters().catch(() => {});
-    const qs = new URLSearchParams();
-    if (filter === TRASH) qs.set("trash", "1"); else if (filter !== ALL) qs.set("category", filter);
-    const q = $("#conv-search").value.trim(); if (q) qs.set("q", q);
-    const list = await api("/api/conversations?" + qs);
+    const q = $("#conv-search").value.trim();
+    const qs = new URLSearchParams(); if (q) qs.set("q", q);
+    const tq = new URLSearchParams({ trash: "1" }); if (q) tq.set("q", q);
+    const [cats, list, trash] = await Promise.all([
+      loadCategories().catch(() => ({ trash: 0 })),
+      api("/api/conversations?" + qs),
+      api("/api/conversations?" + tq).catch(() => []),
+    ]);
+    const groups = new Map();
+    for (const c of list) { const k = c.category || NONE; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c); }
+    const keys = [...groups.keys()].sort((x, y) => (x === NONE) - (y === NONE) || x.localeCompare(y, "pt-BR", { sensitivity: "base" }));
     const ul = $("#conv-list"); ul.innerHTML = "";
-    if (!list.length) ul.appendChild(el("li", "conv-empty", filter === TRASH ? "Lixeira vazia." : q ? "Nada encontrado." : "Nenhuma thread ainda."));
-    for (const c of list) {
-      const li = el("li");
-      const a = el("a", activeId === c.id ? "active" : "");
-      a.href = `/?c=${c.id}`; a.dataset.id = c.id;
-      if (activeId === c.id) a.setAttribute("aria-current", "true");
-      a.innerHTML = `<span class="conv-t">${esc(c.title)}</span>` + (c.category && filter === ALL ? `<span class="conv-cat">${esc(c.category)}</span>` : "");
-      li.appendChild(a); ul.appendChild(li);
-    }
+    if (!list.length && !trash.length) ul.appendChild(el("li", "conv-empty", q ? "Nada encontrado." : "Nenhuma thread ainda."));
+    // Sem nenhuma categoria e sem lixeira, um cabeçalho "Sem categoria" sozinho só atrapalha.
+    const flat = keys.length === 1 && keys[0] === NONE && !trash.length && !cats.trash;
+    if (flat) for (const c of groups.get(NONE)) ul.appendChild(convItem(c));
+    else for (const k of keys) ul.appendChild(convGroup(k, k || "Sem categoria", groups.get(k), { forceOpen: !!q }));
+    if (trash.length) ul.appendChild(convGroup(TRASH, "Lixeira", trash, { forceOpen: !!q, canAdd: false }));
     return list;
   }
-  $("#conv-list").addEventListener("click", (ev) => {
-    const a = ev.target.closest("a[data-id]");
-    if (!a || !threads.onPick || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button) return;
-    ev.preventDefault(); closePanel(); threads.onPick(Number(a.dataset.id));
-  });
   $("#conv-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(reloadThreads, 250); });
   document.querySelectorAll("[data-new-thread]").forEach((b) => b.addEventListener("click", () => {
     closePanel();
-    if (threads.onNew) threads.onNew(); else location.href = "/?new=1";
+    if (threads.onNew) threads.onNew(NONE); else location.href = "/?new=1";
   }));
 
   // gaveta no celular
@@ -126,16 +169,16 @@
   };
 
   const threads = {
-    ALL, TRASH, reload: reloadThreads, closePanel,
-    filter: () => filter, setFilter,
+    TRASH, NONE, reload: reloadThreads, closePanel,
     setActive(id) {
       activeId = id;
-      document.querySelectorAll("#conv-list a[data-id]").forEach((a) => {
-        const on = Number(a.dataset.id) === id;
-        a.classList.toggle("active", on);
-        if (on) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current");
+      document.querySelectorAll("#conv-list .conv-item").forEach((b) => {
+        const on = Number(b.dataset.id) === id;
+        b.classList.toggle("active", on);
+        if (on) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
       });
     },
+    expand(key) { collapsed.delete(key); saveCollapsed(); },
     onPick: null, onNew: null,
   };
   if (!isChat) reloadThreads().catch(() => {});

@@ -192,3 +192,30 @@ def test_openrouter_falls_back_without_network(monkeypatch):
     monkeypatch.setattr(modelcfg.httpx, "AsyncClient", Down)
     data = asyncio.run(modelcfg.openrouter_models())
     assert data["live"] is False and data["models"] and data["models"][0]["pricing"] == {}
+
+
+def test_openrouter_key_is_cleaned_and_401_is_explained(monkeypatch):
+    import asyncio
+    import httpx
+    from app.config import get_settings
+    from app.providers import openrouter as orr
+
+    monkeypatch.setenv("GOS_OPENROUTER_API_KEY", '  "sk-or-teste"  ')
+    get_settings.cache_clear()
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers["authorization"]
+        return httpx.Response(401, json={"error": {"message": "User not found."}})
+
+    class FakeClient(httpx.AsyncClient):
+        def __init__(self, *a, **kw):
+            super().__init__(transport=httpx.MockTransport(handler), timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(orr.httpx, "AsyncClient", FakeClient)
+    try:
+        with pytest.raises(orr.ProviderError, match="401"):
+            asyncio.run(orr.OpenRouterProvider().complete([orr.ChatTurn("user", "oi")]))
+        assert seen["auth"] == "Bearer sk-or-teste"
+    finally:
+        get_settings.cache_clear()

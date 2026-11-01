@@ -61,16 +61,22 @@ CATALOG: dict[str, dict] = {
         ],
     },
     "codex": {
+        # Lista do próprio Codex CLI (`codex debug models`, só os visíveis e liberados na API).
         "kinds": [TEXT],
         "reasoning": [
-            {"id": "minimal", "label": "Mínimo"}, {"id": "low", "label": "Baixo"}, {"id": "medium", "label": "Médio"},
-            {"id": "high", "label": "Alto"}, {"id": "xhigh", "label": "Muito alto"},
+            {"id": "low", "label": "Baixo"}, {"id": "medium", "label": "Médio"}, {"id": "high", "label": "Alto"},
+            {"id": "xhigh", "label": "Muito alto"}, {"id": "max", "label": "Máximo"},
         ],
         "models": [
-            {"id": "gpt-5-codex", "label": "GPT-5 Codex"},
-            {"id": "gpt-5.1-codex", "label": "GPT-5.1 Codex"},
-            {"id": "gpt-5.1-codex-max", "label": "GPT-5.1 Codex Max"},
-            {"id": "gpt-5.1-codex-mini", "label": "GPT-5.1 Codex Mini"},
+            {"id": "gpt-6-astra", "label": "GPT-6 Astra"},
+            {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol"},
+            {"id": "gpt-6.1-terra", "label": "GPT-6.1 Terra"},
+            {"id": "gpt-6-sol", "label": "GPT-6 Sol"},
+            {"id": "gpt-6-luna", "label": "GPT-6 Luna"},
+            {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"},
+            {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra"},
+            {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna"},
+            {"id": "gpt-5.5", "label": "GPT-5.5"},
         ],
     },
     "openrouter": {

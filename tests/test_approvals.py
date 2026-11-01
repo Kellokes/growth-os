@@ -117,7 +117,13 @@ def test_mission_approval_activates_it(logged):
     s.close()
 
 
-def test_external_action_needs_2fa_to_approve_but_not_to_reject(logged):
+def test_external_action_needs_2fa_to_approve_but_not_to_reject(logged, monkeypatch):
+    ran = []
+
+    async def fake_execute(db, action, transport=None):  # a execução em si é testada em test_external_actions.py
+        ran.append(action.id)
+
+    monkeypatch.setattr("app.main.acts.execute_approved", fake_execute)
     (a,) = make_projects("Zombie Party")
     act = _action(a)
     item = {"items": [{"kind": "action", "ref_id": act}]}
@@ -131,6 +137,7 @@ def test_external_action_needs_2fa_to_approve_but_not_to_reject(logged):
     s = dbmod.new_session()
     assert s.get(dbmod.Action, act).status == "approved"
     s.close()
+    assert ran == [act]  # só depois do 2FA o conector é acionado
     assert logged.get("/api/approvals/history").json()[0]["via"] == "2fa"
 
     rej = _action(a)

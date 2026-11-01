@@ -22,12 +22,18 @@ class ConnectorError(Exception):
     """Falha esperada de uma operação (config faltando, API fora do ar, parâmetro inválido)."""
 
 
+class TransientError(ConnectorError):
+    """Falha que pode passar sozinha (rede, 429, 5xx): só esta é repetida automaticamente."""
+
+
 @dataclass
 class Op:
     effect: str
     about: str
     params: dict[str, tuple[type, bool]] = field(default_factory=dict)  # nome -> (tipo, obrigatório)
     risk: str = "baixo"  # só vale para external: baixo | medio | alto (alto exige 2FA)
+    daily_cap: int = 10  # máximo de pedidos externos por dia, por projeto e integração
+    preapprovable: bool = False  # o owner pode liberar esta operação sem aprovação por item (config "preaprovar")
 
     def clean(self, raw: dict) -> dict:
         raw = raw or {}
@@ -99,20 +105,29 @@ def safe_base_url(raw: str, resolve: bool = True) -> str:
     return f"{u.scheme}://{u.netloc}{u.path.rstrip('/')}"
 
 
-async def get_json(ctx: Ctx, url: str, params: dict | None = None) -> dict | list:
+async def request_json(ctx: Ctx, method: str, url: str, params: dict | None = None, body: dict | None = None,
+                       headers: dict | None = None) -> dict | list:
     try:
         async with ctx.client() as c:
-            r = await c.get(url, params=params, headers=ctx.auth())
+            r = await c.request(method, url, params=params, json=body, headers=headers if headers is not None else ctx.auth())
     except httpx.HTTPError as e:
-        raise ConnectorError(f"não consegui falar com {urlparse(url).netloc}: {e.__class__.__name__}") from e
+        raise TransientError(f"não consegui falar com {urlparse(url).netloc}: {e.__class__.__name__}") from e
     if r.status_code in (401, 403):
         raise ConnectorError("a ferramenta recusou a chave (confira a variável no .env do VPS)")
+    if r.status_code == 429 or r.status_code >= 500:
+        raise TransientError(f"a ferramenta respondeu {r.status_code}")
     if r.status_code >= 400:
-        raise ConnectorError(f"a ferramenta respondeu {r.status_code}")
+        raise ConnectorError(f"a ferramenta respondeu {r.status_code}: {r.text[:200]}")
+    if not r.content:
+        return {}
     try:
         return r.json()
     except ValueError as e:
         raise ConnectorError("a resposta não veio em JSON") from e
+
+
+async def get_json(ctx: Ctx, url: str, params: dict | None = None) -> dict | list:
+    return await request_json(ctx, "GET", url, params=params)
 
 
 REGISTRY: dict[str, Connector] = {}
@@ -124,3 +139,4 @@ def register(conn: Connector) -> Connector:
 
 
 from . import readers  # noqa: E402,F401 - registra os conectores de leitura
+from . import senders  # noqa: E402,F401 - registra os conectores que agem fora do OS

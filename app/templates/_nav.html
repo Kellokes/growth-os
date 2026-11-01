@@ -7,6 +7,7 @@
     {% endfor %}
   </nav>
   <div class="top-actions">
+    <a class="icon-btn{% if active == "models" %} on{% endif %}" href="/settings" aria-label="Modelos"{% if active == "models" %} aria-current="page"{% endif %} title="Modelos: provider, modelo e raciocínio por atividade">{{ ic("sliders") }}</a>
     <button class="icon-btn" id="show-audit" type="button" aria-label="Auditoria" title="Auditoria">{{ ic("audit") }}</button>
     <button class="icon-btn theme-btn" type="button" data-theme-toggle aria-label="Alternar tema" title="Alternar tema claro/escuro"><span class="i-sun">{{ ic("sun") }}</span><span class="i-moon">{{ ic("moon") }}</span></button>
     <button class="icon-btn" id="logout" type="button" aria-label="Sair" title="Sair">{{ ic("logout") }}</button>

@@ -2,7 +2,7 @@
   const $ = (s) => document.querySelector(s);
   const app = $("#app");
   const CSRF = app.dataset.csrf;
-  const state = { conv: null, commands: {}, boxes: {}, pending: null, busy: false };
+  const state = { conv: null, commands: {}, boxes: {}, pending: null, busy: false, choice: { provider: "", model: "", reasoning: "" } };
 
   async function api(path, opts = {}) {
     const res = await fetch(path, {
@@ -107,7 +107,7 @@
     const row = el("div", `msg ${m.role}${m.error ? " error" : ""}`);
     row.appendChild(el("div", m.role === "user" ? "avatar" : "avatar logo", m.role === "user" ? "Eu" : "◆"));
     const body = el("div", "body");
-    body.appendChild(el("div", "meta", m.role === "user" ? "Você" : esc(`Growth OS · ${m.provider || ""}`)));
+    body.appendChild(el("div", "meta", m.role === "user" ? "Você" : esc(["Growth OS", m.provider, m.model].filter(Boolean).join(" · "))));
     const content = el("div", "content");
     if (m.typing) content.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
     else render(m.content, content);
@@ -136,20 +136,37 @@
     return e;
   }
 
-  async function loadProviders() {
-    const list = await api("/api/providers");
-    const sel = $("#provider");
-    sel.innerHTML = "";
-    for (const p of list) {
-      const o = el("option", null, esc(p.label + (p.available ? "" : ` (${p.reason})`)));
-      o.value = p.id; o.disabled = !p.available;
-      sel.appendChild(o);
-    }
-    const saved = localStorage.getItem("gos.provider");
-    const first = list.find((p) => p.available);
-    sel.value = (saved && list.find((p) => p.id === saved && p.available)) ? saved : (first?.id || "");
-    sel.onchange = () => localStorage.setItem("gos.provider", sel.value);
+  // ---------- provider, modelo e raciocínio da thread ----------
+  const M = window.GOSModels;
+  let picker = null;
+  function defaultChoice() {
+    const eff = M.data()?.effective?.threads;
+    if (eff?.provider && M.prov(eff.provider)?.available) return { provider: eff.provider, model: eff.model, reasoning: eff.reasoning };
+    const first = M.data()?.providers.find((p) => p.available);
+    return { provider: first?.id || "", model: "", reasoning: "" };
   }
+  function choiceFor(conv) {
+    if (conv?.provider && M.prov(conv.provider)?.available) return { provider: conv.provider, model: conv.model || "", reasoning: conv.reasoning || "" };
+    return defaultChoice();
+  }
+  function showChoice() {
+    $("#model-label").textContent = M.describe(state.choice) || "Nenhum provider disponível";
+    $("#model-btn").title = `Provider, modelo e raciocínio desta thread: ${M.describe(state.choice)}`;
+  }
+  async function loadProviders() {
+    await M.load(api);
+    picker = M.mount($("#model-fields"), api, { kind: "text", inherit: null });
+    state.choice = defaultChoice();
+    showChoice();
+  }
+  $("#model-btn").onclick = async () => { if (!picker) return; await picker.set(state.choice); $("#model-dialog").showModal(); };
+  $("#model-cancel").onclick = () => $("#model-dialog").close();
+  $("#model-reset").onclick = () => picker.set(defaultChoice());
+  $("#model-form").onsubmit = (ev) => {
+    ev.preventDefault();
+    state.choice = picker.get(); showChoice();
+    $("#model-dialog").close();
+  };
 
   // ---------- lista de conversas: filtro por categoria, busca, lixeira ----------
   const TRASH = "__trash__", ALL = "__all__";
@@ -256,11 +273,13 @@
     $("#conv-title").textContent = "Nova thread"; $("#conv-edit").hidden = true;
     $("#trash-bar").hidden = true; $("#input").disabled = false; $("#composer").classList.remove("disabled");
     $("#messages").innerHTML = ""; $("#messages").appendChild(emptyState());
+    state.choice = defaultChoice(); showChoice();
   }
 
   async function openConversation(id) {
     const c = await api(`/api/conversations/${id}`);
     state.conv = c; state.commands = {}; state.boxes = {};
+    state.choice = choiceFor(c); showChoice();
     for (const r of c.commands) state.commands[r.command] = r;
     showConvMeta(c);
     $("#messages").innerHTML = "";
@@ -309,7 +328,7 @@
           if (!line) continue;
           const ev = JSON.parse(line);
           if (ev.type === "step") { setTyping(`passo ${ev.n}`); }
-          else if (ev.type === "message") { dropTyping(); addMessage({ role: "assistant", provider: ev.provider, content: ev.content }); typing = addMessage({ role: "assistant", provider, typing: true }); }
+          else if (ev.type === "message") { dropTyping(); addMessage({ role: "assistant", provider: ev.provider, model: ev.model, content: ev.content }); typing = addMessage({ role: "assistant", provider, typing: true }); }
           else if (ev.type === "command") {
             state.commands[ev.run.command] = ev.run;
             const box = state.boxes[ev.run.command]; if (box) showRun(box, ev.run);
@@ -331,22 +350,23 @@
   }
 
   function continueAgent() {
-    const provider = $("#provider").value;
-    if (state.conv && provider) consume(`/api/conversations/${state.conv.id}/continue`, { provider }, provider);
+    const { provider } = state.choice;
+    if (state.conv && provider) consume(`/api/conversations/${state.conv.id}/continue`, { ...state.choice }, provider);
   }
 
   $("#composer").onsubmit = async (ev) => {
     ev.preventDefault();
     if (state.busy) return;
     const input = $("#input"); const text = input.value.trim(); if (!text) return;
-    const provider = $("#provider").value;
+    const { provider } = state.choice;
     if (!provider) { alert("Nenhum provider disponível. Configure Claude, Codex ou OpenRouter no servidor."); return; }
-    if (!state.conv) await newConversation();
+    if (!state.conv) { const keep = state.choice; await newConversation(); state.choice = keep; showChoice(); }
     if (state.conv.deleted) return;
     input.value = ""; input.style.height = "auto";
     addMessage({ role: "user", content: text });
     if (NEW_TITLES.includes(state.conv.title)) { state.conv.title = text.split("\n")[0].slice(0, 80); $("#conv-title").textContent = state.conv.title; }
-    consume(`/api/conversations/${state.conv.id}/messages`, { provider, content: text }, provider);
+    Object.assign(state.conv, state.choice);
+    consume(`/api/conversations/${state.conv.id}/messages`, { ...state.choice, content: text }, provider);
   };
 
   $("#input").addEventListener("keydown", (ev) => {

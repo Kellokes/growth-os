@@ -1,12 +1,13 @@
 (() => {
   const { $, esc, api, initProjects } = window.GOS;
+  const M = window.GOSModels;
+  const pickers = {};
   let providers = []; let metrics = []; let agents = []; let project = null; let info = null; let switcher = null;
   const STATUS = { proposed: "aguardando", approved: "na fila", rejected: "rejeitada", running: "executando", waiting: "esperando 2FA", done: "concluída", failed: "falhou" };
 
   function card(a) {
     const kpis = metrics.filter((m) => m.area === a.slug).map((m) => `<span class="tag">${esc(m.name)}</span>`).join("") || '<span class="muted">sem KPIs próprios</span>';
     const st = a.stats || {};
-    const opts = [`<option value="">Padrão do sistema</option>`].concat(providers.map((p) => `<option value="${esc(p.id)}" ${a.provider === p.id ? "selected" : ""} ${p.available ? "" : "disabled"}>${esc(p.label)}</option>`)).join("");
     return `<article class="agent card ${a.enabled ? "" : "off"}" data-slug="${esc(a.slug)}">
       <header>
         <span class="agent-icon">${esc(a.icon)}</span>
@@ -16,8 +17,9 @@
       <div class="agent-stats"><span><b>${st.done || 0}</b> concluídas</span><span><b>${(st.approved || 0) + (st.running || 0) + (st.waiting || 0)}</b> em andamento</span><span><b>${st.proposed || 0}</b> aguardando</span></div>
       <div class="task-tags">${kpis}</div>
       <label>Missão neste projeto ${a.custom ? '<span class="tag">personalizada</span>' : '<span class="muted">(padrão da área)</span>'}<textarea rows="5" data-mission maxlength="4000">${esc(a.mission)}</textarea></label>
+      <div class="agent-model" data-mp></div>
       <div class="agent-foot">
-        <label class="inline">Provider <select data-provider>${opts}</select></label>
+        <span class="muted small-print">Plano do dia e execução usam este modelo. Em “Padrão” vale a tela <a href="/settings">Modelos</a>.</span>
         <button class="btn small" type="button" data-save>Salvar</button>
       </div>
     </article>`;
@@ -33,8 +35,14 @@
   async function load() {
     $("#page-crumb").textContent = info.name;
     fillProject();
-    [providers, metrics, agents] = await Promise.all([api("/api/providers"), api(`/api/gprojects/${project}/metrics?days=7`), api(`/api/gprojects/${project}/agents`)]);
+    [providers, metrics, agents] = await Promise.all([M.load(api, true), api(`/api/gprojects/${project}/metrics?days=7`), api(`/api/gprojects/${project}/agents`)]);
     $("#agents").innerHTML = agents.map(card).join("");
+    const eff = providers.effective.agents_run;
+    const inherit = eff?.provider ? `Padrão (${M.describe(eff)})` : "Padrão do sistema";
+    for (const a of agents) {
+      const root = document.querySelector(`[data-slug="${CSS.escape(a.slug)}"] [data-mp]`);
+      pickers[a.slug] = M.mount(root, api, { kind: "text", inherit, value: { provider: a.provider, model: a.model, reasoning: a.reasoning } });
+    }
     const notes = await api(`/api/gprojects/${project}/notes?limit=30`);
     const who = (s) => { const a = agents.find((x) => x.slug === s); return a ? `${a.icon} ${a.name}` : s; };
     const KIND = { pedido: "pediu a", resposta: "respondeu a", nota: "deixou recado para" };
@@ -66,7 +74,7 @@
   $("#agents").addEventListener("click", (ev) => {
     const btn = ev.target.closest("[data-save]"); if (!btn) return;
     const c = btn.closest("[data-slug]");
-    patch(c.dataset.slug, { mission: c.querySelector("[data-mission]").value, provider: c.querySelector("[data-provider]").value }, btn);
+    patch(c.dataset.slug, { mission: c.querySelector("[data-mission]").value, ...pickers[c.dataset.slug].get() }, btn);
   });
   $("#project-form").onsubmit = async (ev) => {
     ev.preventDefault();

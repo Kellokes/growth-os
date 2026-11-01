@@ -19,11 +19,16 @@ class OpenRouterProvider(Provider):
         s = get_settings()
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += [{"role": t.role, "content": t.content} for t in history]
+        body: dict = {"model": self.model or s.openrouter_model, "messages": messages}
+        if self.reasoning == "none":
+            body["reasoning"] = {"enabled": False}
+        elif self.reasoning:
+            body["reasoning"] = {"effort": self.reasoning}
         async with httpx.AsyncClient(timeout=s.provider_timeout_seconds) as client:
             resp = await client.post(
                 OPENROUTER_URL,
                 headers={"Authorization": f"Bearer {s.openrouter_api_key}", "X-Title": "Growth OS"},
-                json={"model": s.openrouter_model, "messages": messages},
+                json=body,
             )
         if resp.status_code != 200:
             raise ProviderError(f"OpenRouter respondeu {resp.status_code}: {resp.text[:300]}")

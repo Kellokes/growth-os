@@ -299,7 +299,9 @@ def model_settings(auth: Auth = Depends(current_auth), db: DB = Depends(get_db))
 
 @app.get("/api/models/openrouter")
 async def openrouter_models(kind: str = "text", auth: Auth = Depends(current_auth)):
-    return [m for m in await modelcfg.openrouter_models() if kind in m.get("kinds", ["text"])][:400]
+    """Modelos do OpenRouter que servem para a atividade, com preços (dólar) direto da API deles."""
+    data = await modelcfg.openrouter_models()
+    return {**data, "models": modelcfg.for_kind(data["models"], kind)}
 
 
 class ModelChoiceIn(BaseModel):

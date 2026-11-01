@@ -55,6 +55,20 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
   tmpfs para o credential helper do git; comandos não recebem o token no ambiente e leitura direta é bloqueada.
   Mesmo assim trate-o como acessível à IA: o escopo pequeno e a proteção da `main` nos repos são o limite real.
 
+## O Growth OS mexendo no próprio código
+
+- A IA trabalha num clone do GitHub em `/workspace/growth-os`, nunca na pasta `~/growth-os` do servidor
+  (que tem o `.env`). O código que roda fica em `/app`, só leitura.
+- Ferramenta `gos-self`: `info` (versão rodando × main, acesso do token), `sync`, `branch NOME` (cria `gos/NOME`),
+  `test` (pytest com SQLite temporário, sem tocar no token real) e `pr` (testes, push da branch e PR).
+- Os PRs que mexem em deploy, workflows, Docker, executor, login ou gateway saem com um aviso no topo.
+- Nada chega à produção sem você: push na `main` pede 2FA, a IA nunca faz merge e o deploy só roda depois
+  do seu merge.
+- **Para ativar:** inclua `Kellokes/growth-os` no token fine-grained do `GOS_GITHUB_TOKEN` (Contents e
+  Pull requests em leitura e escrita). **Não** dê a permissão *Workflows*: sem ela o GitHub recusa qualquer
+  push que altere `.github/workflows`, e assim a IA não consegue mexer no workflow que tem a chave de deploy.
+  Vale também proteger a `main` (Settings → Branches) exigindo PR.
+
 ## Agentes e plano da manhã (etapa 3)
 
 - Tudo é por projeto: cada projeto tem o seu time (9 áreas), os seus KPIs e as suas tarefas. Na primeira

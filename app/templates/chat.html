@@ -3,31 +3,17 @@
 {% block body %}
 <div class="shell chat-shell" id="app" data-csrf="{{ csrf }}">
   {% include "_nav.html" %}
-  <aside class="sidebar">
-    <div class="conv-panel" id="conv-panel" aria-label="Threads">
-      <div class="conv-head">
-        <span>Threads</span>
-        <button class="btn small primary" id="new-conv" type="button">{{ ic("plus") }} Nova</button>
-        <button class="icon-btn conv-close" id="conv-close" type="button" aria-label="Fechar">{{ ic("close") }}</button>
-      </div>
-      <label class="search-field">{{ ic("search") }}<input class="conv-search" id="conv-search" type="search" placeholder="Buscar thread…" autocomplete="off" aria-label="Buscar thread"></label>
-      <div class="conv-filters" id="conv-filters" role="tablist" aria-label="Categorias"></div>
-      <ul class="conv-list" id="conv-list"></ul>
-    </div>
-    <div class="conv-backdrop" id="conv-backdrop" hidden></div>
-  </aside>
-
   <main class="main">
     <div class="chat-card">
       <header class="chat-top">
-        <button class="icon-btn conv-toggle" id="conv-toggle" type="button" aria-controls="conv-panel" aria-label="Abrir threads">{{ ic("menu") }}</button>
+        <button class="icon-btn conv-toggle" id="conv-toggle" type="button" data-side-open aria-controls="sidenav" aria-label="Abrir menu e threads">{{ ic("menu") }}</button>
         <div class="conv-title-wrap">
           <span class="chat-icon">{{ ic("threads") }}</span>
           <h1 id="conv-title">Nova thread</h1>
           <button class="icon-btn" id="conv-edit" type="button" aria-label="Organizar thread" title="Renomear, categoria ou excluir" hidden>{{ ic("more") }}</button>
         </div>
         <button class="model-pill" id="model-btn" type="button" aria-haspopup="dialog" title="Provider, modelo e raciocínio desta thread">{{ ic("sliders") }}<span id="model-label">Carregando…</span></button>
-        <button class="icon-btn conv-new-m" id="new-conv-m" type="button" aria-label="Nova thread">{{ ic("plus") }}</button>
+        <button class="icon-btn conv-new-m" id="new-conv-m" type="button" data-new-thread aria-label="Nova thread">{{ ic("plus") }}</button>
       </header>
 
       <div class="trash-bar" id="trash-bar" hidden>

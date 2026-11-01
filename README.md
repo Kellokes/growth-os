@@ -55,6 +55,16 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
   tmpfs para o credential helper do git; comandos não recebem o token no ambiente e leitura direta é bloqueada.
   Mesmo assim trate-o como acessível à IA: o escopo pequeno e a proteção da `main` nos repos são o limite real.
 
+## Agentes e plano da manhã (etapa 3)
+
+- O agendador roda dentro do app e gera o plano uma vez por dia a partir de `GOS_PLAN_HOUR`
+  (padrão 7h, fuso `GOS_TIMEZONE`). O botão "Gerar plano" faz o mesmo na hora.
+- Provider dos agentes: `GOS_AGENT_PROVIDER` (padrão `claude`), ou o escolhido em cada agente; se não
+  estiver disponível, usa o primeiro que estiver.
+- Aviso no Telegram (opcional): crie um bot com o @BotFather, mande uma mensagem para ele e preencha
+  `GOS_TELEGRAM_BOT_TOKEN` e `GOS_TELEGRAM_CHAT_ID`. O bot só envia; não aceita comandos.
+- `GOS_PUBLIC_URL` (ex.: `https://os.takeonestudio.io`) coloca o link do plano no aviso.
+
 ## Banco de dados
 
 Postgres 16 em container próprio (`growth-os-postgres`), sem porta publicada: só o app alcança, pela rede

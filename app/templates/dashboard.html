@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="shell" id="app" data-csrf="{{ csrf }}">
+  <aside class="sidebar">
+    {% include "_nav.html" %}
+    <div class="side-note muted">Os agentes leem estes KPIs todo dia antes de propor o plano. Quanto mais dado real, melhores as decisões.</div>
+    <div class="grow"></div>
+    {% include "_side_foot.html" %}
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <h1>Dashboard</h1>
+      <div class="actions">
+        <div class="seg" id="range" role="group" aria-label="Período">
+          <button type="button" data-days="30">30d</button><button type="button" data-days="90" class="on">90d</button><button type="button" data-days="365">1 ano</button>
+        </div>
+        <button class="btn small primary" id="add-point" type="button">+ Lançar número</button>
+      </div>
+    </header>
+    <section class="page">
+      <div class="ops" id="ops"></div>
+      <div class="hero card" id="hero">
+        <div class="hero-head">
+          <div><span class="muted" id="hero-area"></span><h2 id="hero-name">—</h2></div>
+          <div class="hero-value"><strong id="hero-value">—</strong><span id="hero-delta"></span></div>
+        </div>
+        <div class="chart" id="chart"></div>
+      </div>
+      <div id="areas"></div>
+      <details class="card table-view"><summary>Ver como tabela</summary><div id="table"></div></details>
+    </section>
+  </main>
+</div>
+
+<dialog id="point-dialog" class="card">
+  <form method="dialog" id="point-form">
+    <h3>Lançar número</h3>
+    <p class="muted">Se já existir um valor nesse dia, ele é substituído.</p>
+    <label>KPI<select id="point-key"></select></label>
+    <div class="two">
+      <label>Dia<input type="date" id="point-day" required></label>
+      <label>Valor<input type="number" step="any" id="point-value" required inputmode="decimal"></label>
+    </div>
+    <label>Observação (opcional)<input id="point-note" maxlength="500"></label>
+    <details><summary>Meta e novo KPI</summary>
+      <div class="two">
+        <label>Meta do KPI<input type="number" step="any" id="point-target" placeholder="sem meta"></label>
+        <button class="btn small ghost" type="button" id="new-kpi">+ Criar KPI</button>
+      </div>
+    </details>
+    <div class="row">
+      <button class="btn ghost" type="button" id="point-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="kpi-dialog" class="card">
+  <form method="dialog" id="kpi-form">
+    <h3>Novo KPI</h3>
+    <label>Nome<input id="kpi-name" required maxlength="80" placeholder="Ex.: Vendas no WhatsApp"></label>
+    <label>Chave (usada pelos agentes)<input id="kpi-key" required pattern="[a-z][a-z0-9_]{1,47}" placeholder="vendas_whatsapp"></label>
+    <div class="two">
+      <label>Área<select id="kpi-area"></select></label>
+      <label>Unidade<select id="kpi-unit"><option value="number">Número</option><option value="currency">R$</option><option value="percent">%</option></select></label>
+    </div>
+    <label>O que é bom<select id="kpi-dir"><option value="up">Subir</option><option value="down">Cair</option></select></label>
+    <div class="row">
+      <button class="btn ghost" type="button" id="kpi-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Criar</button>
+    </div>
+  </form>
+</dialog>
+
+{% include "_audit.html" %}
+<script src="/static/dashboard.js"></script>
+{% endblock %}

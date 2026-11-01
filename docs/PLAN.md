@@ -30,16 +30,17 @@ roda em Docker no VPS da Hostinger atrás do Caddy que já está lá.
 - Código dos projetos via GitHub: a IA clona no /workspace, cria branch, dá push e abre PR (`gos-pr`) com um
   token fine-grained só dos repos dos projetos. Nunca push na main, nunca merge.
 
-## Etapa 3 — Agentes por área + plan approval matinal + dashboard
+## Etapa 3 — Agentes por área + plano da manhã + dashboard (feita)
 
-- Um agente por área da empresa digital, cada um com sua responsabilidade e skills:
-  CRM, Growth, Marketing (pago e orgânico), Social, Design, Produto, Tech, Suporte/CS, Financeiro.
-- Agendador roda os agentes continuamente; cada agente gera **propostas** numa fila.
-- Todo dia de manhã: notificação (Telegram ou e-mail) com o plano do dia; o owner aprova
-  ou rejeita item por item; só o aprovado é executado e o resultado volta para o dashboard.
-- **Dashboard de growth** com indicadores reais por projeto (aquisição, ativação, receita,
-  retenção, engajamento nas redes, campanhas). Os mesmos indicadores são a entrada diária
-  dos agentes para decidir o que propor.
+- 9 agentes (Growth, CRM, Marketing, Social, Design, Produto, Tech, CS, Financeiro), cada um com missão
+  editável, liga/desliga e provider próprio (tela **Agentes**).
+- Todo dia às `GOS_PLAN_HOUR` (fuso `GOS_TIMEZONE`) cada agente ativo lê os KPIs e as tarefas recentes e
+  propõe até 3 tarefas. Aviso opcional no Telegram.
+- Tela **Plano do dia**: aprovar/rejeitar item por item ou tudo; tarefa avulsa para um agente.
+  Só tarefa aprovada roda, uma por vez, no laço normal da IA (comando perigoso continua pedindo 2FA).
+- **Dashboard**: KPIs por área com tendência, variação, meta, gráfico interativo e visão de tabela,
+  mais o estado da operação (plano, 2FA pendente, containers). Números entram à mão ou pelos agentes
+  (bloco ```kpi```); as fontes automáticas chegam na etapa 4.
 
 ## Etapa 4 — Integrações de growth
 

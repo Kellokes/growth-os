@@ -259,6 +259,8 @@
   (async () => {
     await loadProviders();
     const convs = await loadConversations();
-    if (convs.length) await openConversation(convs[0].id);
+    const wanted = Number(new URLSearchParams(location.search).get("c"));
+    if (wanted) await openConversation(wanted);
+    else if (convs.length) await openConversation(convs[0].id);
   })().catch((e) => console.error(e));
 })();

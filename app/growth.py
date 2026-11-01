@@ -23,14 +23,17 @@ from sqlalchemy.orm import Session as DB
 from .audit import audit
 from .config import get_settings
 from .db import (
-    Agent, CommandRun, Conversation, GrowthProject, Message, Metric, MetricPoint, Plan, ProjectAgent, Task,
-    new_session, utcnow,
+    Agent, AgentNote, CommandRun, Conversation, GrowthProject, Message, Metric, MetricPoint, Plan, ProjectAgent,
+    Task, TaskLink, new_session, utcnow,
 )
 from .providers import ChatTurn, Provider, ProviderError, all_providers
 
 log = logging.getLogger("growth")
 
 MAX_TASKS_PER_AGENT = 3
+MAX_HANDOFFS_PER_TASK = 3   # pedidos que uma tarefa pode abrir para outros agentes
+MAX_HANDOFF_DEPTH = 3       # A pede a B, B pede a C, C pede a D: daí não passa (evita laço)
+MAX_NOTES_PER_TASK = 5
 
 DEFAULT_AGENTS = [
     ("growth", "Growth", "Aquisição e conversão", "📈",
@@ -299,6 +302,12 @@ KPIs do projeto {project.name} (últimos 30 dias):
 Suas tarefas recentes neste projeto:
 {_recent_report(db, project.id, agent.slug)}
 
+Seu time neste projeto:
+{team_roster(db, project, exclude=agent.slug)}
+
+Recados e pedidos recentes para você (leve em conta ao planejar):
+{notes_for(db, project.id, agent.slug)}
+
 Proponha de 1 a {MAX_TASKS_PER_AGENT} tarefas para HOJE, concretas e de alto impacto na sua área, só para este projeto.
 Cada tarefa precisa ser executável por você com o que o Growth OS oferece (shell no /workspace, gos-docker,
 git e gos-pr no repositório do projeto, internet), ou preparar algo para o owner decidir.
@@ -411,9 +420,128 @@ async def generate_plan(today: date | None = None, actor: str = "agendador") -> 
             db.close()
 
 
+
+# ---------- colaboração entre agentes (mesmo projeto) ----------
+
+_HANDOFF = re.compile(r"```(handoff|pedido)[ \t]*\n(.*?)```", re.S)
+_NOTE = re.compile(r"```(recado|nota)[ \t]*\n(.*?)```", re.S)
+
+
+def _json_items(raw: str) -> list[dict]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    items = data if isinstance(data, list) else [data]
+    return [i for i in items if isinstance(i, dict)]
+
+
+def team_roster(db: DB, project: GrowthProject, exclude: str = "") -> str:
+    return "\n".join(
+        f"- {a.slug}: {a.name} ({a.area}){'' if pa.enabled else ' [desligado]'}"
+        for a, pa in team(db, project) if a.slug != exclude
+    )
+
+
+def notes_for(db: DB, project_id: int, slug: str, limit: int = 8) -> str:
+    since = utcnow() - timedelta(days=7)
+    rows = (
+        db.query(AgentNote).filter(
+            AgentNote.project_id == project_id, AgentNote.created_at >= since,
+            AgentNote.from_agent != slug, (AgentNote.to_agent == slug) | (AgentNote.to_agent == ""),
+        ).order_by(AgentNote.id.desc()).limit(limit).all()
+    )
+    if not rows:
+        return "nenhum recado"
+    return "\n".join(f"- [{n.kind}] de {n.from_agent}: {n.text[:400]}" for n in rows)
+
+
+def collaboration_guide(db: DB, project: GrowthProject, slug: str) -> str:
+    return f"""TRABALHO EM TIME (só com agentes deste projeto)
+Seu time em {project.name}:
+{team_roster(db, project, exclude=slug)}
+
+Recados recentes para você:
+{notes_for(db, project.id, slug)}
+
+Para pedir uma tarefa a outro agente (ela vai para a aprovação do owner), use no fim da resposta:
+```pedido
+{{"para": "slug_do_agente", "titulo": "o que ele deve fazer", "detalhes": "contexto e o que você precisa de volta", "risco": "baixo|medio|alto"}}
+```
+Para deixar um recado (informação útil, sem tarefa), use:
+```recado
+{{"para": "slug_do_agente ou vazio para o time", "texto": "..."}}
+```
+Quando a tarefa pedida terminar, você recebe o resultado como recado. Peça só o que for da área do outro."""
+
+
+def process_collaboration(db: DB, task: Task, text: str) -> dict:
+    """Lê os blocos ```pedido``` e ```recado``` da conversa de uma tarefa e cria pedidos/recados no MESMO projeto."""
+    team_slugs = {
+        pa.agent_slug for pa in db.query(ProjectAgent).filter(ProjectAgent.project_id == task.project_id).all()
+    }
+    link = db.get(TaskLink, task.id)
+    depth = (link.depth if link else 0) + 1
+    created, notes, refused = [], 0, []
+    for _, raw in _HANDOFF.findall(text or ""):
+        for item in _json_items(raw):
+            to = str(item.get("para", "")).strip().lower()
+            title = str(item.get("titulo", "")).strip()[:200]
+            if not title or to not in team_slugs or to == task.agent_slug:
+                refused.append(f"pedido inválido para '{to}'")
+                continue
+            if depth > MAX_HANDOFF_DEPTH:
+                refused.append(f"cadeia de pedidos passou de {MAX_HANDOFF_DEPTH}")
+                continue
+            if len(created) >= MAX_HANDOFFS_PER_TASK:
+                refused.append(f"mais de {MAX_HANDOFFS_PER_TASK} pedidos numa tarefa")
+                continue
+            risk = str(item.get("risco", "baixo")).lower().replace("é", "e")
+            child = Task(
+                project_id=task.project_id, agent_slug=to, title=title, status="proposed",
+                rationale=f"Pedido de {task.agent_slug} (tarefa #{task.id}: {task.title[:120]})",
+                steps=str(item.get("detalhes", "")).strip()[:4000],
+                risk=risk if risk in ("baixo", "medio", "alto") else "medio",
+            )
+            db.add(child)
+            db.flush()
+            db.add(TaskLink(task_id=child.id, parent_id=task.id, requested_by=task.agent_slug, depth=depth))
+            db.add(AgentNote(project_id=task.project_id, from_agent=task.agent_slug, to_agent=to, kind="pedido",
+                             text=title, task_id=child.id))
+            created.append(child)
+    for _, raw in _NOTE.findall(text or ""):
+        for item in _json_items(raw):
+            to = str(item.get("para", "") or "").strip().lower()
+            body = str(item.get("texto", "")).strip()[:2000]
+            if not body or (to and to not in team_slugs) or notes >= MAX_NOTES_PER_TASK:
+                continue
+            db.add(AgentNote(project_id=task.project_id, from_agent=task.agent_slug, to_agent=to, text=body,
+                             task_id=task.id))
+            notes += 1
+    db.commit()
+    return {"tasks": created, "notes": notes, "refused": refused}
+
+
+def reply_to_requester(db: DB, task: Task) -> None:
+    """Fecha o ciclo: quando uma tarefa pedida por outro agente termina, quem pediu recebe o resultado."""
+    link = db.get(TaskLink, task.id)
+    if link is None:
+        return
+    status = "concluiu" if task.status == "done" else "não conseguiu concluir"
+    summary = re.sub(r"```.*?```", "", task.result or "", flags=re.S).strip()[:1200]
+    db.add(AgentNote(project_id=task.project_id, from_agent=task.agent_slug, to_agent=link.requested_by,
+                     kind="resposta", text=f"{status} \"{task.title}\": {summary}", task_id=task.id))
+    db.commit()
+
+
+def conversation_text(db: DB, cid: int) -> str:
+    rows = db.query(Message).filter(Message.conversation_id == cid, Message.role == "assistant").all()
+    return "\n\n".join(m.content for m in rows)
+
+
 # ---------- execução das tarefas aprovadas ----------
 
-def task_brief(project: GrowthProject, agent: Agent, pa: ProjectAgent | None, task: Task) -> str:
+def task_brief(project: GrowthProject, agent: Agent, pa: ProjectAgent | None, task: Task, team: str = "") -> str:
     return f"""Você está agindo como o agente **{agent.name}** ({agent.area}) do projeto **{project.name}**.
 Missão: {mission(agent, pa)}
 
@@ -423,6 +551,8 @@ O owner APROVOU esta tarefa do plano:
 Título: {task.title}
 Por quê: {task.rationale}
 Passos sugeridos: {task.steps}
+
+{team}
 
 Execute agora, do jeito mais seguro e direto, só neste projeto. Mudanças de código só por branch + PR (gos-pr),
 nunca na main. Se descobrir números reais de KPIs deste projeto, informe num bloco assim (só chaves existentes):
@@ -449,6 +579,9 @@ def sync_task(db: DB, task: Task) -> None:
         task.result = last.content[-4000:]
         task.finished_at = utcnow()
         ingest_kpi_blocks(db, task.project_id, last.content, f"agente:{task.agent_slug}")
+        db.commit()
+        process_collaboration(db, task, conversation_text(db, task.conversation_id))
+        reply_to_requester(db, task)
     db.commit()
 
 
@@ -481,7 +614,8 @@ async def execute_task(task_id: int) -> None:
         db.add(conv)
         db.commit()
         task.conversation_id, task.status = conv.id, "running"
-        db.add(Message(conversation_id=conv.id, role="user", content=task_brief(project, agent, pa, task)))
+        guide = collaboration_guide(db, project, agent.slug)
+        db.add(Message(conversation_id=conv.id, role="user", content=task_brief(project, agent, pa, task, guide)))
         db.commit()
         error = ""
         async for ev in run_agent(db, conv.id, provider, f"agente:{agent.slug}", "agendador"):
@@ -490,6 +624,7 @@ async def execute_task(task_id: int) -> None:
         if error:
             task.status, task.result, task.finished_at = "failed", error, utcnow()
             db.commit()
+            reply_to_requester(db, task)
         else:
             sync_task(db, task)
         if task.status == "waiting":

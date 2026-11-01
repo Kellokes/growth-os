@@ -310,3 +310,120 @@ def test_scheduler_waits_for_hour(client, monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(growth.scheduler_loop())
     assert called and isinstance(called[0], date)
+
+
+# ---------- colaboração entre agentes ----------
+
+HANDOFF_REPLY = """Mapeei o funil. A landing precisa de um criativo novo.
+```pedido
+{"para": "design", "titulo": "Criar 3 variações de hero para a landing", "detalhes": "foco em ingresso", "risco": "baixo"}
+```
+```pedido
+{"para": "growth", "titulo": "pedido para mim mesmo"}
+```
+```pedido
+{"para": "inexistente", "titulo": "agente que não existe"}
+```
+```recado
+{"para": "social", "texto": "Os posts com vídeo curto converteram 3x mais."}
+```"""
+
+
+def _run(tid):
+    asyncio.run(growth.execute_task(tid))
+
+
+def _task(slug, title, project="zombie-party", status="approved"):
+    s = dbmod.new_session()
+    if not s.query(dbmod.GrowthProject).filter_by(slug=project).count():
+        growth.create_project(s, project.replace("-", " ").title(), slug=project)
+    t = dbmod.Task(project_id=s.query(dbmod.GrowthProject).filter_by(slug=project).one().id,
+                   agent_slug=slug, title=title, status=status)
+    s.add(t)
+    s.commit()
+    tid = t.id
+    s.close()
+    return tid
+
+
+def test_agent_hands_off_task_and_gets_answer(logged, fake, submitted):
+    p = fake([HANDOFF_REPLY])
+    tid = _task("growth", "Mapear o funil")
+    _run(tid)
+    brief = p.seen[0][0][1]
+    assert "TRABALHO EM TIME" in brief and "- design: Design" in brief and "- growth:" not in brief
+
+    data = logged.get("/api/plans/today").json()
+    handoffs = [c for c in data["carryover"] if c["requested_by"] == "growth"]
+    assert len(handoffs) == 1  # só o pedido válido; os inválidos são ignorados
+    child = handoffs[0]
+    assert (child["agent"], child["status"], child["parent_id"]) == ("design", "proposed", tid)
+    assert child["title"] == "Criar 3 variações de hero para a landing"
+    assert {x["slug"]: x["pending"] for x in logged.get("/api/gprojects").json()}["zombie-party"] == 1
+
+    notes = logged.get("/api/gprojects/zombie-party/notes").json()
+    assert {(n["from"], n["to"], n["kind"]) for n in notes} == {("growth", "design", "pedido"), ("growth", "social", "nota")}
+
+    # o pedido também precisa da aprovação do owner
+    logged.post("/api/tasks/decide", json={"ids": [child["id"]], "approve": True})
+    assert submitted == [child["id"]]
+    p2 = fake(["Fiz as 3 variações e abri o PR #12."])
+    _run(child["id"])
+    assert "Pedido de growth" in p2.seen[0][0][1] and "foco em ingresso" in p2.seen[0][0][1]
+    reply = next(n for n in logged.get("/api/gprojects/zombie-party/notes").json() if n["kind"] == "resposta")
+    assert (reply["from"], reply["to"]) == ("design", "growth") and "PR #12" in reply["text"]
+
+    # e quem pediu vê a resposta no próximo planejamento
+    s = dbmod.new_session()
+    proj_ = s.query(dbmod.GrowthProject).filter_by(slug="zombie-party").one()
+    agent = s.query(dbmod.Agent).filter_by(slug="growth").one()
+    pa = s.query(dbmod.ProjectAgent).filter_by(project_id=proj_.id, agent_slug="growth").one()
+    prompt = growth.planning_prompt(s, proj_, agent, pa, growth.local_today())
+    social_prompt = growth.planning_prompt(
+        s, proj_, s.query(dbmod.Agent).filter_by(slug="social").one(),
+        s.query(dbmod.ProjectAgent).filter_by(project_id=proj_.id, agent_slug="social").one(), growth.local_today())
+    s.close()
+    assert "PR #12" in prompt and "vídeo curto" in social_prompt
+
+
+def test_handoff_never_crosses_projects(logged, fake):
+    _task("social", "x", project="a-ilha", status="done")  # cria o outro projeto
+    reply = '```pedido\n{"para": "design", "titulo": "fazer algo"}\n```'
+    fake([reply])
+    tid = _task("growth", "Tarefa no zombie")
+    _run(tid)
+    s = dbmod.new_session()
+    child = s.query(dbmod.TaskLink).filter_by(parent_id=tid).one()
+    assert s.get(dbmod.Task, child.task_id).project_id == pid("zombie-party")
+    assert s.query(dbmod.AgentNote).filter_by(project_id=pid("a-ilha")).count() == 0
+    s.close()
+
+
+def test_handoff_chain_is_limited(logged, fake):
+    tid = _task("growth", "raiz")
+    chain = ["growth", "design", "social", "crm", "cs"]
+    for i in range(len(chain) - 1):
+        fake([f'```pedido\n{{"para": "{chain[i + 1]}", "titulo": "passo {i + 1}"}}\n```'])
+        _run(tid)
+        s = dbmod.new_session()
+        link = s.query(dbmod.TaskLink).filter_by(parent_id=tid).one_or_none()
+        if link is None:
+            s.close()
+            break
+        nxt = s.get(dbmod.Task, link.task_id)
+        nxt.status = "approved"
+        s.commit()
+        tid = nxt.id
+        s.close()
+    s = dbmod.new_session()
+    assert s.query(dbmod.TaskLink).count() == growth.MAX_HANDOFF_DEPTH
+    s.close()
+
+
+def test_rejected_handoff_tells_the_requester(logged, fake):
+    fake(['```pedido\n{"para": "design", "titulo": "banner"}\n```'])
+    _run(_task("growth", "raiz"))
+    child = next(c for c in logged.get("/api/plans/today").json()["carryover"] if c["requested_by"])
+    logged.post("/api/tasks/decide", json={"ids": [child["id"]], "approve": False})
+    reply = next(n for n in logged.get("/api/gprojects/zombie-party/notes").json() if n["kind"] == "resposta")
+    assert reply["to"] == "growth" and "rejeitou" in reply["text"]

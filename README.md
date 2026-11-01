@@ -60,6 +60,12 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
 - Tudo é por projeto: cada projeto tem o seu time (9 áreas), os seus KPIs e as suas tarefas. Na primeira
   visita os projetos do compose do VPS são importados sozinhos; dá para criar outros em Agentes.
 
+- Os agentes do mesmo projeto trabalham em time. Ao terminar uma tarefa, um agente pode pedir trabalho a
+  outro com um bloco ```pedido``` (vira tarefa nova que **também** espera a sua aprovação) ou deixar um
+  ```recado```. Quem pediu recebe a resposta sozinho quando a tarefa termina (ou quando você rejeita).
+  Limites: até 3 pedidos por tarefa, corrente de no máximo 3 níveis, nunca entre projetos. A conversa
+  aparece em Agentes, em "Conversa do time".
+
 - O agendador roda dentro do app e gera o plano uma vez por dia a partir de `GOS_PLAN_HOUR`
   (padrão 7h, fuso `GOS_TIMEZONE`). O botão "Gerar plano" faz o mesmo na hora.
 - Provider dos agentes: `GOS_AGENT_PROVIDER` (padrão `claude`), ou o escolhido em cada agente; se não

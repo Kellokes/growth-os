@@ -16,7 +16,7 @@
       <div class="task-main">
         <div class="task-title">${showProject ? `<span class="tag">${esc(pinfo(t.project).name)} · ${esc(agents[t.agent]?.name || t.agent)}</span> ` : ""}${esc(t.title)}</div>
         ${t.rationale ? `<div class="task-why">${esc(t.rationale)}</div>` : ""}
-        <div class="task-tags"><span class="tag r-${esc(t.risk)}">${esc(RISK[t.risk] || t.risk)}</span>${t.kpi ? `<span class="tag">KPI ${esc(t.kpi)}</span>` : ""}</div>
+        <div class="task-tags">${t.requested_by ? `<span class="tag handoff">🤝 pedido por ${esc(agents[t.requested_by]?.name || t.requested_by)}</span>` : ""}<span class="tag r-${esc(t.risk)}">${esc(RISK[t.risk] || t.risk)}</span>${t.kpi ? `<span class="tag">KPI ${esc(t.kpi)}</span>` : ""}</div>
         ${t.steps ? `<details><summary>Passos</summary><p>${esc(t.steps)}</p></details>` : ""}
         ${t.result ? `<details ${t.status === "failed" ? "open" : ""}><summary>Resultado</summary><p>${esc(t.result.slice(0, 1500))}</p></details>` : ""}
       </div>
@@ -56,7 +56,7 @@
         }).join("")}</div></section>`;
     }).join("") || (plan && plan.status === "ready" ? `<div class="muted pad">Nenhuma tarefa ${project === "all" ? "" : "deste projeto "}no plano de hoje.</div>` : "");
     $("#carry").innerHTML = carry.length
-      ? `<h3 class="section-title">Na fila ou esperando você (outros dias e avulsas)</h3><div class="agent-plan card">${carry.map((t) => taskHtml(t, true)).join("")}</div>` : "";
+      ? `<h3 class="section-title">Pedidos entre agentes, fila e pendências</h3><div class="agent-plan card">${carry.map((t) => taskHtml(t, true)).join("")}</div>` : "";
 
     clearTimeout(poll);
     const busy = plan?.status === "generating" || tasks.concat(carry).some((t) => ["approved", "running"].includes(t.status));

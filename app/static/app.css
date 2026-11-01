@@ -468,3 +468,14 @@ textarea { resize: vertical; }
   .pill { padding: 6px 12px; font-size: 13.5px; }
   .project-head { font-size: 17px; }
 }
+
+/* ---------- conversa do time ---------- */
+.tag.handoff { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.team-feed { max-height: 420px; overflow-y: auto; }
+.note { padding: 11px 16px; border-top: 1px solid var(--line); font-size: 13.5px; }
+.note:first-child { border-top: 0; }
+.note.pedido { box-shadow: inset 3px 0 0 var(--accent); }
+.note.resposta { box-shadow: inset 3px 0 0 var(--ok); }
+.note-head { display: flex; flex-wrap: wrap; gap: 5px; align-items: baseline; }
+.note-time { margin-left: auto; font-size: 12px; }
+.note-text { color: var(--text-2); margin-top: 3px; white-space: pre-wrap; }

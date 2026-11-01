@@ -1,8 +1,9 @@
 (() => {
-  const { $, esc, api, fmt } = window.GOS;
+  const { $, esc, api, fmt, initProjects } = window.GOS;
+  let project = null; let projectInfo = null;
   const SVG = "http://www.w3.org/2000/svg";
   let metrics = []; let agents = {}; let days = 90; let selected = null;
-  try { selected = localStorage.getItem("gos.kpi"); days = Number(localStorage.getItem("gos.days")) || 90; } catch { /* sem storage */ }
+  try { days = Number(localStorage.getItem("gos.days")) || 90; } catch { /* sem storage */ }
 
   // Variação entre o último e o penúltimo ponto; a cor diz se foi bom ou ruim para este KPI.
   function delta(m) {
@@ -103,7 +104,7 @@
   }
 
   function selectMetric(key) {
-    selected = key; try { localStorage.setItem("gos.kpi", key); } catch { /* ok */ }
+    selected = key; try { localStorage.setItem(`gos.kpi.${project}`, key); } catch { /* ok */ }
     const m = metrics.find((x) => x.key === key) || metrics[0];
     const a = agents[m.area];
     $("#hero-area").textContent = a ? `${a.icon} ${a.name}` : m.area;
@@ -138,25 +139,27 @@
     const [plan, proj] = await Promise.allSettled([api("/api/plans/today"), api("/api/projects")]);
     const items = [];
     if (plan.status === "fulfilled") {
-      const t = plan.value.tasks;
+      const t = plan.value.tasks.filter((x) => x.project === project);
       const c = (s) => t.filter((x) => x.status === s).length;
       const st = plan.value.plan?.status;
       items.push(["Plano de hoje", st === "ready" ? `${c("proposed")} para decidir` : st === "generating" ? "gerando…" : "não gerado", "/plan", c("proposed") ? "warn" : "ok"]);
       items.push(["Tarefas concluídas hoje", String(c("done")), "/plan", "ok"]);
-      const waiting = t.concat(plan.value.carryover).filter((x) => x.status === "waiting").length;
+      const waiting = t.concat(plan.value.carryover.filter((x) => x.project === project)).filter((x) => x.status === "waiting").length;
       items.push(["Esperando seu 2FA", String(waiting), "/plan", waiting ? "warn" : "ok"]);
     }
     if (proj.status === "fulfilled") {
-      const all = proj.value.projects.flatMap((p) => p.containers);
+      const mine = proj.value.projects.filter((p) => p.name === projectInfo?.compose_project);
+      const all = mine.flatMap((p) => p.containers);
       const bad = all.filter((c) => c.state !== "running" || c.health === "unhealthy").length;
-      if (proj.value.errors.length && !all.length) items.push(["Containers", "gateway indisponível", "/projects", "down"]);
+      if (!projectInfo?.compose_project) items.push(["Containers", "não ligado ao VPS", "/agents", "warn"]);
+      else if (proj.value.errors.length && !all.length) items.push(["Containers", "gateway indisponível", "/projects", "down"]);
       else items.push(["Containers", bad ? `${bad} com problema` : `${all.length} no ar`, "/projects", bad ? "down" : "ok"]);
     }
     $("#ops").innerHTML = items.map(([k, v, href, st]) => `<a class="op card" href="${href}"><i class="dot ${st}"></i><span>${esc(k)}</span><b>${esc(v)}</b></a>`).join("");
   }
 
   async function load() {
-    metrics = await api(`/api/metrics?days=${days}`);
+    metrics = await api(`/api/gprojects/${project}/metrics?days=${days}`);
     render();
   }
 
@@ -176,9 +179,9 @@
     ev.preventDefault();
     const key = $("#point-key").value; const m = metrics.find((x) => x.key === key);
     try {
-      await api(`/api/metrics/${key}/points`, { method: "POST", body: JSON.stringify({ value: Number($("#point-value").value), day: $("#point-day").value, note: $("#point-note").value }) });
+      await api(`/api/gprojects/${project}/metrics/${key}/points`, { method: "POST", body: JSON.stringify({ value: Number($("#point-value").value), day: $("#point-day").value, note: $("#point-note").value }) });
       const target = $("#point-target").value === "" ? null : Number($("#point-target").value);
-      if (target !== m.target) await api("/api/metrics", { method: "POST", body: JSON.stringify({ key, name: m.name, area: m.area, unit: m.unit, direction: m.direction, target }) });
+      if (target !== m.target) await api(`/api/gprojects/${project}/metrics`, { method: "POST", body: JSON.stringify({ key, name: m.name, area: m.area, unit: m.unit, direction: m.direction, target }) });
       $("#point-dialog").close(); selected = key; load();
     } catch (e) { alert(e.message); }
   };
@@ -193,7 +196,7 @@
   $("#kpi-form").onsubmit = async (ev) => {
     ev.preventDefault();
     try {
-      await api("/api/metrics", { method: "POST", body: JSON.stringify({ key: $("#kpi-key").value, name: $("#kpi-name").value, area: $("#kpi-area").value, unit: $("#kpi-unit").value, direction: $("#kpi-dir").value }) });
+      await api(`/api/gprojects/${project}/metrics`, { method: "POST", body: JSON.stringify({ key: $("#kpi-key").value, name: $("#kpi-name").value, area: $("#kpi-area").value, unit: $("#kpi-unit").value, direction: $("#kpi-dir").value }) });
       selected = $("#kpi-key").value; $("#kpi-dialog").close(); await load(); openPoint(selected);
     } catch (e) { alert(e.message); }
   };
@@ -212,9 +215,17 @@
   });
   let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => selectMetric(selected), 150); });
 
-  (async () => {
-    for (const a of await api("/api/agents")) agents[a.slug] = a;
+  async function onProject(slug, info) {
+    project = slug; projectInfo = info;
+    $("#page-title").textContent = info ? `Dashboard · ${info.name}` : "Dashboard";
+    document.querySelector(".page").hidden = !slug;
+    if (!slug) return;
+    try { selected = localStorage.getItem(`gos.kpi.${slug}`); } catch { selected = null; }
+    agents = {};
+    for (const a of await api(`/api/gprojects/${slug}/agents`)) agents[a.slug] = a;
     await load();
     renderOps().catch(() => {});
-  })().catch((e) => { $("#areas").innerHTML = `<div class="alert">${esc(e.message)}</div>`; });
+  }
+
+  initProjects(onProject).catch((e) => { $("#areas").innerHTML = `<div class="alert">${esc(e.message)}</div>`; });
 })();

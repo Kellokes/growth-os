@@ -16,7 +16,8 @@ from .agent import cmd_json, execute_run, run_agent, tool_message
 from .audit import audit
 from .config import get_settings
 from .db import (
-    Agent, AuditLog, CommandRun, Conversation, Message, Metric, Plan, Task, get_db, init_db, new_session, utcnow,
+    Agent, AuditLog, CommandRun, Conversation, GrowthProject, Message, Metric, Plan, ProjectAgent, Task, get_db,
+    init_db, new_session, utcnow,
 )
 from .executor import classify
 from . import growth
@@ -432,74 +433,165 @@ async def container_restart(
     return {"ok": True}
 
 
-# ---------- etapa 3: agentes, plano do dia e KPIs ----------
+# ---------- etapa 3: projetos, agentes, plano do dia e KPIs (tudo por projeto) ----------
 
-def _agent_json(a: Agent) -> dict:
-    return {"slug": a.slug, "name": a.name, "area": a.area, "icon": a.icon, "mission": a.mission,
-            "enabled": a.enabled, "provider": a.provider or ""}
+def _project_or_404(db: DB, slug: str | None) -> GrowthProject:
+    p = growth.get_project(db, slug)
+    if p is None:
+        raise HTTPException(404, "projeto não encontrado")
+    return p
 
 
-def _task_json(t: Task) -> dict:
+def _project_json(p: GrowthProject) -> dict:
+    return {"slug": p.slug, "name": p.name, "icon": p.icon, "description": p.description, "repo": p.repo,
+            "domains": p.domains, "compose_project": p.compose_project, "enabled": p.enabled}
+
+
+def _task_json(t: Task, projects: dict[int, GrowthProject] | None = None) -> dict:
+    proj_ = (projects or {}).get(t.project_id)
     return {
-        "id": t.id, "plan_id": t.plan_id, "agent": t.agent_slug, "title": t.title, "rationale": t.rationale,
-        "steps": t.steps, "risk": t.risk, "kpi": t.kpi_key, "status": t.status, "result": t.result,
-        "conversation_id": t.conversation_id, "created_at": t.created_at.isoformat(),
+        "id": t.id, "plan_id": t.plan_id, "project": proj_.slug if proj_ else "", "agent": t.agent_slug,
+        "title": t.title, "rationale": t.rationale, "steps": t.steps, "risk": t.risk, "kpi": t.kpi_key,
+        "status": t.status, "result": t.result, "conversation_id": t.conversation_id,
+        "created_at": t.created_at.isoformat(),
     }
 
 
+def _projects_by_id(db: DB) -> dict[int, GrowthProject]:
+    return {p.id: p for p in db.query(GrowthProject).all()}
+
+
+async def _import_from_vps(db: DB) -> list[str]:
+    containers = await proj.list_containers()
+    sites, _ = proj.read_caddy_sites()
+    return growth.import_projects(db, containers, sites)
+
+
+@app.get("/api/gprojects")
+async def list_gprojects(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    if db.query(GrowthProject).count() == 0:
+        try:
+            await _import_from_vps(db)  # primeira vez: traz os projetos que já rodam no VPS
+        except proj.GatewayError:
+            pass
+    rows = db.query(GrowthProject).order_by(GrowthProject.id).all()
+    pending: dict[int, int] = {}
+    for pid, in db.query(Task.project_id).filter(Task.status == "proposed").all():
+        pending[pid] = pending.get(pid, 0) + 1
+    return [{**_project_json(p), "pending": pending.get(p.id, 0)} for p in rows]
+
+
+@app.post("/api/gprojects/import")
+async def import_gprojects(request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    try:
+        created = await _import_from_vps(db)
+    except proj.GatewayError as e:
+        raise HTTPException(502, str(e)) from e
+    audit(db, auth.user.username, "projects_import", ", ".join(created), client_ip(request))
+    return {"created": created}
+
+
+class GProjectIn(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=80)
+    icon: str | None = Field(default=None, max_length=8)
+    description: str | None = Field(default=None, max_length=4000)
+    repo: str | None = Field(default=None, pattern=r"^$|^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    domains: str | None = Field(default=None, max_length=1000)
+    enabled: bool | None = None
+
+
+@app.post("/api/gprojects")
+def create_gproject(body: GProjectIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    if not body.name:
+        raise HTTPException(422, "nome obrigatório")
+    slug = growth.slugify(body.name)
+    if db.query(GrowthProject).filter(GrowthProject.slug == slug).count():
+        raise HTTPException(409, "já existe um projeto com esse nome")
+    fields = body.model_dump(exclude_none=True, exclude={"name"})
+    p = growth.create_project(db, body.name, **fields)
+    audit(db, auth.user.username, "project_create", p.slug, client_ip(request))
+    return _project_json(p)
+
+
+@app.patch("/api/gprojects/{slug}")
+def update_gproject(slug: str, body: GProjectIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(p, k, v.strip() if isinstance(v, str) else v)
+    db.commit()
+    audit(db, auth.user.username, "project_update", f"{slug}: {body.model_dump(exclude_none=True)}"[:500], client_ip(request))
+    return _project_json(p)
+
+
 @app.get("/api/agents")
-def list_agents(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    agents = db.query(Agent).order_by(Agent.id).all()
+def agent_catalog(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Catálogo das áreas (nome, ícone, missão padrão). O time de cada projeto fica em /api/gprojects/{p}/agents."""
+    return [{"slug": a.slug, "name": a.name, "area": a.area, "icon": a.icon, "mission": a.mission}
+            for a in db.query(Agent).order_by(Agent.id).all()]
+
+
+@app.get("/api/gprojects/{slug}/agents")
+def project_agents(slug: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
     stats: dict[str, dict] = {}
-    for slug, status in db.query(Task.agent_slug, Task.status).all():
-        s = stats.setdefault(slug, {})
+    for a_slug, status in db.query(Task.agent_slug, Task.status).filter(Task.project_id == p.id).all():
+        s = stats.setdefault(a_slug, {})
         s[status] = s.get(status, 0) + 1
-    return [{**_agent_json(a), "stats": stats.get(a.slug, {})} for a in agents]
+    return [
+        {"slug": a.slug, "name": a.name, "area": a.area, "icon": a.icon, "mission": growth.mission(a, pa),
+         "default_mission": a.mission, "custom": bool(pa.mission.strip()), "enabled": pa.enabled,
+         "provider": pa.provider or "", "stats": stats.get(a.slug, {})}
+        for a, pa in growth.team(db, p)
+    ]
 
 
 class AgentIn(BaseModel):
     enabled: bool | None = None
-    mission: str | None = Field(default=None, min_length=10, max_length=4000)
+    mission: str | None = Field(default=None, max_length=4000)  # "" volta para a missão padrão da área
     provider: str | None = Field(default=None, max_length=32)
 
 
-@app.patch("/api/agents/{slug}")
-def update_agent(slug: str, body: AgentIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    a = db.query(Agent).filter(Agent.slug == slug).one_or_none()
-    if a is None:
-        raise HTTPException(404, "not_found")
-    if body.provider is not None and body.provider and body.provider not in all_providers():
+@app.patch("/api/gprojects/{slug}/agents/{agent}")
+def update_project_agent(slug: str, agent: str, body: AgentIn, request: Request,
+                         auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    pa = db.query(ProjectAgent).filter(ProjectAgent.project_id == p.id, ProjectAgent.agent_slug == agent).one_or_none()
+    if pa is None:
+        raise HTTPException(404, "agente não existe neste projeto")
+    if body.provider and body.provider not in all_providers():
         raise HTTPException(400, "provider_desconhecido")
     if body.enabled is not None:
-        a.enabled = body.enabled
+        pa.enabled = body.enabled
     if body.mission is not None:
-        a.mission = body.mission.strip()
+        default = db.query(Agent).filter(Agent.slug == agent).one().mission
+        pa.mission = "" if body.mission.strip() == default.strip() else body.mission.strip()
     if body.provider is not None:
-        a.provider = body.provider or None
+        pa.provider = body.provider or None
     db.commit()
-    audit(db, auth.user.username, "agent_update", f"{slug}: {body.model_dump(exclude_none=True)}"[:500], client_ip(request))
-    return _agent_json(a)
+    audit(db, auth.user.username, "agent_update", f"{slug}/{agent}: {body.model_dump(exclude_none=True)}"[:500],
+          client_ip(request))
+    return {"ok": True}
 
 
 @app.get("/api/plans/today")
 def plan_today(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     today = growth.local_today()
     plan = db.query(Plan).filter(Plan.day == today).one_or_none()
-    tasks = db.query(Task).filter(Task.plan_id == plan.id).order_by(Task.id).all() if plan else []
-    # Tarefas de dias anteriores que ainda pedem atenção (2FA pendente, rodando, falhas recentes).
+    projects = _projects_by_id(db)
+    tasks = db.query(Task).filter(Task.plan_id == plan.id).order_by(Task.project_id, Task.id).all() if plan else []
+    # Tarefas avulsas ou de outros dias que ainda pedem atenção (fila, rodando, 2FA pendente).
     open_tasks = (
         db.query(Task).filter(
             Task.status.in_(("waiting", "running", "approved")),
             or_(Task.plan_id.is_(None), Task.plan_id != (plan.id if plan else -1)),
-        )
-        .order_by(Task.id.desc()).limit(20).all()
+        ).order_by(Task.id.desc()).limit(30).all()
     )
     s = get_settings()
     return {
         "day": today.isoformat(),
         "plan": {"id": plan.id, "status": plan.status, "error": plan.error} if plan else None,
-        "tasks": [_task_json(t) for t in tasks],
-        "carryover": [_task_json(t) for t in open_tasks],
+        "tasks": [_task_json(t, projects) for t in tasks],
+        "carryover": [_task_json(t, projects) for t in open_tasks],
         "schedule": {"hour": s.plan_hour, "timezone": s.timezone, "enabled": s.scheduler_enabled,
                      "telegram": bool(s.telegram_bot_token and s.telegram_chat_id)},
     }
@@ -519,13 +611,14 @@ async def plan_generate(request: Request, auth: Auth = Depends(current_auth), db
 
 
 class DecideIn(BaseModel):
-    ids: list[int] = Field(min_length=1, max_length=100)
+    ids: list[int] = Field(min_length=1, max_length=300)
     approve: bool
 
 
 @app.post("/api/tasks/decide")
 def decide_tasks(body: DecideIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     """Aprovar é o portão: só tarefa aprovada pelo owner roda. Comandos perigosos ainda pedem 2FA."""
+    projects = _projects_by_id(db)
     changed = []
     for t in db.query(Task).filter(Task.id.in_(body.ids), Task.status == "proposed").all():
         t.status = "approved" if body.approve else "rejected"
@@ -534,13 +627,14 @@ def decide_tasks(body: DecideIn, request: Request, auth: Auth = Depends(current_
     db.commit()
     for t in changed:
         audit(db, auth.user.username, "task_approved" if body.approve else "task_rejected",
-              f"#{t.id} {t.agent_slug}: {t.title}", client_ip(request))
+              f"#{t.id} {projects[t.project_id].slug}/{t.agent_slug}: {t.title}", client_ip(request))
         if body.approve:
             growth.runner.submit(t.id)
-    return {"changed": [_task_json(t) for t in changed]}
+    return {"changed": [_task_json(t, projects) for t in changed]}
 
 
 class TaskIn(BaseModel):
+    project: str
     agent: str
     title: str = Field(min_length=3, max_length=200)
     steps: str = Field(default="", max_length=4000)
@@ -548,27 +642,32 @@ class TaskIn(BaseModel):
 
 @app.post("/api/tasks")
 def create_task(body: TaskIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    """Tarefa avulsa criada pelo owner para um agente (já nasce aprovada e entra na fila)."""
-    if db.query(Agent).filter(Agent.slug == body.agent).count() == 0:
-        raise HTTPException(404, "agente não existe")
-    t = Task(agent_slug=body.agent, title=body.title.strip(), steps=body.steps.strip(), status="approved",
-             rationale="Pedido direto do owner.", decided_at=utcnow())
+    """Tarefa avulsa criada pelo owner para um agente de um projeto (já nasce aprovada e entra na fila)."""
+    p = _project_or_404(db, body.project)
+    if db.query(ProjectAgent).filter(ProjectAgent.project_id == p.id, ProjectAgent.agent_slug == body.agent).count() == 0:
+        raise HTTPException(404, "agente não existe neste projeto")
+    t = Task(project_id=p.id, agent_slug=body.agent, title=body.title.strip(), steps=body.steps.strip(),
+             status="approved", rationale="Pedido direto do owner.", decided_at=utcnow())
     db.add(t)
     db.commit()
-    audit(db, auth.user.username, "task_created", f"#{t.id} {t.agent_slug}: {t.title}", client_ip(request))
+    audit(db, auth.user.username, "task_created", f"#{t.id} {p.slug}/{t.agent_slug}: {t.title}", client_ip(request))
     growth.runner.submit(t.id)
-    return _task_json(t)
+    return _task_json(t, {p.id: p})
 
 
 @app.get("/api/tasks")
-def list_tasks(limit: int = 50, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    rows = db.query(Task).order_by(Task.id.desc()).limit(max(1, min(limit, 200))).all()
-    return [_task_json(t) for t in rows]
+def list_tasks(project: str | None = None, limit: int = 50, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    q = db.query(Task)
+    if project:
+        q = q.filter(Task.project_id == _project_or_404(db, project).id)
+    rows = q.order_by(Task.id.desc()).limit(max(1, min(limit, 200))).all()
+    projects = _projects_by_id(db)
+    return [_task_json(t, projects) for t in rows]
 
 
-@app.get("/api/metrics")
-def metrics(days: int = 90, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    return growth.metric_series(db, max(7, min(days, 730)))
+@app.get("/api/gprojects/{slug}/metrics")
+def metrics(slug: str, days: int = 90, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    return growth.metric_series(db, _project_or_404(db, slug).id, max(7, min(days, 730)))
 
 
 class PointIn(BaseModel):
@@ -577,14 +676,16 @@ class PointIn(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
-@app.post("/api/metrics/{key}/points")
-def add_point(key: str, body: PointIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+@app.post("/api/gprojects/{slug}/metrics/{key}/points")
+def add_point(slug: str, key: str, body: PointIn, request: Request,
+              auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
     try:
-        p = growth.record_point(db, key, body.value, body.day, source="manual", note=body.note)
+        pt = growth.record_point(db, p.id, key, body.value, body.day, source="manual", note=body.note)
     except KeyError as e:
-        raise HTTPException(404, "KPI não existe") from e
-    audit(db, auth.user.username, "kpi_point", f"{key}={body.value} ({p.day})", client_ip(request))
-    return {"key": key, "day": p.day.isoformat(), "value": p.value}
+        raise HTTPException(404, "KPI não existe neste projeto") from e
+    audit(db, auth.user.username, "kpi_point", f"{slug}/{key}={body.value} ({pt.day})", client_ip(request))
+    return {"key": key, "day": pt.day.isoformat(), "value": pt.value}
 
 
 class MetricIn(BaseModel):
@@ -596,13 +697,14 @@ class MetricIn(BaseModel):
     target: float | None = None
 
 
-@app.post("/api/metrics")
-def upsert_metric(body: MetricIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
-    m = db.query(Metric).filter(Metric.key == body.key).one_or_none()
+@app.post("/api/gprojects/{slug}/metrics")
+def upsert_metric(slug: str, body: MetricIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, slug)
+    m = db.query(Metric).filter(Metric.project_id == p.id, Metric.key == body.key).one_or_none()
     if m is None:
-        m = Metric(key=body.key)
+        m = Metric(project_id=p.id, key=body.key)
         db.add(m)
     m.name, m.area, m.unit, m.direction, m.target = body.name, body.area, body.unit, body.direction, body.target
     db.commit()
-    audit(db, auth.user.username, "kpi_upsert", body.key, client_ip(request))
+    audit(db, auth.user.username, "kpi_upsert", f"{slug}/{body.key}", client_ip(request))
     return {"ok": True}

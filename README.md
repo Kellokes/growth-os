@@ -57,6 +57,9 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
 
 ## Agentes e plano da manhã (etapa 3)
 
+- Tudo é por projeto: cada projeto tem o seu time (9 áreas), os seus KPIs e as suas tarefas. Na primeira
+  visita os projetos do compose do VPS são importados sozinhos; dá para criar outros em Agentes.
+
 - O agendador roda dentro do app e gera o plano uma vez por dia a partir de `GOS_PLAN_HOUR`
   (padrão 7h, fuso `GOS_TIMEZONE`). O botão "Gerar plano" faz o mesmo na hora.
 - Provider dos agentes: `GOS_AGENT_PROVIDER` (padrão `claude`), ou o escolhido em cada agente; se não

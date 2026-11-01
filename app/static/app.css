@@ -439,3 +439,32 @@ textarea { resize: vertical; }
   .task-row { flex-wrap: wrap; gap: 6px 10px; }
   .table-view { overflow-x: auto; }
 }
+
+/* ---------- seletor de projeto ---------- */
+.pswitch { display: flex; align-items: center; gap: 12px; padding: 10px 32px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 75%, transparent); }
+.pswitch:empty { display: none; }
+.pswitch-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); flex: none; }
+.pswitch-pills { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+.pswitch-pills::-webkit-scrollbar { display: none; }
+.pill { flex: none; display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); color: var(--text-2); font-size: 14px; font-weight: 500; cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
+.pill:hover { border-color: var(--accent); color: var(--text); }
+.pill.on { background: var(--accent-grad); border-color: transparent; color: #fff; font-weight: 600; box-shadow: 0 6px 18px rgba(124,92,255,.3); }
+.pill.off:not(.on) { opacity: .55; }
+.pill b { font-size: 11px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 99px; display: inline-grid; place-items: center; background: var(--warn); color: #1a1200; }
+.pill.on b { background: #fff; color: var(--accent); }
+.pswitch-empty { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--text-2); font-size: 14px; }
+.project-block { display: flex; flex-direction: column; gap: 12px; }
+.project-block + .project-block { margin-top: 10px; }
+.project-head { display: flex; align-items: center; gap: 10px; margin: 6px 2px 0; font-size: 19px; letter-spacing: -.01em; }
+.project-head b { font-size: 12px; font-weight: 600; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: 99px; padding: 1px 10px; }
+.project-card { padding: 14px 18px; }
+.project-card summary { display: flex; justify-content: space-between; gap: 10px; font-size: 14.5px; color: var(--text); list-style: none; }
+.project-card summary::-webkit-details-marker { display: none; }
+.project-form { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.warn-text { color: var(--warn); }
+@media (max-width: 800px) {
+  .pswitch { padding: 8px 12px; gap: 8px; }
+  .pswitch-label { display: none; }
+  .pill { padding: 6px 12px; font-size: 13.5px; }
+  .project-head { font-size: 17px; }
+}

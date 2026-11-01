@@ -1,4 +1,6 @@
-"""Etapa 3: agentes por área, KPIs e o plano da manhã.
+"""Etapa 3: agentes por área, KPIs e o plano da manhã — tudo POR PROJETO.
+
+Cada projeto (negócio) do owner tem o seu time de agentes, os seus KPIs e as suas tarefas.
 
 Fluxo diário:
   1. No horário configurado (ou pelo botão), cada agente ativo lê os KPIs e o que aconteceu ontem e
@@ -20,7 +22,10 @@ from sqlalchemy.orm import Session as DB
 
 from .audit import audit
 from .config import get_settings
-from .db import Agent, CommandRun, Conversation, Message, Metric, MetricPoint, Plan, Task, new_session, utcnow
+from .db import (
+    Agent, CommandRun, Conversation, GrowthProject, Message, Metric, MetricPoint, Plan, ProjectAgent, Task,
+    new_session, utcnow,
+)
 from .providers import ChatTurn, Provider, ProviderError, all_providers
 
 log = logging.getLogger("growth")
@@ -79,16 +84,78 @@ DEFAULT_METRICS = [
 
 
 def seed_defaults(db: DB) -> None:
-    """Cria os agentes e KPIs padrão que ainda não existem (não altera os que o owner editou)."""
+    """Catálogo de áreas (papéis). Não altera o que já existe."""
     have = {a.slug for a in db.query(Agent.slug).all()}
     for slug, name, area, icon, mission in DEFAULT_AGENTS:
         if slug not in have:
             db.add(Agent(slug=slug, name=name, area=area, icon=icon, mission=mission))
-    keys = {m.key for m in db.query(Metric.key).all()}
+    db.commit()
+    for project in db.query(GrowthProject).all():
+        setup_project(db, project)
+
+
+def setup_project(db: DB, project: GrowthProject) -> None:
+    """Garante o time completo e os KPIs padrão do projeto (só cria o que falta)."""
+    team = {pa.agent_slug for pa in db.query(ProjectAgent).filter(ProjectAgent.project_id == project.id).all()}
+    for slug, *_ in DEFAULT_AGENTS:
+        if slug not in team:
+            db.add(ProjectAgent(project_id=project.id, agent_slug=slug))
+    keys = {m.key for m in db.query(Metric.key).filter(Metric.project_id == project.id).all()}
     for key, name, area, unit, direction in DEFAULT_METRICS:
         if key not in keys:
-            db.add(Metric(key=key, name=name, area=area, unit=unit, direction=direction))
+            db.add(Metric(project_id=project.id, key=key, name=name, area=area, unit=unit, direction=direction))
     db.commit()
+
+
+def slugify(text: str) -> str:
+    import unicodedata
+
+    plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^a-z0-9]+", "-", plain.lower()).strip("-")
+    return s[:48] or "projeto"
+
+
+def create_project(db: DB, name: str, **fields) -> GrowthProject:
+    slug = fields.pop("slug", None) or slugify(name)
+    project = GrowthProject(slug=slug, name=name.strip()[:80], **fields)
+    db.add(project)
+    db.commit()
+    setup_project(db, project)
+    return project
+
+
+def import_projects(db: DB, containers: list[dict], sites: list[dict]) -> list[str]:
+    """Cria um projeto para cada projeto do compose no VPS que ainda não está cadastrado."""
+    from .projects import group_projects
+
+    known = {p.compose_project for p in db.query(GrowthProject).all()} | {p.slug for p in db.query(GrowthProject).all()}
+    created = []
+    for group in group_projects(containers, sites):
+        name = group["name"]
+        if name in ("avulsos", "_caddy", "growth-os") or name in known:
+            continue
+        domains = sorted({h for s in group["sites"] for h in s["hosts"]})
+        create_project(db, name.replace("-", " ").title(), slug=slugify(name), compose_project=name,
+                       domains=", ".join(domains))
+        created.append(name)
+    return created
+
+
+def get_project(db: DB, slug: str | None) -> GrowthProject | None:
+    q = db.query(GrowthProject)
+    if slug:
+        return q.filter(GrowthProject.slug == slug).one_or_none()
+    return q.order_by(GrowthProject.id).first()
+
+
+def team(db: DB, project: GrowthProject) -> list[tuple[Agent, ProjectAgent]]:
+    agents = {a.slug: a for a in db.query(Agent).all()}
+    rows = db.query(ProjectAgent).filter(ProjectAgent.project_id == project.id).order_by(ProjectAgent.id).all()
+    return [(agents[pa.agent_slug], pa) for pa in rows if pa.agent_slug in agents]
+
+
+def mission(agent: Agent, pa: ProjectAgent | None) -> str:
+    return (pa.mission if pa and pa.mission.strip() else agent.mission).strip()
 
 
 def local_today() -> date:
@@ -97,8 +164,9 @@ def local_today() -> date:
 
 # ---------- KPIs ----------
 
-def record_point(db: DB, key: str, value: float, day: date | None = None, source: str = "manual", note: str = "") -> MetricPoint:
-    metric = db.query(Metric).filter(Metric.key == key).one_or_none()
+def record_point(db: DB, project_id: int, key: str, value: float, day: date | None = None,
+                 source: str = "manual", note: str = "") -> MetricPoint:
+    metric = db.query(Metric).filter(Metric.project_id == project_id, Metric.key == key).one_or_none()
     if metric is None:
         raise KeyError(key)
     day = day or local_today()
@@ -112,11 +180,13 @@ def record_point(db: DB, key: str, value: float, day: date | None = None, source
     return point
 
 
-def metric_series(db: DB, days: int = 90) -> list[dict]:
+def metric_series(db: DB, project_id: int, days: int = 90) -> list[dict]:
     since = local_today() - timedelta(days=days)
-    metrics = db.query(Metric).order_by(Metric.area, Metric.id).all()
+    metrics = db.query(Metric).filter(Metric.project_id == project_id).order_by(Metric.area, Metric.id).all()
+    ids = [m.id for m in metrics]
     points = (
-        db.query(MetricPoint).filter(MetricPoint.day >= since).order_by(MetricPoint.day).all()
+        db.query(MetricPoint).filter(MetricPoint.metric_id.in_(ids), MetricPoint.day >= since)
+        .order_by(MetricPoint.day).all() if ids else []
     )
     by_metric: dict[int, list[MetricPoint]] = {}
     for p in points:
@@ -124,21 +194,19 @@ def metric_series(db: DB, days: int = 90) -> list[dict]:
     out = []
     for m in metrics:
         pts = by_metric.get(m.id, [])
-        last = pts[-1].value if pts else None
-        prev = pts[-2].value if len(pts) > 1 else None
         out.append({
             "key": m.key, "name": m.name, "area": m.area, "unit": m.unit, "direction": m.direction,
             "target": m.target, "description": m.description,
             "points": [{"day": p.day.isoformat(), "value": p.value, "source": p.source} for p in pts],
-            "last": last, "prev": prev,
+            "last": pts[-1].value if pts else None, "prev": pts[-2].value if len(pts) > 1 else None,
         })
     return out
 
 
-def kpi_snapshot(db: DB, days: int = 30) -> str:
-    """Texto curto com os KPIs para os agentes lerem."""
+def kpi_snapshot(db: DB, project_id: int, days: int = 30) -> str:
+    """Texto curto com os KPIs do projeto para os agentes lerem."""
     lines = []
-    for m in metric_series(db, days):
+    for m in metric_series(db, project_id, days):
         if not m["points"]:
             lines.append(f"- {m['key']} ({m['name']}, área {m['area']}): SEM DADOS")
             continue
@@ -156,8 +224,8 @@ def kpi_snapshot(db: DB, days: int = 30) -> str:
 _KPI_BLOCK = re.compile(r"```kpi[ \t]*\n(.*?)```", re.S)
 
 
-def ingest_kpi_blocks(db: DB, text: str, source: str) -> list[str]:
-    """Agentes podem reportar números num bloco ```kpi {"chave": valor}```. Só chaves já cadastradas."""
+def ingest_kpi_blocks(db: DB, project_id: int, text: str, source: str) -> list[str]:
+    """Agentes reportam números num bloco ```kpi {"chave": valor}```. Só chaves do próprio projeto."""
     saved = []
     for block in _KPI_BLOCK.findall(text or ""):
         try:
@@ -168,7 +236,7 @@ def ingest_kpi_blocks(db: DB, text: str, source: str) -> list[str]:
             continue
         for key, value in data.items():
             try:
-                record_point(db, str(key), float(value), source=source)
+                record_point(db, project_id, str(key), float(value), source=source)
                 saved.append(str(key))
             except (KeyError, TypeError, ValueError):
                 continue
@@ -177,9 +245,9 @@ def ingest_kpi_blocks(db: DB, text: str, source: str) -> list[str]:
 
 # ---------- providers ----------
 
-def pick_provider(agent: Agent | None = None) -> Provider:
+def pick_provider(pa: ProjectAgent | None = None) -> Provider:
     providers = all_providers()
-    for pid in [agent.provider if agent else None, get_settings().agent_provider]:
+    for pid in [pa.provider if pa else None, get_settings().agent_provider]:
         p = providers.get(pid or "")
         if p and p.available()[0]:
             return p
@@ -191,33 +259,49 @@ def pick_provider(agent: Agent | None = None) -> Provider:
 
 # ---------- plano da manhã ----------
 
-def _yesterday_report(db: DB, slug: str) -> str:
+def _recent_report(db: DB, project_id: int, slug: str) -> str:
     since = utcnow() - timedelta(days=3)
     rows = (
-        db.query(Task).filter(Task.agent_slug == slug, Task.created_at >= since).order_by(Task.id.desc()).limit(8).all()
+        db.query(Task).filter(Task.project_id == project_id, Task.agent_slug == slug, Task.created_at >= since)
+        .order_by(Task.id.desc()).limit(8).all()
     )
     if not rows:
         return "nenhuma tarefa recente"
     return "\n".join(f"- [{t.status}] {t.title}" + (f" → {t.result[:200]}" if t.result else "") for t in rows)
 
 
-def planning_prompt(db: DB, agent: Agent, today: date) -> str:
+def project_context(project: GrowthProject) -> str:
+    parts = [f"Projeto: **{project.name}**"]
+    if project.description:
+        parts.append(f"Sobre o projeto: {project.description}")
+    if project.domains:
+        parts.append(f"Domínios: {project.domains}")
+    if project.repo:
+        parts.append(f"Repositório: github.com/{project.repo}")
+    if project.compose_project:
+        parts.append(f"Containers no VPS: projeto compose \"{project.compose_project}\" (gos-docker ps {project.compose_project})")
+    return "\n".join(parts)
+
+
+def planning_prompt(db: DB, project: GrowthProject, agent: Agent, pa: ProjectAgent, today: date) -> str:
     return f"""MODO PLANEJAMENTO. Nesta mensagem NÃO escreva blocos ```bash e não rode nada.
 
-Você é o agente **{agent.name}** ({agent.area}) do Growth OS.
-Missão: {agent.mission}
+Você é o agente **{agent.name}** ({agent.area}) do projeto **{project.name}**. Você só cuida deste projeto.
+Missão: {mission(agent, pa)}
+
+{project_context(project)}
 
 Hoje é {today.isoformat()}.
 
-KPIs da empresa (últimos 30 dias):
-{kpi_snapshot(db)}
+KPIs do projeto {project.name} (últimos 30 dias):
+{kpi_snapshot(db, project.id)}
 
-Suas tarefas recentes:
-{_yesterday_report(db, agent.slug)}
+Suas tarefas recentes neste projeto:
+{_recent_report(db, project.id, agent.slug)}
 
-Proponha de 1 a {MAX_TASKS_PER_AGENT} tarefas para HOJE, concretas e de alto impacto na sua área.
+Proponha de 1 a {MAX_TASKS_PER_AGENT} tarefas para HOJE, concretas e de alto impacto na sua área, só para este projeto.
 Cada tarefa precisa ser executável por você com o que o Growth OS oferece (shell no /workspace, gos-docker,
-git e gos-pr nos repos dos projetos, internet), ou preparar algo para o owner decidir.
+git e gos-pr no repositório do projeto, internet), ou preparar algo para o owner decidir.
 Se faltam dados nos KPIs da sua área, uma boa tarefa é descobrir como obtê-los.
 Não repita tarefas já concluídas. Risco "alto" é para o que mexe em produção.
 
@@ -259,13 +343,13 @@ def parse_tasks(text: str) -> list[dict]:
     return []
 
 
-async def plan_for_agent(db: DB, agent: Agent, plan: Plan, today: date) -> int:
-    provider = pick_provider(agent)
-    reply = await provider.complete([ChatTurn("user", planning_prompt(db, agent, today))])
+async def plan_for_agent(db: DB, project: GrowthProject, agent: Agent, pa: ProjectAgent, plan: Plan, today: date) -> int:
+    provider = pick_provider(pa)
+    reply = await provider.complete([ChatTurn("user", planning_prompt(db, project, agent, pa, today))])
     tasks = parse_tasks(reply)
     for t in tasks:
-        db.add(Task(plan_id=plan.id, agent_slug=agent.slug, title=t["title"], rationale=t["rationale"],
-                    steps=t["steps"], risk=t["risk"], kpi_key=t["kpi"]))
+        db.add(Task(plan_id=plan.id, project_id=project.id, agent_slug=agent.slug, title=t["title"],
+                    rationale=t["rationale"], steps=t["steps"], risk=t["risk"], kpi_key=t["kpi"]))
     db.commit()
     return len(tasks)
 
@@ -291,28 +375,36 @@ async def generate_plan(today: date | None = None, actor: str = "agendador") -> 
             db.commit()
             audit(db, actor, "plan_generate", today.isoformat())
 
-            agents = db.query(Agent).filter(Agent.enabled.is_(True)).order_by(Agent.id).all()
+            jobs = [
+                (project.id, agent.id, pa.id, f"{project.name} · {agent.name}")
+                for project in db.query(GrowthProject).filter(GrowthProject.enabled.is_(True)).order_by(GrowthProject.id)
+                for agent, pa in team(db, project) if pa.enabled
+            ]
             sem = asyncio.Semaphore(max(1, get_settings().agent_concurrency))
             errors: list[str] = []
 
-            async def one(agent: Agent):
+            async def one(project_id: int, agent_id: int, pa_id: int, label: str):
                 async with sem:
                     s = new_session()  # cada agente com sua sessão: rodam em paralelo
                     try:
-                        await plan_for_agent(s, s.get(Agent, agent.id), s.get(Plan, plan.id), today)
+                        await plan_for_agent(s, s.get(GrowthProject, project_id), s.get(Agent, agent_id),
+                                             s.get(ProjectAgent, pa_id), s.get(Plan, plan.id), today)
                     except Exception as e:  # noqa: BLE001 - um agente com erro não derruba o plano
-                        errors.append(f"{agent.name}: {e}"[:300])
+                        errors.append(f"{label}: {e}"[:300])
                     finally:
                         s.close()
 
-            await asyncio.gather(*(one(a) for a in agents))
+            await asyncio.gather(*(one(*j) for j in jobs))
             db.refresh(plan)
             count = db.query(Task).filter(Task.plan_id == plan.id).count()
             plan.status = "ready" if count or not errors else "failed"
+            if not jobs:
+                plan.status, errors = "failed", ["nenhum projeto com agentes ativos"]
             plan.error = "\n".join(errors)
             db.commit()
             if plan.status == "ready":
-                await notify(f"☀️ Plano de hoje pronto: {count} tarefas de {len(agents)} agentes esperando sua aprovação."
+                projects = len({j[0] for j in jobs})
+                await notify(f"☀️ Plano de hoje pronto: {count} tarefas em {projects} projetos esperando sua aprovação."
                              + (f"\n{get_settings().public_url.rstrip('/')}/plan" if get_settings().public_url else ""))
             return plan.id
         finally:
@@ -321,17 +413,19 @@ async def generate_plan(today: date | None = None, actor: str = "agendador") -> 
 
 # ---------- execução das tarefas aprovadas ----------
 
-def task_brief(agent: Agent, task: Task) -> str:
-    return f"""Você está agindo como o agente **{agent.name}** ({agent.area}).
-Missão: {agent.mission}
+def task_brief(project: GrowthProject, agent: Agent, pa: ProjectAgent | None, task: Task) -> str:
+    return f"""Você está agindo como o agente **{agent.name}** ({agent.area}) do projeto **{project.name}**.
+Missão: {mission(agent, pa)}
 
-O owner APROVOU esta tarefa do plano de hoje:
+{project_context(project)}
+
+O owner APROVOU esta tarefa do plano:
 Título: {task.title}
 Por quê: {task.rationale}
 Passos sugeridos: {task.steps}
 
-Execute agora, do jeito mais seguro e direto. Mudanças de código só por branch + PR (gos-pr), nunca na main.
-Se descobrir números reais de KPIs, informe num bloco assim (só chaves existentes):
+Execute agora, do jeito mais seguro e direto, só neste projeto. Mudanças de código só por branch + PR (gos-pr),
+nunca na main. Se descobrir números reais de KPIs deste projeto, informe num bloco assim (só chaves existentes):
 ```kpi
 {{"chave_do_kpi": 123}}
 ```
@@ -354,7 +448,7 @@ def sync_task(db: DB, task: Task) -> None:
         task.status = "done"
         task.result = last.content[-4000:]
         task.finished_at = utcnow()
-        ingest_kpi_blocks(db, last.content, f"agente:{task.agent_slug}")
+        ingest_kpi_blocks(db, task.project_id, last.content, f"agente:{task.agent_slug}")
     db.commit()
 
 
@@ -373,17 +467,21 @@ async def execute_task(task_id: int) -> None:
         if task is None or task.status != "approved":
             return
         agent = db.query(Agent).filter(Agent.slug == task.agent_slug).one()
+        project = db.get(GrowthProject, task.project_id)
+        pa = db.query(ProjectAgent).filter(
+            ProjectAgent.project_id == project.id, ProjectAgent.agent_slug == agent.slug
+        ).one_or_none()
         try:
-            provider = pick_provider(agent)
+            provider = pick_provider(pa)
         except ProviderError as e:
             task.status, task.result = "failed", str(e)
             db.commit()
             return
-        conv = Conversation(title=f"{agent.icon} {agent.name}: {task.title}"[:200])
+        conv = Conversation(title=f"{agent.icon} {project.name} · {agent.name}: {task.title}"[:200])
         db.add(conv)
         db.commit()
         task.conversation_id, task.status = conv.id, "running"
-        db.add(Message(conversation_id=conv.id, role="user", content=task_brief(agent, task)))
+        db.add(Message(conversation_id=conv.id, role="user", content=task_brief(project, agent, pa, task)))
         db.commit()
         error = ""
         async for ev in run_agent(db, conv.id, provider, f"agente:{agent.slug}", "agendador"):
@@ -395,9 +493,9 @@ async def execute_task(task_id: int) -> None:
         else:
             sync_task(db, task)
         if task.status == "waiting":
-            await notify(f"🔐 {agent.name} precisa do seu 2FA para continuar: {task.title}")
+            await notify(f"🔐 {project.name} · {agent.name} precisa do seu 2FA para continuar: {task.title}")
         elif task.status == "failed":
-            await notify(f"⚠️ {agent.name} falhou em: {task.title}")
+            await notify(f"⚠️ {project.name} · {agent.name} falhou em: {task.title}")
     finally:
         db.close()
 

@@ -3,22 +3,59 @@
 <div class="shell" id="app" data-csrf="{{ csrf }}">
   <aside class="sidebar">
     {% include "_nav.html" %}
-    <div class="side-note muted">Um agente por área da empresa. Edite a missão para mudar o foco de cada um; desligue os que não fazem sentido agora.</div>
+    <div class="side-note muted">Cada projeto tem o seu próprio time, um agente por área. Ajuste a missão de cada um para o momento do projeto e desligue o que não faz sentido agora.</div>
     <div class="grow"></div>
     {% include "_side_foot.html" %}
   </aside>
   <main class="main">
     <header class="topbar">
-      <h1>Agentes</h1>
-      <a class="btn small" href="/plan">Plano do dia →</a>
+      <h1 id="page-title">Agentes</h1>
+      <div class="actions">
+        <button class="btn small ghost" id="new-project" type="button">+ Novo projeto</button>
+        <a class="btn small" href="/plan">Plano do dia →</a>
+      </div>
     </header>
+    {% include "_project_switch.html" %}
     <section class="page">
+      <details class="card project-card" id="project-card">
+        <summary><span id="project-summary">Dados do projeto</span><span class="muted">editar</span></summary>
+        <form id="project-form" class="project-form">
+          <div class="two">
+            <label>Nome<input id="pf-name" required maxlength="80"></label>
+            <label>Ícone<input id="pf-icon" maxlength="8"></label>
+          </div>
+          <label>Sobre o projeto (os agentes leem isto)<textarea id="pf-desc" rows="3" maxlength="4000" placeholder="O que é, público, modelo de receita, momento atual…"></textarea></label>
+          <div class="two">
+            <label>Repositório no GitHub<input id="pf-repo" placeholder="dono/repo" pattern="[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+"></label>
+            <label>Domínios<input id="pf-domains" maxlength="1000" placeholder="exemplo.com, app.exemplo.com"></label>
+          </div>
+          <div class="agent-foot">
+            <label class="inline"><span class="switch"><input type="checkbox" id="pf-enabled"><span></span></span> Projeto ativo no plano diário</label>
+            <button class="btn small primary" type="submit">Salvar projeto</button>
+          </div>
+        </form>
+      </details>
+      <h3 class="section-title">Time de agentes deste projeto</h3>
       <div class="agents" id="agents"><div class="muted">Carregando…</div></div>
-      <h3 class="section-title" id="tarefas">Últimas tarefas</h3>
+      <h3 class="section-title" id="tarefas">Últimas tarefas deste projeto</h3>
       <div class="card task-list" id="tasks"></div>
     </section>
   </main>
 </div>
+<dialog id="np-dialog" class="card">
+  <form method="dialog" id="np-form">
+    <h3>Novo projeto</h3>
+    <p class="muted">Ele ganha o time completo de agentes e os KPIs padrão; depois é só ajustar.</p>
+    <label>Nome<input id="np-name" required minlength="2" maxlength="80"></label>
+    <label>Sobre o projeto<textarea id="np-desc" rows="3" maxlength="4000"></textarea></label>
+    <div class="row">
+      <button class="btn ghost" type="button" id="np-import">Importar do VPS</button>
+      <button class="btn ghost" type="button" id="np-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Criar</button>
+    </div>
+  </form>
+</dialog>
+
 {% include "_audit.html" %}
 <script src="/static/agents.js"></script>
 {% endblock %}

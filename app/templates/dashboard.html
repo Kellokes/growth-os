@@ -3,13 +3,13 @@
 <div class="shell" id="app" data-csrf="{{ csrf }}">
   <aside class="sidebar">
     {% include "_nav.html" %}
-    <div class="side-note muted">Os agentes leem estes KPIs todo dia antes de propor o plano. Quanto mais dado real, melhores as decisões.</div>
+    <div class="side-note muted">Cada projeto tem os seus KPIs. Os agentes daquele projeto leem estes números todo dia antes de propor o plano.</div>
     <div class="grow"></div>
     {% include "_side_foot.html" %}
   </aside>
   <main class="main">
     <header class="topbar">
-      <h1>Dashboard</h1>
+      <h1 id="page-title">Dashboard</h1>
       <div class="actions">
         <div class="seg" id="range" role="group" aria-label="Período">
           <button type="button" data-days="30">30d</button><button type="button" data-days="90" class="on">90d</button><button type="button" data-days="365">1 ano</button>
@@ -17,6 +17,7 @@
         <button class="btn small primary" id="add-point" type="button">+ Lançar número</button>
       </div>
     </header>
+    {% include "_project_switch.html" %}
     <section class="page">
       <div class="ops" id="ops"></div>
       <div class="hero card" id="hero">

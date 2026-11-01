@@ -3,18 +3,19 @@
 <div class="shell" id="app" data-csrf="{{ csrf }}">
   <aside class="sidebar">
     {% include "_nav.html" %}
-    <div class="side-note muted" id="sched-note">Cada agente lê os KPIs e propõe as tarefas do dia. Nada roda sem a sua aprovação.</div>
+    <div class="side-note muted" id="sched-note">Em cada projeto, cada agente lê os KPIs daquele projeto e propõe as tarefas do dia. Nada roda sem a sua aprovação.</div>
     <div class="grow"></div>
     {% include "_side_foot.html" %}
   </aside>
   <main class="main">
     <header class="topbar">
-      <div class="title-stack"><h1>Plano do dia</h1><span class="muted" id="plan-day"></span></div>
+      <div class="title-stack"><h1 id="page-title">Plano do dia</h1><span class="muted" id="plan-day"></span></div>
       <div class="actions">
         <button class="btn small ghost" id="new-task" type="button">+ Tarefa avulsa</button>
         <button class="btn small" id="generate" type="button">Gerar plano</button>
       </div>
     </header>
+    {% include "_project_switch.html" %}
     <section class="page">
       <div class="plan-bar card" id="plan-bar" hidden>
         <div><strong id="pending-count">0</strong> <span class="muted">tarefas esperando sua decisão</span></div>
@@ -24,7 +25,7 @@
         </div>
       </div>
       <div id="plan-state"></div>
-      <div class="agent-plans" id="plan-tasks"></div>
+      <div id="plan-tasks"></div>
       <div id="carry"></div>
     </section>
   </main>
@@ -34,7 +35,10 @@
   <form method="dialog" id="task-form">
     <h3>Tarefa avulsa</h3>
     <p class="muted">Vai direto para a fila do agente (você está aprovando ao criar).</p>
-    <label>Agente<select id="task-agent"></select></label>
+    <div class="two">
+      <label>Projeto<select id="task-project"></select></label>
+      <label>Agente<select id="task-agent"></select></label>
+    </div>
     <label>O que fazer<input id="task-title" required minlength="3" maxlength="200" placeholder="Ex.: Analisar os 10 últimos posts do concorrente X"></label>
     <label>Detalhes (opcional)<textarea id="task-steps" rows="4" maxlength="4000"></textarea></label>
     <div class="row">

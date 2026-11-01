@@ -247,7 +247,8 @@
     loadConversations();
   }
 
-  async function newConversation() {
+  // category: nome da categoria quando vem do "+" de um grupo; vazio = sem categoria.
+  async function newConversation(category = NONE) {
     closePanel();
     // Reaproveita a conversa vazia aberta em vez de empilhar várias "Nova conversa".
     if (state.conv && !state.conv.deleted && NEW_TITLES.includes(state.conv.title) && !$("#messages .msg")) { $("#input").focus(); return; }

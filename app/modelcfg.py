@@ -144,30 +144,75 @@ def save(db: DB, activity: str, provider: str, model: str, reasoning: str) -> Mo
 
 # ---------- lista viva do OpenRouter (pública, sem chave) ----------
 
+_OR_URL = "https://openrouter.ai/api/v1/models"
 _OR_CACHE: dict = {"at": 0.0, "models": None}
 _OR_TTL = 6 * 3600
+KINDS = (TEXT, IMAGE, VIDEO, AUDIO)
 
 
-async def openrouter_models() -> list[dict]:
-    """Modelos do OpenRouter com o que cada um gera. Cai na lista fixa se a API não responder."""
-    if _OR_CACHE["models"] is not None and time.time() - _OR_CACHE["at"] < _OR_TTL:
-        return _OR_CACHE["models"]
+def _price(v) -> float | None:
+    """Preço do OpenRouter (string em dólar por unidade). -1 = variável, vira None."""
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get("https://openrouter.ai/api/v1/models")
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f < 0 else f
+
+
+def parse_openrouter(data: list) -> list[dict]:
+    out = []
+    for m in data:
+        mid = str(m.get("id", ""))
+        if not MODEL_RE.match(mid):
+            continue
+        arch = m.get("architecture") or {}
+        outs = [str(x) for x in (arch.get("output_modalities") or ["text"])]
+        ins = [str(x) for x in (arch.get("input_modalities") or ["text"])]
+        pricing = {}
+        for key, raw in (m.get("pricing") or {}).items():
+            if isinstance(key, str) and len(key) <= 40:
+                val = _price(raw)
+                if val is None and str(raw).strip() not in ("", "0"):
+                    pricing[key] = None  # variável
+                elif val:
+                    pricing[key] = val
+        out.append({
+            "id": mid,
+            "label": str(m.get("name") or mid)[:80],
+            "kinds": [k for k in KINDS if k in outs] or [TEXT],  # o que o modelo GERA
+            "inputs": [k for k in KINDS if k in ins],  # o que ele ENTENDE (ex.: áudio para transcrever)
+            "pricing": pricing,  # dólar por token / imagem / requisição; vazio = grátis
+            "free": not pricing,
+            "context": m.get("context_length") if isinstance(m.get("context_length"), int) else None,
+            "reasoning": "reasoning" in (m.get("supported_parameters") or []),
+        })
+    return out
+
+
+async def openrouter_models() -> dict:
+    """Todos os modelos do OpenRouter com preços. Cai na lista fixa (sem preços) se a API não responder."""
+    if _OR_CACHE["models"] is not None and time.time() - _OR_CACHE["at"] < _OR_TTL:
+        return {"live": True, "updated_at": _OR_CACHE["at"], "models": _OR_CACHE["models"]}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            # sem o filtro, a API pode devolver só os modelos que geram texto
+            resp = await client.get(_OR_URL, params={"output_modalities": "all"})
+            if resp.status_code >= 400:
+                resp = await client.get(_OR_URL)
         resp.raise_for_status()
-        out = []
-        for m in resp.json().get("data", []):
-            mid = str(m.get("id", ""))
-            if not MODEL_RE.match(mid):
-                continue
-            outs = (m.get("architecture") or {}).get("output_modalities") or ["text"]
-            kinds = [k for k in (TEXT, IMAGE, VIDEO, AUDIO) if k in outs]
-            out.append({"id": mid, "label": str(m.get("name") or mid)[:80], "kinds": kinds or [TEXT],
-                        "reasoning": "reasoning" in (m.get("supported_parameters") or [])})
+        out = parse_openrouter(resp.json().get("data", []))
         if out:
             _OR_CACHE.update(at=time.time(), models=out)
-            return out
-    except (httpx.HTTPError, ValueError, AttributeError):
+            return {"live": True, "updated_at": _OR_CACHE["at"], "models": out}
+    except (httpx.HTTPError, ValueError, AttributeError, TypeError):
         pass
-    return CATALOG["openrouter"]["models"]
+    fallback = [{**m, "inputs": m.get("kinds", [TEXT]), "pricing": {}, "free": False, "context": None}
+                for m in CATALOG["openrouter"]["models"]]
+    return {"live": False, "updated_at": None, "models": fallback}
+
+
+def for_kind(models: list[dict], kind: str) -> list[dict]:
+    """Modelos que servem para a atividade. Áudio inclui quem só ENTENDE áudio (transcrição)."""
+    if kind == AUDIO:
+        return [m for m in models if AUDIO in m["kinds"] or AUDIO in m.get("inputs", [])]
+    return [m for m in models if kind in m["kinds"]]

@@ -25,6 +25,7 @@ from . import actions as acts
 from . import approvals as appr
 from . import content as cnt
 from . import growth
+from . import missions
 from . import modelcfg
 from . import routines
 from . import projects as proj
@@ -469,6 +470,14 @@ def _provider_or_400(pid: str, model: str = "", reasoning: str = ""):
     return provider.configured(model, reasoning if pid in modelcfg.CATALOG else "")
 
 
+def _missions_from_reply(db: DB, cid: int) -> list[Mission]:
+    """Thread do chat (não de tarefa de agente) em que a IA propôs uma missão com um bloco ```missao```."""
+    if db.query(Task).filter(Task.conversation_id == cid).count():
+        return []
+    last = db.query(Message).filter(Message.conversation_id == cid, Message.role == "assistant").order_by(Message.id.desc()).first()
+    return missions.create_from_chat(db, cid, last.content) if last is not None else []
+
+
 def _stream(cid: int, provider, actor: str, ip: str) -> StreamingResponse:
     async def gen():
         db = new_session()  # sessão própria: a da dependência fecha antes do fim do stream
@@ -476,6 +485,9 @@ def _stream(cid: int, provider, actor: str, ip: str) -> StreamingResponse:
             async for event in run_agent(db, cid, provider, actor, ip):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
             growth.sync_task_for_conversation(db, cid)
+            for m in _missions_from_reply(db, cid):
+                yield json.dumps({"type": "notice", "message": f"🎯 Missão proposta: {m.title}. Aprove em Aprovações "
+                                  "para os agentes começarem."}, ensure_ascii=False) + "\n"
         except Exception as e:  # noqa: BLE001 - o stream já começou; reporta como evento
             yield json.dumps({"type": "error", "message": f"erro interno: {type(e).__name__}"}) + "\n"
         finally:
@@ -692,7 +704,7 @@ def _task_json(t: Task, projects: dict[int, GrowthProject] | None = None, links:
         "decided_at": t.decided_at.isoformat() if t.decided_at else None,
         "finished_at": t.finished_at.isoformat() if t.finished_at else None,
         "automation_id": t.automation_id, "type": "task", "wait_reason": t.wait_reason or "",
-        "mission_id": t.mission_id,
+        "mission_id": t.mission_id, "depends_on": t.depends_on,
         # de onde veio: plano do dia, automação, pedido de outro agente ou pedido direto do owner
         "origin": "automation" if t.automation_id else "handoff" if link else "plan" if t.plan_id else "owner",
     }
@@ -957,6 +969,11 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
                 if m is None:
                     raise appr.ApprovalError("não encontrado", 404)
                 appr.decide_mission(db, m, body.approve, body.note)
+                if body.approve:
+                    for tid in missions.activate(db, m):
+                        growth.runner.submit(tid)
+                else:
+                    missions.cancel(db, m)
                 detail = f"#{m.id} {m.title}"
             else:
                 a = db.get(Action, it.ref_id)
@@ -967,6 +984,8 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
                 appr.decide_action(db, a, body.approve, bool(totp_ok), body.note)
                 if body.approve:
                     to_run.append(a)
+                else:
+                    growth.action_settled(db, a)  # rejeitada: a tarefa que esperava segue sem ela
                 detail = f"#{a.id} {a.integration}.{a.operation}"
         except appr.ApprovalError as e:
             errors.append({"kind": it.kind, "ref_id": it.ref_id, "error": str(e), "code": e.code})
@@ -980,6 +999,7 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
     for a in to_run:  # aprovada pelo owner: agora sim o conector age fora do OS
         await acts.execute_approved(db, a)
         audit(db, auth.user.username, "action_executed", f"#{a.id} {a.integration}.{a.operation} -> {a.status}", ip)
+        growth.action_settled(db, a)  # feita ou falhou: a tarefa que esperava continua com o desfecho
     return {"decided": done, "errors": errors,
             "actions": [{"id": a.id, "status": a.status, "error": a.error} for a in to_run]}
 

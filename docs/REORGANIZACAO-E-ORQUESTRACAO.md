@@ -330,7 +330,7 @@ um texto malicioso lido por um agente não consegue publicar nem enviar nada soz
 
 ## 6. Ordem de entrega (um PR por fase)
 
-> Andamento: fases 1 e 2 (PR #24) e 3 (PR #26) mergeadas; fase 4 (Telegram, Postiz, e-mail, publicar peça aprovada) no PR seguinte. Ficou para a fase 5: a tarefa pausar esperando a ação e continuar com o resultado.
+> Andamento: fases 1 e 2 (PR #24) e 3 (PR #26) mergeadas; 4 (#27) mergeadas. Fase 5 no PR seguinte: Coordenador, missões a partir do chat (bloco ```missao```), dependências, `"esperar": true` nos pedidos, aprovação herdada (risco baixo dentro de missão aprovada), orçamento da missão, tarefa que espera a ação externa e continua com o desfecho, `GOS_RUNNER_WORKERS` (padrão 2, no máximo uma tarefa por agente e projeto). Falta a fase 6 (rotinas por evento).
 
 1. **Base de dados e Aprovações (backend)**: tabelas `missions`, `approvals`, `actions`, `events`;
    colunas novas; migração dos itens pendentes; API `/api/approvals`. Testes de migração e da fila.

@@ -207,6 +207,8 @@ class Task(Base):
     # Tarefa criada por uma automação (atividade rotineira); vazio = plano, pedido ou avulsa.
     automation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     mission_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Tarefa que precisa terminar antes desta (missão): fica em waiting/agente até lá.
+    depends_on: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Por que está em "waiting": 2fa | acao | agente | horario (vazio = sem motivo registrado).
     wait_reason: Mapped[str] = mapped_column(String(12), default="", server_default="")
 
@@ -219,6 +221,7 @@ class TaskLink(Base):
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("agent_tasks.id"), nullable=True, index=True)
     requested_by: Mapped[str] = mapped_column(String(32))  # slug do agente que pediu
     depth: Mapped[int] = mapped_column(Integer, default=1)  # 1 = pedido direto de uma tarefa do plano
+    wait: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 1 = quem pediu espera a resposta
 
 
 class AgentNote(Base):
@@ -408,8 +411,10 @@ _NEW_COLUMNS = {
     "agent_tasks": {
         "automation_id": "INTEGER NULL",
         "mission_id": "INTEGER NULL",
-        "wait_reason": "VARCHAR(12) NOT NULL DEFAULT ''",  # 2fa | acao | agente | horario
+        "wait_reason": "VARCHAR(12) NOT NULL DEFAULT ''",  # 2fa | acao | agente | orcamento | horario
+        "depends_on": "INTEGER NULL",
     },
+    "task_links": {"wait": "INTEGER NOT NULL DEFAULT 0"},
 }
 
 

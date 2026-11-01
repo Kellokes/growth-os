@@ -24,7 +24,7 @@
         <div class="task-title"><span class="tag kind-${esc(it.kind)}">${esc(KIND_LABEL[it.kind])}</span> ${project === "all" ? `<span class="tag">${esc(pinfo(it.project).icon)} ${esc(pinfo(it.project).name)}</span> ` : ""}${esc(it.title)}</div>
         ${it.why ? `<div class="task-why">${esc(it.why)}</div>` : ""}
         <div class="task-tags">${by}${it.agent ? `<span class="tag">${esc(aname(it.agent))}</span>` : ""}${chan}<span class="tag r-${esc(it.risk)}">${esc(RISK[it.risk] || it.risk)}</span></div>
-        ${it.preview ? `<details ${it.kind === "action" ? "open" : ""}><summary>${it.kind === "action" ? "O que vai acontecer" : "Detalhes"}</summary><p class="pre">${esc(it.preview.slice(0, 2500))}</p></details>` : ""}
+        ${it.preview ? `<details ${it.kind === "action" || it.kind === "mission" ? "open" : ""}><summary>${it.kind === "action" ? "O que vai acontecer" : it.kind === "mission" ? "Tarefas da missão" : "Detalhes"}</summary><p class="pre">${esc(it.preview.slice(0, 2500))}</p></details>` : ""}
       </div>
       <div class="task-actions">${twofa}${link}<button class="btn small danger" data-reject type="button">Rejeitar</button><button class="btn small primary" data-approve type="button">Aprovar</button></div>
     </div>`;

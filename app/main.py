@@ -229,14 +229,26 @@ def dashboard_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "dashboard.html", "dashboard")
 
 
-@app.get("/plan", response_class=HTMLResponse)
-def plan_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "plan.html", "plan")
+@app.get("/approvals", response_class=HTMLResponse)
+def approvals_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "approvals.html", "approvals")
 
 
-@app.get("/agents", response_class=HTMLResponse)
-def agents_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "agents.html", "agents")
+def _moved(request: Request, db: DB, to: str):
+    """Rotas antigas viram redirecionamento (links salvos e avisos do Telegram continuam funcionando)."""
+    if lookup_session(db, request.cookies.get(SESSION_COOKIE)) is None:
+        return RedirectResponse("/login", status_code=303)
+    return RedirectResponse(to, status_code=303)
+
+
+@app.get("/plan")
+def plan_moved(request: Request, db: DB = Depends(get_db)):
+    return _moved(request, db, "/approvals")
+
+
+@app.get("/agents")
+def agents_moved(request: Request, db: DB = Depends(get_db)):
+    return _moved(request, db, "/automations#agentes")
 
 
 @app.get("/board", response_class=HTMLResponse)
@@ -246,12 +258,12 @@ def board_page(request: Request, db: DB = Depends(get_db)):
 
 @app.get("/automations", response_class=HTMLResponse)
 def automations_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "automations.html", "routines")
+    return _page(request, db, "automations.html", "automations")
 
 
 @app.get("/content", response_class=HTMLResponse)
 def content_page(request: Request, db: DB = Depends(get_db)):
-    return _page(request, db, "content.html", "content")
+    return _page(request, db, "content.html", "board")
 
 
 @app.get("/projects", response_class=HTMLResponse)
@@ -668,7 +680,8 @@ def _task_json(t: Task, projects: dict[int, GrowthProject] | None = None, links:
         "created_at": t.created_at.isoformat(),
         "decided_at": t.decided_at.isoformat() if t.decided_at else None,
         "finished_at": t.finished_at.isoformat() if t.finished_at else None,
-        "automation_id": t.automation_id,
+        "automation_id": t.automation_id, "type": "task", "wait_reason": t.wait_reason or "",
+        "mission_id": t.mission_id,
         # de onde veio: plano do dia, automação, pedido de outro agente ou pedido direto do owner
         "origin": "automation" if t.automation_id else "handoff" if link else "plan" if t.plan_id else "owner",
     }
@@ -698,8 +711,8 @@ async def list_gprojects(auth: Auth = Depends(current_auth), db: DB = Depends(ge
             pass
     rows = db.query(GrowthProject).order_by(GrowthProject.id).all()
     pending: dict[int, int] = {}
-    for pid, in db.query(Task.project_id).filter(Task.status == "proposed").all():
-        pending[pid] = pending.get(pid, 0) + 1
+    for card in appr.pending(db):  # tudo que espera decisão: tarefas, missões, conteúdo e ações externas
+        pending[card["project_id"]] = pending.get(card["project_id"], 0) + 1
     return [{**_project_json(p), "pending": pending.get(p.id, 0)} for p in rows]
 
 
@@ -1069,7 +1082,48 @@ def board(project: str = "all", days: int = 14, auth: Auth = Depends(current_aut
         j = _task_json(t, projects, links)
         j["automation"] = autos.get(t.automation_id, "") if t.automation_id else ""
         out.append(j)
+    out += _board_extras(db, project, since, projects)
     return {"tasks": out, "days": days}
+
+
+_CONTENT_STAGE = {"pending": "proposed", "approved": "approved", "sent": "done", "rejected": "rejected", "failed": "failed"}
+_ACTION_STAGE = {"awaiting_approval": "proposed", "requested": "approved", "approved": "approved", "running": "running",
+                 "done": "done", "failed": "failed", "rejected": "rejected"}
+
+
+def _board_extras(db: DB, project: str, since: datetime, projects: dict[int, GrowthProject]) -> list[dict]:
+    """Conteúdo e ações em integrações entram no mesmo quadro, com o tipo no cartão (filtro "Conteúdo" etc.)."""
+    pid = None if project == "all" else _project_or_404(db, project).id
+    out = []
+    cq = db.query(ContentItem)
+    aq = db.query(Action)
+    if pid is not None:
+        cq, aq = cq.filter(ContentItem.project_id == pid), aq.filter(Action.project_id == pid)
+    stamp = func.coalesce(ContentItem.sent_at, ContentItem.decided_at, ContentItem.created_at)
+    for c in cq.filter(or_(ContentItem.status.in_(cnt.EDITABLE), stamp >= since)).order_by(ContentItem.id.desc()).limit(300).all():
+        p = projects.get(c.project_id)
+        out.append({
+            "type": "content", "id": c.id, "project": p.slug if p else "", "agent": c.agent_slug,
+            "title": c.title or (c.body or "")[:90], "channel": c.channel, "status": _CONTENT_STAGE[c.status],
+            "risk": "baixo", "origin": "content", "requested_by": "", "automation": "", "rationale": c.purpose,
+            "steps": c.body, "result": c.note, "conversation_id": None, "wait_reason": "",
+            "scheduled_at": c.scheduled_at.isoformat() if c.scheduled_at else None,
+            "created_at": c.created_at.isoformat(), "decided_at": c.decided_at.isoformat() if c.decided_at else None,
+            "finished_at": c.sent_at.isoformat() if c.sent_at else None,
+        })
+    astamp = func.coalesce(Action.finished_at, Action.created_at)
+    open_actions = ("awaiting_approval", "requested", "approved", "running")
+    for a in aq.filter(or_(Action.status.in_(open_actions), astamp >= since)).order_by(Action.id.desc()).limit(300).all():
+        p = projects.get(a.project_id)
+        out.append({
+            "type": "action", "id": a.id, "project": p.slug if p else "", "agent": "",
+            "title": a.title or f"{a.integration}: {a.operation}", "channel": a.integration, "status": _ACTION_STAGE[a.status],
+            "risk": a.risk, "origin": "action", "requested_by": "", "automation": "", "rationale": f"{a.integration} · {a.operation}",
+            "steps": a.params, "result": a.error or a.result, "conversation_id": None, "wait_reason": "",
+            "created_at": a.created_at.isoformat(), "decided_at": None,
+            "finished_at": a.finished_at.isoformat() if a.finished_at else None,
+        })
+    return out
 
 
 @app.post("/api/tasks/{tid}/retry")

@@ -144,3 +144,54 @@ def test_low_risk_action_approves_with_a_click(logged):
     (a,) = make_projects("Zombie Party")
     act = _action(a, risk="baixo")
     assert logged.post("/api/approvals/decide", json={"items": [{"kind": "action", "ref_id": act}], "approve": True}).status_code == 200
+
+
+def test_new_navigation_has_three_areas_and_old_routes_redirect(logged):
+    html = logged.get("/approvals").text
+    assert '<h1 id="page-title">Aprovações</h1>' in html and "/static/approvals.js" in html
+    assert 'href="/approvals" aria-current="page"' in html
+    for old in ('href="/plan"', 'href="/agents"', 'href="/content"'):
+        assert old not in html  # saíram do menu
+    for label in ("Aprovações", "Kanban", "Automações"):
+        assert f"<span>{label}</span>" in html
+    r = logged.get("/plan", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/approvals"
+    r = logged.get("/agents", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/automations#agentes"
+    auto = logged.get("/automations").text
+    assert 'data-tab="agentes"' in auto and "/static/agents.js" in auto and 'id="agents"' in auto
+
+
+def test_old_routes_need_login(client):
+    for path in ("/plan", "/agents", "/approvals"):
+        r = client.get(path, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/login"
+
+
+def test_board_shows_tasks_content_and_actions_with_types(logged):
+    (a,) = make_projects("Zombie Party")
+    _task(a, "Tarefa A")
+    c, act = _content(a), _action(a)
+    data = logged.get(f"/api/board?project={a}").json()["tasks"]
+    by_type = {t["type"]: t for t in data}
+    assert set(by_type) == {"task", "content", "action"}
+    assert by_type["content"]["status"] == "proposed" and by_type["content"]["id"] == c
+    assert by_type["action"]["status"] == "proposed" and by_type["action"]["id"] == act and by_type["action"]["risk"] == "alto"
+    # Depois de aprovar o conteúdo, ele vai para "na fila"; enviar vira concluído.
+    assert logged.post("/api/approvals/decide", json={"items": [{"kind": "content", "ref_id": c}], "approve": True}).status_code == 200
+    assert logged.post(f"/api/content/{c}/sent", json={}).status_code == 200
+    data = logged.get(f"/api/board?project={a}").json()["tasks"]
+    assert next(t for t in data if t["type"] == "content")["status"] == "done"
+    make_projects("A Ilha")
+    assert [t for t in logged.get("/api/board?project=a-ilha").json()["tasks"]] == []  # não vaza entre projetos
+
+
+def test_waiting_task_records_why(logged):
+    (a,) = make_projects("Zombie Party")
+    tid = _task(a, "Esperando", status="waiting")
+    s = dbmod.new_session()
+    s.get(dbmod.Task, tid).wait_reason = "2fa"
+    s.commit()
+    s.close()
+    t = next(x for x in logged.get("/api/board").json()["tasks"] if x["id"] == tid and x["type"] == "task")
+    assert t["wait_reason"] == "2fa" and t["status"] == "waiting"

@@ -430,7 +430,7 @@ async def generate_plan(today: date | None = None, actor: str = "agendador") -> 
             if plan.status == "ready":
                 projects = len({j[0] for j in jobs})
                 await notify(f"☀️ Plano de hoje pronto: {count} tarefas em {projects} projetos esperando sua aprovação."
-                             + (f"\n{get_settings().public_url.rstrip('/')}/plan" if get_settings().public_url else ""))
+                             + (f"\n{get_settings().public_url.rstrip('/')}/approvals" if get_settings().public_url else ""))
             return plan.id
         finally:
             db.close()

@@ -4,7 +4,8 @@
   let project = null; let info = null; let team = []; let catalog = null;
   let skills = []; let integrations = []; let autos = [];
   let editingSkill = null; let editingAuto = null;
-  const TABS = ["habilidades", "integracoes", "rotinas"];
+  const TABS = ["agentes", "habilidades", "integracoes", "rotinas"];
+  let sw = null;
   const STATUS = { proposed: "aguardando você", approved: "na fila", rejected: "rejeitada", running: "executando", waiting: "esperando 2FA", done: "concluída", failed: "falhou" };
   const INT_STATUS = { off: ["", "não ligada"], needs_secret: ["warn", "falta a chave"], ready: ["ok", "pronta"], paused: ["", "pausada"] };
   const agentLabel = (slug) => { const a = team.find((x) => x.slug === slug); return a ? `${a.icon} ${a.name}` : slug; };
@@ -224,17 +225,20 @@
   async function load() {
     $("#page-crumb").textContent = info.name;
     team = await api(`/api/gprojects/${project}/agents`);
+    window.GOSAgents.show(project, info, () => sw);
     await Promise.all([loadSkills(), loadIntegrations(), loadAutos()]);
   }
 
   (async () => {
-    let tab = location.hash.slice(1);
+    const wantsNew = location.hash === "#novo";
+    let tab = wantsNew ? "agentes" : location.hash.slice(1);
     if (!TABS.includes(tab)) { try { tab = localStorage.getItem("gos.routines.tab") || ""; } catch { tab = ""; } }
     showTab(tab);
     catalog = await api("/api/routines/catalog");
-    await initProjects((slug, p) => {
+    sw = await initProjects((slug, p) => {
       project = slug; info = p; page.hidden = !slug;
       if (slug) load().catch((e) => { $("#skills").innerHTML = `<div class="alert">${esc(e.message)}</div>`; });
     });
+    if (wantsNew) window.GOSAgents.openNew();
   })();
 })();

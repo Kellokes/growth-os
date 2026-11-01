@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     command_max_output_bytes: int = 200_000
 
     provider_timeout_seconds: int = 300
+    # Laço do agente: passos seguidos antes de parar e pedir "continue", e quanto da conversa vai para a IA.
+    agent_max_steps: int = 25
+    agent_history_chars: int = 120_000
     claude_bin: str = "claude"
     codex_bin: str = "codex"
     openrouter_api_key: str = ""

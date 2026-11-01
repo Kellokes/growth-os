@@ -263,12 +263,28 @@
     $("#input").focus();
   }
 
+  // Botão dentro da mensagem (Continuar / Tentar de novo). Some depois do clique.
+  function addAction(row, label, fn) {
+    const bar = el("div", "msg-actions");
+    const b = el("button", "btn small", esc(label)); b.type = "button";
+    b.onclick = () => { if (state.busy) return; bar.remove(); fn(); };
+    bar.appendChild(b); row.querySelector(".body").appendChild(bar);
+  }
+
+  const HTTP_HINT = {
+    502: "O servidor do Growth OS não respondeu (502). Ele pode estar reiniciando por um deploy ou caiu no meio do pedido.",
+    503: "O Growth OS está indisponível agora (503), provavelmente reiniciando.",
+    504: "O pedido demorou demais e o proxy desistiu (504).",
+  };
+
   // Lê o NDJSON do laço do agente e desenha cada evento assim que chega.
   async function consume(path, body, provider) {
     state.busy = true; $("#send").disabled = true;
     let typing = addMessage({ role: "assistant", provider, typing: true });
     const setTyping = (label) => { typing?.querySelector(".content").setAttribute("data-label", label); };
     const dropTyping = () => { typing?.remove(); typing = null; };
+    const retryContinue = () => continueAgent();
+    let ended = false; let reached = false;
     try {
       const res = await fetch(path, {
         method: "POST", credentials: "same-origin",
@@ -276,7 +292,12 @@
         body: JSON.stringify(body),
       });
       if (res.status === 401) { location.href = "/login"; return; }
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `erro ${res.status}`); }
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        const err = new Error(d.detail || HTTP_HINT[res.status] || `erro ${res.status}`);
+        err.retry = res.status >= 500; throw err;
+      }
+      reached = true;
       const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
       for (;;) {
         const { value, done } = await reader.read();
@@ -293,16 +314,31 @@
             state.commands[ev.run.command] = ev.run;
             const box = state.boxes[ev.run.command]; if (box) showRun(box, ev.run);
           } else if (ev.type === "approval") {
-            dropTyping();
+            ended = true; dropTyping();
             state.commands[ev.run.command] = ev.run;
             const box = state.boxes[ev.run.command]; if (box) showRun(box, ev.run);
             openApproval(ev.run, box);
-          } else if (ev.type === "notice") { dropTyping(); addMessage({ role: "assistant", provider, content: ev.message }); }
-          else if (ev.type === "error") { dropTyping(); addMessage({ role: "assistant", provider, content: `Erro: ${ev.message}`, error: true }); }
+          } else if (ev.type === "notice") {
+            dropTyping(); const row = addMessage({ role: "assistant", provider, content: ev.message });
+            if (ev.continue) addAction(row, "Continuar", retryContinue);
+          } else if (ev.type === "error") {
+            ended = true; dropTyping();
+            const row = addMessage({ role: "assistant", provider, content: `Erro: ${ev.message}`, error: true });
+            if (ev.retry) addAction(row, "Tentar de novo", retryContinue);
+          } else if (ev.type === "done") { ended = true; }
+          // "ping" só mantém a conexão viva enquanto a IA pensa
         }
       }
+      if (!ended) {  // conexão caiu no meio (deploy, proxy, rede): o que já rodou está salvo
+        dropTyping();
+        const row = addMessage({ role: "assistant", provider, content: "Erro: a conexão com o servidor caiu no meio da resposta. O que já foi feito está salvo.", error: true });
+        addAction(row, "Tentar de novo", retryContinue);
+      }
     } catch (e) {
-      dropTyping(); addMessage({ role: "assistant", provider, content: `Erro: ${e.message}`, error: true });
+      dropTyping();
+      const row = addMessage({ role: "assistant", provider, content: `Erro: ${e.message}`, error: true });
+      // Antes de chegar ao app (502 do proxy) nada foi salvo: repete o mesmo pedido. Depois, só continua.
+      if (e.retry || e instanceof TypeError) addAction(row, "Tentar de novo", reached ? retryContinue : () => consume(path, body, provider));
     } finally {
       dropTyping(); state.busy = false; $("#send").disabled = false; $("#input").focus();
       loadConversations();

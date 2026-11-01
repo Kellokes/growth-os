@@ -17,15 +17,16 @@ from .audit import audit
 from .config import get_settings
 from .db import (
     Agent, AgentNote, AuditLog, CommandRun, Conversation, GrowthProject, Message, Metric, Plan, ProjectAgent, Task,
-    TaskLink, get_db, init_db, new_session, utcnow,
+    TaskLink, User, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
 from . import growth
 from . import projects as proj
 from .providers import all_providers
 from .security import (
-    SESSION_COOKIE, Auth, authenticate, client_ip, create_session, current_auth,
-    consume_totp, destroy_session, lookup_session,
+    LOGIN_CHALLENGE_SECONDS, LOGIN_COOKIE, SESSION_COOKIE, Auth, check_password, client_ip,
+    complete_login_challenge, create_login_challenge, create_session, current_auth,
+    consume_totp, destroy_session, lookup_login_challenge, lookup_session,
 )
 
 BASE = Path(__file__).parent
@@ -116,8 +117,11 @@ def healthz():
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+def login_page(request: Request, db: DB = Depends(get_db)):
+    if lookup_session(db, request.cookies.get(SESSION_COOKIE)):
+        return RedirectResponse("/", status_code=303)
+    error = "O tempo para o código acabou. Entre de novo." if request.query_params.get("expirou") else None
+    return templates.TemplateResponse(request, "login.html", {"error": error})
 
 
 @app.post("/login")
@@ -125,22 +129,68 @@ def login(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    totp: str = Form(...),
     db: DB = Depends(get_db),
 ):
+    """Etapa 1: usuário e senha. Certo abre o desafio 2FA; nada de sessão ainda."""
     ip = client_ip(request)
-    user, reason = authenticate(db, username, password, totp)
+    user, reason = check_password(db, username, password)
     if user is None:
         audit(db, username[:64], "login_failed", reason, ip)
         return templates.TemplateResponse(
-            request, "login.html", {"error": "Usuário, senha ou código inválidos."}, status_code=401
+            request, "login.html", {"error": "Usuário ou senha inválidos.", "username": username[:64]},
+            status_code=401,
         )
-    token, _ = create_session(db, user)
+    token = create_login_challenge(db, user)
+    audit(db, user.username, "login_password_ok", "", ip)
+    resp = RedirectResponse("/login/2fa", status_code=303)
+    resp.set_cookie(
+        LOGIN_COOKIE, token, httponly=True, secure=get_settings().cookie_secure, samesite="strict",
+        max_age=LOGIN_CHALLENGE_SECONDS, path="/login",
+    )
+    return resp
+
+
+def _two_factor_page(request: Request, error: str | None = None, status_code: int = 200):
+    return templates.TemplateResponse(request, "login_2fa.html", {"error": error}, status_code=status_code)
+
+
+def _back_to_login(expired: bool = True):
+    resp = RedirectResponse("/login?expirou=1" if expired else "/login", status_code=303)
+    resp.delete_cookie(LOGIN_COOKIE, path="/login")
+    return resp
+
+
+@app.get("/login/2fa", response_class=HTMLResponse)
+def login_2fa_page(request: Request, db: DB = Depends(get_db)):
+    if lookup_login_challenge(db, request.cookies.get(LOGIN_COOKIE)) is None:
+        return _back_to_login(expired=LOGIN_COOKIE in request.cookies)
+    return _two_factor_page(request)
+
+
+@app.post("/login/2fa")
+def login_2fa(request: Request, totp: str = Form(...), db: DB = Depends(get_db)):
+    """Etapa 2: código do app autenticador. Só aqui nasce a sessão."""
+    ip = client_ip(request)
+    token = request.cookies.get(LOGIN_COOKIE)
+    ch = lookup_login_challenge(db, token)
+    if ch is None:
+        return _back_to_login()
+    owner = db.get(User, ch.user_id)
+    username = owner.username if owner else str(ch.user_id)
+    user, reason = complete_login_challenge(db, token, totp)
+    if user is None:
+        audit(db, username, "login_failed", reason, ip)
+        if lookup_login_challenge(db, token) is None:
+            # Tentativas esgotadas ou conta bloqueada: volta para a etapa 1.
+            return _back_to_login()
+        return _two_factor_page(request, "Código inválido. Confira o app autenticador.", 401)
+    session_token, _ = create_session(db, user)
     audit(db, user.username, "login_ok", "", ip)
     resp = RedirectResponse("/", status_code=303)
     s = get_settings()
+    resp.delete_cookie(LOGIN_COOKIE, path="/login")
     resp.set_cookie(
-        SESSION_COOKIE, token, httponly=True, secure=s.cookie_secure, samesite="strict",
+        SESSION_COOKIE, session_token, httponly=True, secure=s.cookie_secure, samesite="strict",
         max_age=s.session_hours * 3600, path="/",
     )
     return resp

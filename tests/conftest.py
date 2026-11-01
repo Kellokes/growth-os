@@ -47,10 +47,18 @@ def code() -> str:
     return pyotp.TOTP(TOTP_SECRET).at(time.time() + 30 * step)
 
 
+def login(client, password: str = PASSWORD, totp: str | None = None):
+    """Faz as duas etapas do login e devolve a resposta da etapa 2 (ou da 1, se a senha falhar)."""
+    r = client.post("/login", data={"username": "owner", "password": password}, follow_redirects=False)
+    if r.status_code != 303:
+        return r
+    return client.post("/login/2fa", data={"totp": totp or code()}, follow_redirects=False)
+
+
 @pytest.fixture()
 def logged(client):
-    r = client.post("/login", data={"username": "owner", "password": PASSWORD, "totp": code()}, follow_redirects=False)
-    assert r.status_code == 303
+    r = login(client)
+    assert r.status_code == 303 and r.headers["location"] == "/"
     page = client.get("/").text
     csrf = page.split('data-csrf="')[1].split('"')[0]
     client.headers["X-CSRF-Token"] = csrf

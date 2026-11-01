@@ -456,6 +456,19 @@ dialog pre { background: var(--code-bg); border: 1px solid var(--line); border-r
 .login-title { margin: 6px 0 -6px; font-size: 34px; font-weight: 300; letter-spacing: -.03em; }
 .login-card p { margin: 0; }
 .login-card .btn.primary { margin-top: 6px; }
+/* login em 2 etapas: indicador de etapa + campo do código */
+.login-steps { list-style: none; margin: 2px 0 0; padding: 0; display: flex; gap: 8px; font-size: 12.5px; color: var(--muted); counter-reset: step; }
+.login-steps li { counter-increment: step; display: inline-flex; align-items: center; gap: 7px; padding: 4px 12px 4px 4px; border-radius: var(--pill); border: 1px solid var(--line); transition: background-color .3s, color .3s; }
+.login-steps li::before { content: counter(step); width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--line); color: var(--text-2); }
+.login-steps li.on { color: var(--on-lime); background: var(--lime); border-color: var(--lime); }
+.login-steps li.on::before { background: var(--on-lime); color: var(--lime); }
+.login-steps li.done { color: var(--text-2); }
+.login-steps li.done::before { content: "✓"; background: var(--ink); color: var(--on-ink); }
+.otp-input { width: 100%; min-width: 0; font-size: 30px; font-weight: 400; letter-spacing: .42em; text-align: center; font-variant-numeric: tabular-nums; padding: 14px 10px 14px calc(10px + .42em); }
+.otp-input::placeholder { color: var(--line-strong); }
+.login-back { align-self: center; font-size: 13.5px; color: var(--text-2); text-decoration: none; padding: 4px 8px; border-radius: var(--pill); }
+.login-back:hover { color: var(--text); text-decoration: underline; }
+.login-card.sending .btn.primary { opacity: .6; pointer-events: none; }
 
 /* =====================================================================
    PROJETOS (VPS)
@@ -731,6 +744,7 @@ dialog pre { background: var(--code-bg); border: 1px solid var(--line); border-r
   .theme-fab { top: calc(12px + env(safe-area-inset-top)); right: 12px; }
   .login-card { padding: 28px 22px; }
   .login-card input { font-size: 16px; }
+  .login-card .otp-input { font-size: 26px; }
 
   .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .stat { padding: 14px 16px; }

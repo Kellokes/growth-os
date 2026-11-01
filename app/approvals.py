@@ -197,3 +197,8 @@ def counts(db: DB, project_id: int | None = None) -> dict[str, int]:
         out[c["kind"]] += 1
     out["total"] = sum(out[k] for k in KINDS)
     return out
+
+
+def record_action_release(db: DB, a: Action, requested_by: str) -> None:
+    """Ação que o owner já liberou de antemão (config da integração): entra no histórico como `liberada`."""
+    _record(db, a.project_id, "action", a.id, a.title or f"{a.integration}: {a.operation}", requested_by, a.risk, True, "liberada")

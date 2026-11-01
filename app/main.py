@@ -928,11 +928,11 @@ def approvals_history(project: str = "all", limit: int = 50, auth: Auth = Depend
 
 
 @app.post("/api/approvals/decide")
-def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     """Aprova ou rejeita cartões de qualquer tipo. Ação externa de risco alto exige o código 2FA (consumido uma vez)."""
     ip = client_ip(request)
     seen: set[tuple[str, int]] = set()
-    done, errors = [], []
+    done, errors, to_run = [], [], []
     totp_ok: bool | None = None
     for it in body.items:
         key = (it.kind, it.ref_id)
@@ -965,6 +965,8 @@ def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth = Depe
                 if body.approve and a.risk == "alto" and a.status == "awaiting_approval" and totp_ok is None:
                     totp_ok = consume_totp(db, auth.user, body.totp)  # um código vale para o lote inteiro
                 appr.decide_action(db, a, body.approve, bool(totp_ok), body.note)
+                if body.approve:
+                    to_run.append(a)
                 detail = f"#{a.id} {a.integration}.{a.operation}"
         except appr.ApprovalError as e:
             errors.append({"kind": it.kind, "ref_id": it.ref_id, "error": str(e), "code": e.code})
@@ -975,7 +977,11 @@ def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth = Depe
         audit(db, auth.user.username, f"approval_{it.kind}_" + ("approved" if body.approve else "rejected"), detail[:500], ip)
     if not done and errors:
         raise HTTPException(errors[0]["code"], errors[0]["error"])
-    return {"decided": done, "errors": errors}
+    for a in to_run:  # aprovada pelo owner: agora sim o conector age fora do OS
+        await acts.execute_approved(db, a)
+        audit(db, auth.user.username, "action_executed", f"#{a.id} {a.integration}.{a.operation} -> {a.status}", ip)
+    return {"decided": done, "errors": errors,
+            "actions": [{"id": a.id, "status": a.status, "error": a.error} for a in to_run]}
 
 
 # ---------- interno: gos-int (só de dentro do container, com o ticket da tarefa) ----------
@@ -1556,6 +1562,83 @@ def decide_content(cid: int, body: ContentDecideIn, request: Request,
     audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}",
           client_ip(request))
     return _content_json(db, c)
+
+
+class PublishIn(BaseModel):
+    canal_id: str = Field(default="", max_length=120)
+    totp: str = Field(default="", max_length=12)
+
+
+@app.get("/api/gprojects/{slug}/postiz/canais")
+async def postiz_channels(slug: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Canais conectados no Postiz do projeto (para escolher onde publicar uma peça)."""
+    p = _project_or_404(db, slug)
+    res = await acts.run_operation(db, acts.Ticket(0, p.id, "owner", 0), "postiz", "listar_canais", {})
+    if res["status"] != "done":
+        raise HTTPException(409, res["message"])
+    return res["result"]["canais"]
+
+
+@app.post("/api/content/{cid}/publish")
+async def publish_content(cid: int, body: PublishIn, request: Request,
+                          auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """O owner manda sair uma peça JÁ aprovada pela integração do canal (e-mail por SMTP, redes pelo Postiz).
+
+    Apertar o botão é a aprovação da ação; e-mail para terceiros exige também o 2FA.
+    """
+    c = _content_or_404(db, cid)
+    if c.status not in ("approved", "failed"):
+        raise HTTPException(409, "só conteúdo aprovado pode ser publicado")
+    project = db.get(GrowthProject, c.project_id)
+    ip = client_ip(request)
+    when = None
+    if c.channel == "email":
+        kind, operation = "email", "enviar_email"
+        if not (c.recipient or "").strip():
+            raise HTTPException(422, "falta o destinatário do e-mail")
+        raw = {"para": c.recipient, "assunto": c.title or "(sem assunto)", "texto": c.body}
+    elif cnt.CHANNELS.get(c.channel, ("", ""))[1] == "social":
+        kind, operation = "postiz", "publicar_post"
+        if not body.canal_id.strip():
+            raise HTTPException(422, "escolha o canal do Postiz")
+        raw = {"canal_id": body.canal_id.strip(), "texto": c.body}
+        if c.scheduled_at and c.scheduled_at > cnt.local_now():
+            operation = "agendar_post"
+            when = c.scheduled_at.replace(tzinfo=ZoneInfo(get_settings().timezone)).astimezone(ZoneInfo("UTC"))
+            raw["quando"] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        raise HTTPException(422, "este canal não tem integração de envio; marque como enviada depois de publicar")
+    conn = acts.REGISTRY[kind]
+    op = conn.ops[operation]
+    if kind not in acts._ready(db, project):
+        raise HTTPException(409, f"{kind} não está pronta neste projeto (ligue e configure em Automações > Integrações)")
+    try:
+        params = op.clean(raw)
+    except acts.ConnectorError as e:
+        raise HTTPException(422, str(e)) from e
+    if acts.over_cap(db, project, kind, op):
+        raise HTTPException(429, f"limite de {op.daily_cap} envios por dia em {kind} neste projeto")
+    if op.risk == "alto" and not consume_totp(db, auth.user, body.totp):
+        audit(db, auth.user.username, "approve_failed", f"publicar conteúdo #{c.id}", ip)
+        raise HTTPException(403, "código 2FA inválido")
+    a = Action(project_id=c.project_id, integration=kind, operation=operation, effect="external", risk=op.risk,
+                    title=f"Publicar: {c.title or c.body[:60]}"[:200], params=json.dumps(params, ensure_ascii=False),
+                    status="approved", idempotency_key=f"conteudo-{c.id}-{utcnow().timestamp()}")
+    db.add(a)
+    db.commit()
+    appr._record(db, c.project_id, "action", a.id, a.title, f"conteudo:{c.id}", op.risk, True,
+                 "2fa" if op.risk == "alto" else "clique")
+    audit(db, auth.user.username, "content_publish", f"#{c.id} {c.channel} via {kind}.{operation}", ip)
+    await acts.execute_approved(db, a)
+    if a.status == "done":
+        c.status, c.sent_at, c.note = "sent", utcnow(), ""
+        if a.external_ref.startswith("http"):
+            c.link = a.external_ref[:500]
+    else:
+        c.status, c.note = "failed", f"Falhou ao publicar: {a.error}"[:1000]
+    cnt.touch(c)
+    db.commit()
+    return {**_content_json(db, c), "action": {"id": a.id, "status": a.status, "error": a.error}}
 
 
 @app.post("/api/content/{cid}/sent")

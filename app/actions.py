@@ -6,6 +6,7 @@ ticket da tarefa; aqui a operação é validada contra o projeto da tarefa e exe
   external        -> vira um cartão em Aprovações; só executa depois da aprovação do owner
 """
 
+import asyncio
 import json
 import secrets
 import uuid
@@ -17,8 +18,12 @@ from sqlalchemy.orm import Session as DB
 
 from . import approvals, growth, routines
 from .audit import audit
-from .connectors import REGISTRY, ConnectorError, Ctx
+from .connectors import REGISTRY, ConnectorError, Ctx, TransientError
 from .db import Action, GrowthProject, Integration, Task, utcnow
+
+
+RETRY_DELAYS = (2, 6)  # esperas entre as tentativas de uma falha passageira (3 tentativas no total)
+TRUE = ("sim", "s", "true", "1", "yes")
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,16 @@ def _fail(db: DB, project_id: int, task_id: int | None, kind: str, operation: st
     return a
 
 
+def over_cap(db: DB, project: GrowthProject, kind: str, op) -> bool:
+    """Teto diário de pedidos externos por projeto e integração (rejeitados e falhos não contam)."""
+    today = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    used = db.query(Action).filter(
+        Action.project_id == project.id, Action.integration == kind, Action.effect == "external",
+        Action.created_at >= today, Action.status.notin_(("rejected", "failed")),
+    ).count()
+    return used >= op.daily_cap
+
+
 async def run_operation(db: DB, ticket: Ticket, kind: str, operation: str, raw_params: dict,
                         transport: httpx.AsyncBaseTransport | None = None) -> dict:
     """Executa (ou pede aprovação para) uma operação em nome da tarefa do ticket. Sempre no projeto da tarefa."""
@@ -106,12 +121,20 @@ async def run_operation(db: DB, ticket: Ticket, kind: str, operation: str, raw_p
     title = f"{ready[kind]['name']}: {operation}"
 
     if op.effect == "external":
-        # Nunca roda sozinha: cartão em Aprovações com os parâmetros exatos.
+        if over_cap(db, project, kind, op):
+            return {"status": "error", "message": f"limite de {op.daily_cap} pedidos por dia em {kind} neste projeto; fica para amanhã"}
+        pre = op.preapprovable and str(ctx.config.get("preaprovar", "")).strip().lower() in TRUE
         a = Action(project_id=project.id, task_id=ticket.task_id or None, integration=kind, operation=operation, effect="external",
-                   risk=op.risk, title=title, params=json.dumps(params, ensure_ascii=False), status="awaiting_approval",
-                   idempotency_key=uuid.uuid4().hex)
+                   risk=op.risk, title=title, params=json.dumps(params, ensure_ascii=False),
+                   status="approved" if pre else "awaiting_approval", idempotency_key=uuid.uuid4().hex)
         db.add(a)
         db.commit()
+        if pre:  # o owner liberou esta operação de antemão (ex.: avisos no próprio Telegram)
+            approvals.record_action_release(db, a, f"agente:{ticket.agent_slug}")
+            await execute_approved(db, a, transport)
+            if a.status == "done":
+                return {"status": "done", "result": json.loads(a.result or "{}")}
+            return {"status": "error", "message": a.error or "não foi possível executar"}
         approvals.emit(db, project.id, "action.requested", "action", a.id, {"integration": kind, "operation": operation})
         audit(db, f"agente:{ticket.agent_slug}", "action_requested", f"#{a.id} {kind}.{operation}", "interno")
         return {"status": "awaiting_approval", "action_id": a.id,
@@ -135,6 +158,52 @@ async def run_operation(db: DB, ticket: Ticket, kind: str, operation: str, raw_p
     approvals.emit(db, project.id, "action.done", "action", a.id, {"integration": kind, "operation": operation})
     audit(db, f"agente:{ticket.agent_slug}", "action_done", f"#{a.id} {kind}.{operation}", "interno")
     return {"status": "done", "result": result}
+
+
+async def execute_approved(db: DB, action: Action, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    """Executa uma ação já aprovada pelo owner. Uma vez só (claim atômico) e com até 3 tentativas em falha passageira."""
+    claimed = db.query(Action).filter(Action.id == action.id, Action.status == "approved").update({"status": "running"})
+    db.commit()
+    if not claimed:
+        return  # outra chamada já pegou (duplo clique) ou não está aprovada
+    db.refresh(action)
+    project = db.get(GrowthProject, action.project_id)
+    conn = REGISTRY.get(action.integration)
+    row = db.query(Integration).filter(Integration.project_id == action.project_id,
+                                       Integration.kind == action.integration).one_or_none()
+    error = ""
+    result: dict = {}
+    if project is None or conn is None or row is None or not row.enabled:
+        error = "a integração não está mais ligada neste projeto"
+    else:
+        ctx = Ctx(config=routines._config(row), secret=_secret(project, action.integration), transport=transport)
+        params = json.loads(action.params or "{}")
+        for attempt in range(len(RETRY_DELAYS) + 1):
+            action.attempts += 1
+            try:
+                result = await conn.run(ctx, action.operation, params)
+                error = ""
+                break
+            except TransientError as e:
+                error = str(e)
+                if attempt < len(RETRY_DELAYS):
+                    await asyncio.sleep(RETRY_DELAYS[attempt])
+            except ConnectorError as e:
+                error = str(e)
+                break
+    action.finished_at = utcnow()
+    if error:
+        action.status, action.error = "failed", error[:500]
+    else:
+        action.status, action.error = "done", ""
+        action.result = json.dumps(result, ensure_ascii=False)[:20000]
+        action.external_ref = str(result.get("ref", ""))[:300]
+    db.commit()
+    approvals.emit(db, action.project_id, "action.failed" if error else "action.done", "action", action.id,
+                   {"integration": action.integration, "operation": action.operation})
+    audit(db, "sistema", "action_failed" if error else "action_done", f"#{action.id} {action.integration}.{action.operation}", "interno")
+    if error:
+        await growth.notify(f"⚠️ A ação \"{action.title}\" falhou: {error[:200]}")
 
 
 def _secret(project: GrowthProject, kind: str) -> str:

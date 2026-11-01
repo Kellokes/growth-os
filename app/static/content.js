@@ -64,7 +64,10 @@
     const date = it.stage === "sent" ? `enviada ${ago(it.sent_at)}` : it.scheduled_at ? when(it.scheduled_at) : ago(it.created_at);
     let actions = "";
     if (it.status === "pending") actions = `<button class="btn small danger" type="button" data-reject="${it.id}">Rejeitar</button><button class="btn small primary" type="button" data-approve="${it.id}">Aprovar</button>`;
-    else if (it.status === "approved") actions = `<button class="btn small" type="button" data-sent="${it.id}">${icon("send")} Marcar enviada</button>`;
+    else if (it.status === "approved" || it.status === "failed") {
+      const auto = it.group === "email" || it.group === "social";
+      actions = `${auto ? `<button class="btn small primary" type="button" data-publish="${it.id}">${icon("send")} Publicar</button>` : ""}<button class="btn small" type="button" data-sent="${it.id}">Marcar enviada</button>`;
+    }
     else if (it.status === "sent" && it.link) actions = `<a class="btn small ghost" href="${esc(it.link)}" target="_blank" rel="noopener noreferrer">Ver ${icon("arrow-ur")}</a>`;
     return `<article class="cpiece card st-${esc(it.stage)} g-${esc(it.group)}" data-id="${it.id}" tabindex="0">
       <header class="cpiece-top"><span class="cchan">${esc(c.icon)} ${esc(c.name)}</span><span class="badge ${STAGE_BADGE[it.stage] || ""}">${esc(STAGE_LABEL[it.stage] || it.stage)}</span></header>
@@ -282,6 +285,28 @@
   }
 
   // ---------- eventos ----------
+  // Publicar pelo OS: e-mail (SMTP, pede 2FA) ou rede social (Postiz, escolhe o canal).
+  async function publish(id) {
+    const it = items.find((x) => x.id === id); if (!it) return;
+    const body = {};
+    try {
+      if (it.group === "email") {
+        const t = prompt(`Enviar este e-mail para ${it.recipient || "?"} agora?\nDigite o código 2FA para confirmar:`, "");
+        if (!t) return; body.totp = t;
+      } else {
+        const list = await api(`/api/gprojects/${it.project}/postiz/canais`);
+        if (!list.length) return alert("Nenhum canal conectado no Postiz deste projeto.");
+        let pick = list[0];
+        if (list.length > 1) {
+          const n = prompt("Em qual canal publicar?\n" + list.map((c, i) => `${i + 1}) ${c.nome} (${c.rede})`).join("\n"), "1");
+          pick = list[Number(n) - 1]; if (!pick) return;
+        } else if (!confirm(`Publicar agora em ${pick.nome} (${pick.rede})?`)) return;
+        body.canal_id = pick.id;
+      }
+      await api(`/api/content/${id}/publish`, { method: "POST", body: JSON.stringify(body) });
+    } catch (e) { alert(e.message); }
+    await loadPieces(); sw?.reload?.();
+  }
   const findPiece = async (id) => {
     let it = items.find((x) => x.id === id);
     if (!it) { await loadPieces(); it = items.find((x) => x.id === id); }
@@ -291,6 +316,7 @@
     const a = ev.target.closest("[data-approve]"); if (a) return decide(Number(a.dataset.approve), true);
     const r = ev.target.closest("[data-reject]");
     if (r) { const note = prompt("Motivo (opcional):", ""); if (note !== null) decide(Number(r.dataset.reject), false, note); return; }
+    const pb = ev.target.closest("[data-publish]"); if (pb) return publish(Number(pb.dataset.publish));
     const s = ev.target.closest("[data-sent]"); if (s) { const it = items.find((x) => x.id === Number(s.dataset.sent)); if (it) { openPiece(it); $("#cf-actions [data-cf=sent]")?.click(); } return; }
     const st = ev.target.closest("[data-stage]"); if (st) { stageF = st.dataset.stage; return renderPieces(); }
     const g = ev.target.closest("[data-group]"); if (g) { groupF = g.dataset.group; return renderPieces(); }

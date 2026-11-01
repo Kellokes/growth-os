@@ -330,7 +330,7 @@ um texto malicioso lido por um agente não consegue publicar nem enviar nada soz
 
 ## 6. Ordem de entrega (um PR por fase)
 
-> Andamento: fases 1 e 2 mergeadas (PR #24); fase 3 (conectores de leitura, `gos-int`, coleta de KPIs) no PR seguinte.
+> Andamento: fases 1 e 2 (PR #24) e 3 (PR #26) mergeadas; fase 4 (Telegram, Postiz, e-mail, publicar peça aprovada) no PR seguinte. Ficou para a fase 5: a tarefa pausar esperando a ação e continuar com o resultado.
 
 1. **Base de dados e Aprovações (backend)**: tabelas `missions`, `approvals`, `actions`, `events`;
    colunas novas; migração dos itens pendentes; API `/api/approvals`. Testes de migração e da fila.

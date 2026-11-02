@@ -300,6 +300,12 @@ def next_run(a: Automation, now: datetime) -> str:
     return ""
 
 
+def is_code_report(db: DB, a: Automation) -> bool:
+    """Relatório de KPIs feito em código: nasce concluído, então não precisa esperar a execução anterior."""
+    skill = db.get(Skill, a.skill_id) if a.skill_id else None
+    return skill is not None and skill.template == "relatorio_kpis"
+
+
 def has_open_run(db: DB, a: Automation) -> bool:
     return db.query(Task).filter(Task.automation_id == a.id, Task.status.in_(OPEN_STATUSES)).count() > 0
 

@@ -263,3 +263,27 @@ def test_manual_collect_and_no_ai_actions_list(logged, monkeypatch):
     assert [r["titulo"] for r in rel] == ["Relatório semanal de KPIs"] and rel[0]["ultima"] is None
     assert logged.get(f"/api/gprojects/{b}/acoes-sem-ia").json()["relatorios"] == []
     assert logged.post(f"/api/gprojects/{b}/collect").json() == {"integracoes": []}
+
+
+def test_code_report_runs_again_even_with_an_open_run(logged):
+    (a,) = make_projects("A Ilha")
+    s = dbmod.new_session()
+    try:  # fechar a sessão: no Postgres uma transação aberta trava o drop_all do próximo teste
+        skill = dbmod.Skill(project_id=pid(a), name="Relatório semanal de KPIs", description="", instructions="x",
+                            agents="growth", template="relatorio_kpis")
+        s.add(skill)
+        s.commit()
+        auto = dbmod.Automation(project_id=pid(a), agent_slug="growth", title="Relatório semanal de KPIs",
+                                skill_id=skill.id, frequency="weekly", weekday=0, hour=9)
+        s.add(auto)
+        s.commit()
+        # Uma execução antiga ainda aberta no Kanban não pode travar o relatório em código.
+        s.add(dbmod.Task(project_id=pid(a), agent_slug="growth", title="antiga", status="proposed", automation_id=auto.id))
+        s.commit()
+        aid = auto.id
+    finally:
+        s.close()
+    r = logged.post(f"/api/gprojects/{a}/automations/{aid}/run")
+    assert r.status_code == 200 and r.json()["status"] == "done"
+    rel = logged.get(f"/api/gprojects/{a}/acoes-sem-ia").json()["relatorios"][0]
+    assert rel["ultima"] == "done" and "Relatório semanal de KPIs" in rel["resultado"]

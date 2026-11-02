@@ -107,22 +107,6 @@
     </article>`);
     $("#deterministic").innerHTML = [...coletas, ...relat].join("") || `<div class="empty-card card tile-empty"><h2>Nenhuma ação sem IA</h2><p class="muted">Ligue uma integração de KPIs ou crie um relatório semanal em código.</p></div>`;
   }
-  page.addEventListener("click", async (ev) => {
-    const t = ev.target;
-    if (t.closest("#collect-now")) {
-      const b = t.closest("#collect-now"); b.disabled = true; b.textContent = "Coletando…";
-      try { showCollect(await api(`/api/gprojects/${project}/collect`, { method: "POST" })); }
-      catch (e) { alert(e.message); }
-      finally { b.disabled = false; b.textContent = "Coletar agora"; }
-      return;
-    }
-    const run = t.closest("[data-det-run]");
-    if (run) {
-      run.disabled = true;
-      try { await api(`/api/gprojects/${project}/automations/${run.dataset.detRun}/run`, { method: "POST" }); run.innerHTML = "Feito ✓"; await loadAutos(); }
-      catch (e) { alert(e.message); run.disabled = false; }
-    }
-  });
 
   // ---------- rotinas ----------
   const fmtNext = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
@@ -204,6 +188,22 @@
 
   // ---------- eventos ----------
   const page = document.querySelector(".page");
+  page.addEventListener("click", async (ev) => {
+    const t = ev.target;
+    if (t.closest("#collect-now")) {
+      const b = t.closest("#collect-now"); b.disabled = true; b.textContent = "Coletando…";
+      try { showCollect(await api(`/api/gprojects/${project}/collect`, { method: "POST" })); }
+      catch (e) { alert(e.message); }
+      finally { b.disabled = false; b.textContent = "Coletar agora"; }
+      return;
+    }
+    const run = t.closest("[data-det-run]");
+    if (run) {
+      run.disabled = true;
+      try { await api(`/api/gprojects/${project}/automations/${run.dataset.detRun}/run`, { method: "POST" }); run.innerHTML = "Feito ✓"; await loadAutos(); }
+      catch (e) { alert(e.message); run.disabled = false; }
+    }
+  });
   page.addEventListener("click", async (ev) => {
     const t = ev.target;
     const lib = t.closest("[data-lib]");

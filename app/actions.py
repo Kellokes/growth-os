@@ -261,13 +261,11 @@ async def _collect_project_api(db: DB, project: GrowthProject,
                                transport: httpx.AsyncBaseTransport | None) -> tuple[list[dict], str | None]:
     """KPIs da API do próprio projeto (números de ontem), sem mapeamento escrito à mão.
 
-    Lê ``base_url`` + ``/daily`` (ou o caminho configurado). Se a resposta vier no envelope padronizado, cada
-    evento do catálogo vira o KPI de mesmo nome (0 quando não veio); nome fora do catálogo é ignorado com aviso.
-    O campo ``kpi_fields`` continua opcional para números extras fora do envelope.
+    Lê ``base_url`` + o endpoint configurado (padrão ``/daily``). A resposta precisa vir no envelope padronizado:
+    cada evento do catálogo vira o KPI de mesmo nome (0 quando não veio); nome fora do catálogo é ignorado com aviso.
     """
     row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "project_api").one()
     cfg = routines._config(row)
-    fields = kpireport.parse_fields(cfg.get("kpi_fields", ""))
     today = growth.local_today()
     path = kpireport.render_path(cfg.get("kpi_path", "") or eventcatalog.DAILY_PATH, today)
     if not path.startswith("/"):
@@ -277,22 +275,12 @@ async def _collect_project_api(db: DB, project: GrowthProject,
         return [], res.get("message") or "a leitura falhou"
     data = res["result"].get("dados")
     ontem = today - timedelta(days=1)
-    values: dict[str, float] = {}
-    erros: list[str] = []
-    if eventcatalog.is_envelope(data):
-        growth.ensure_event_metrics(db, project.id)
-        values, avisos = eventcatalog.match(data, ontem)
-        erros.extend(avisos)
-        if avisos:
-            log.warning("coleta %s /daily: %s", project.slug, "; ".join(avisos))
-    elif not fields:
+    if not eventcatalog.is_envelope(data):
         return [], "a resposta não está no formato padrão do /daily (periodo, totals, series)"
-    for kpi, field in fields.items():
-        value = kpireport.dig(data, field)
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            erros.append(f"{kpi}: '{field}' não veio na resposta")
-            continue
-        values[kpi] = float(value)
+    growth.ensure_event_metrics(db, project.id)
+    values, erros = eventcatalog.match(data, ontem)
+    if erros:
+        log.warning("coleta %s /daily: %s", project.slug, "; ".join(erros))
     done = []
     for kpi, value in values.items():
         try:

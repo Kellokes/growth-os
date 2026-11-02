@@ -10,7 +10,7 @@ Tudo em código, sem LLM.
 
 from datetime import date
 
-# Nomes ainda não confirmados pelo Felipe (2026-11-02). Se mudarem, ajuste SÓ aqui.
+# Nomes de cadastro, acesso e retenção (confirmados pelo Felipe em 2026-11-02). Se mudarem, ajuste SÓ aqui.
 SIGNUP_STARTED = "signup_started"
 SIGNUP_COMPLETED = "signup_completed"
 LOGIN = "login"

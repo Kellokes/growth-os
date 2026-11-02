@@ -114,8 +114,7 @@ INTEGRATIONS = [
     {"kind": "project_api", "name": "API do próprio projeto", "icon": "🔌", "category": "Projeto", "cost": "Já é seu",
      "about": "Endpoints do próprio produto para os agentes lerem números reais. A coleta diária lê /daily e casa cada evento do catálogo com o KPI de mesmo nome, sem configurar campos.",
      "fields": [("base_url", "URL base", "https://api.seudominio.com"), ("docs", "Onde está a documentação", "/docs ou link"),
-                ("kpi_path", "Leitura diária (opcional, padrão /daily)", "/daily?from={ontem}&to={ontem}"),
-                ("kpi_fields", "Campos extras fora do /daily (opcional, avançado)", "deixe vazio: os eventos do /daily entram sozinhos")],
+                ("kpi_path", "Endpoint da leitura diária (padrão /daily)", "/daily?from={ontem}&to={ontem}")],
      "secret": "TOKEN", "kpis": "eventos do /daily, cadastros, usuarios_ativos"},
 ]
 INTEGRATION_BY_KIND = {i["kind"]: i for i in INTEGRATIONS}

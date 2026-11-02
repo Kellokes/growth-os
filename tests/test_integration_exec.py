@@ -271,25 +271,22 @@ def test_daily_kpi_collection_without_ai(logged, monkeypatch):
     s.close()
 
 
-def test_project_api_kpis_are_collected_by_code_from_the_configured_map(logged, monkeypatch):
+def test_project_api_uses_the_configured_endpoint_and_rejects_non_standard_json(logged, monkeypatch):
     (a,) = make_projects("A Ilha")
-    cfg = {"base_url": "https://jogar.exemplo.com/api/growth", "kpi_path": "/resumo?de={ontem}&ate={ontem}",
-           "kpi_fields": "cadastros=kpis.logins, visitantes=kpis.web_visitantes, nao_existe=kpis.x"}
-    connect(a, "project_api", cfg, monkeypatch)
+    connect(a, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth",
+                               "kpi_path": "/v2/diario?from={ontem}&to={ontem}"}, monkeypatch)
     seen = {}
 
     def handler(req: httpx.Request):
         seen["url"] = str(req.url)
-        return httpx.Response(200, json={"kpis": {"logins": 12, "web_visitantes": 55}})
+        return httpx.Response(200, json={"kpis": {"logins": 12}})
 
     s = dbmod.new_session()
     try:  # fechar a sessão: no Postgres uma transação aberta trava o drop_all do próximo teste
-        done = asyncio.run(acts.collect_kpis(s, mock(handler)))
+        (item,) = asyncio.run(acts.collect_project(s, s.query(dbmod.GrowthProject).filter_by(slug=a).one(), mock(handler)))
         yesterday = growth.local_today() - timedelta(days=1)
-        assert sorted(done) == [f"{a}/cadastros", f"{a}/visitantes"]
-        assert seen["url"] == f"https://jogar.exemplo.com/api/growth/resumo?de={yesterday}&ate={yesterday}"
-        pts = s.query(dbmod.MetricPoint).filter_by(day=yesterday).all()
-        assert sorted(p.value for p in pts) == [12.0, 55.0] and all(p.source == "integração:project_api" for p in pts)
+        assert seen["url"] == f"https://jogar.exemplo.com/api/growth/v2/diario?from={yesterday}&to={yesterday}"
+        assert item["kpis"] == [] and "formato padrão" in item["erro"]
     finally:
         s.close()
 

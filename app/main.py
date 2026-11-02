@@ -1322,6 +1322,34 @@ def delete_skill(slug: str, sid: int, request: Request, auth: Auth = Depends(cur
     return {"ok": True}
 
 
+@app.post("/api/gprojects/{slug}/collect")
+async def collect_now(slug: str, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Coleta de KPIs sem IA, agora, só deste projeto. Mostra o que foi gravado e o erro de cada integração."""
+    p = _project_or_404(db, slug)
+    res = await acts.collect_project(db, p)
+    gravados = sum(len(r["kpis"]) for r in res)
+    audit(db, auth.user.username, "kpi_collect_manual", f"{slug}: {gravados} KPI(s) gravado(s)", client_ip(request))
+    return {"integracoes": res}
+
+
+@app.get("/api/gprojects/{slug}/acoes-sem-ia")
+def deterministic_actions(slug: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Ações que rodam sem IA neste projeto: a coleta das integrações e os relatórios feitos em código."""
+    p = _project_or_404(db, slug)
+    coletas = [{"integracao": i["kind"], "nome": i["name"], "pronta": i["status"] == "ready" and i["enabled"],
+                "kpis": [k.strip() for k in (i["kpis"] or "").split(",") if k.strip()]}
+               for i in routines.integrations_for(db, p) if i["kind"] in acts.KPI_SOURCES or i["kind"] == "project_api"]
+    relatorios = []
+    for a in db.query(Automation).filter(Automation.project_id == p.id).order_by(Automation.id).all():
+        skill = db.get(Skill, a.skill_id) if a.skill_id else None
+        if skill is None or skill.template != "relatorio_kpis":
+            continue
+        last = db.query(Task).filter(Task.automation_id == a.id).order_by(Task.id.desc()).first()
+        relatorios.append({"id": a.id, "titulo": a.title, "ativa": a.enabled,
+                           "ultima": last.status if last else None})
+    return {"coletas": coletas, "relatorios": relatorios}
+
+
 @app.get("/api/gprojects/{slug}/integrations")
 def list_integrations(slug: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     return routines.integrations_for(db, _project_or_404(db, slug))

@@ -1,8 +1,7 @@
 """KPIs lidos da API do próprio projeto e relatório semanal: tudo em código, sem LLM.
 
-- A integração "API do próprio projeto" guarda dois campos públicos: o caminho da leitura diária
-  (``kpi_path``, com ``{ontem}`` e ``{hoje}``) e quais campos do JSON viram quais KPIs (``kpi_fields``,
-  ``kpi=caminho.no.json`` separados por vírgula).
+- A integração "API do próprio projeto" guarda o endpoint da leitura diária (``kpi_path``, com ``{ontem}`` e
+  ``{hoje}``; padrão ``/daily``). Os campos casam sozinhos pelo catálogo de eventos (``eventcatalog``).
 - O relatório semanal compara os últimos 7 dias com os 7 anteriores a partir dos pontos já gravados.
 """
 
@@ -11,29 +10,6 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session as DB
 
 from .db import Metric, MetricPoint
-
-
-def parse_fields(raw: str) -> dict[str, str]:
-    """'cadastros=kpis.logins, visitantes=kpis.web' -> {'cadastros': 'kpis.logins', 'visitantes': 'kpis.web'}."""
-    out = {}
-    for part in (raw or "").split(","):
-        key, sep, path = part.partition("=")
-        if sep and key.strip() and path.strip():
-            out[key.strip()] = path.strip()
-    return out
-
-
-def dig(data, path: str):
-    """Valor em 'a.b.c' de um JSON (dicionários; segmentos numéricos entram em listas). None se não existir."""
-    cur = data
-    for seg in path.split("."):
-        if isinstance(cur, dict):
-            cur = cur.get(seg)
-        elif isinstance(cur, list) and seg.isdigit() and int(seg) < len(cur):
-            cur = cur[int(seg)]
-        else:
-            return None
-    return cur
 
 
 def render_path(template: str, today: date) -> str:

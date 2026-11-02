@@ -121,6 +121,19 @@ def setup_project(db: DB, project: GrowthProject) -> None:
     db.commit()
 
 
+def ensure_event_metrics(db: DB, project_id: int) -> None:
+    """KPIs do catálogo de eventos (chave = nome do evento), criados no primeiro /daily lido do projeto."""
+    from .eventcatalog import CATALOG
+
+    keys = {m.key for m in db.query(Metric.key).filter(Metric.project_id == project_id).all()}
+    new = [Metric(project_id=project_id, key=k, name=n, area=a, unit="number", direction="up",
+                  description="evento do catálogo, lido do /daily do projeto")
+           for k, n, a in CATALOG if k not in keys]
+    if new:
+        db.add_all(new)
+        db.commit()
+
+
 def slugify(text: str) -> str:
     import unicodedata
 

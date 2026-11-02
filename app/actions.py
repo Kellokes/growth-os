@@ -8,6 +8,7 @@ ticket da tarefa; aqui a operação é validada contra o projeto da tarefa e exe
 
 import asyncio
 import json
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -16,11 +17,13 @@ from datetime import timedelta
 import httpx
 from sqlalchemy.orm import Session as DB
 
-from . import approvals, growth, kpireport, routines
+from . import approvals, eventcatalog, growth, kpireport, routines
 from .audit import audit
 from .connectors import REGISTRY, ConnectorError, Ctx, TransientError
 from .db import Action, GrowthProject, Integration, Task, utcnow
 
+
+log = logging.getLogger("actions")
 
 RETRY_DELAYS = (2, 6)  # esperas entre as tentativas de uma falha passageira (3 tentativas no total)
 TRUE = ("sim", "s", "true", "1", "yes")
@@ -256,30 +259,36 @@ async def _collect_source(db: DB, project: GrowthProject, kind: str,
 
 async def _collect_project_api(db: DB, project: GrowthProject,
                                transport: httpx.AsyncBaseTransport | None) -> tuple[list[dict], str | None]:
-    """KPIs da API do próprio projeto: caminho e campos vêm da configuração; os números são de ontem."""
+    """KPIs da API do próprio projeto (números de ontem), sem mapeamento escrito à mão.
+
+    Lê ``base_url`` + o endpoint configurado (padrão ``/daily``). A resposta precisa vir no envelope padronizado:
+    cada evento do catálogo vira o KPI de mesmo nome (0 quando não veio); nome fora do catálogo é ignorado com aviso.
+    """
     row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "project_api").one()
     cfg = routines._config(row)
-    fields = kpireport.parse_fields(cfg.get("kpi_fields", ""))
     today = growth.local_today()
-    path = kpireport.render_path(cfg.get("kpi_path", ""), today)
-    if not fields or not path.startswith("/"):
-        return [], "configure a leitura diária e os campos KPI na integração"
+    path = kpireport.render_path(cfg.get("kpi_path", "") or eventcatalog.DAILY_PATH, today)
+    if not path.startswith("/"):
+        return [], "a leitura diária precisa começar com /"
     res = await run_operation(db, Ticket(0, project.id, "coleta", 0), "project_api", "get", {"caminho": path}, transport)
     if res["status"] != "done":
         return [], res.get("message") or "a leitura falhou"
+    data = res["result"].get("dados")
     ontem = today - timedelta(days=1)
-    done, erros = [], []
-    for kpi, field in fields.items():
-        value = kpireport.dig(res["result"].get("dados"), field)
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            erros.append(f"{kpi}: '{field}' não veio na resposta")
-            continue
+    if not eventcatalog.is_envelope(data):
+        return [], "a resposta não está no formato padrão do /daily (periodo, totals, series)"
+    growth.ensure_event_metrics(db, project.id)
+    values, erros = eventcatalog.match(data, ontem)
+    if erros:
+        log.warning("coleta %s /daily: %s", project.slug, "; ".join(erros))
+    done = []
+    for kpi, value in values.items():
         try:
-            growth.record_point(db, project.id, kpi, float(value), ontem, source="integração:project_api")
+            growth.record_point(db, project.id, kpi, value, ontem, source="integração:project_api")
         except KeyError:
             erros.append(f"{kpi}: o projeto não tem esse KPI")
             continue
-        done.append({"kpi": kpi, "valor": float(value), "dia": ontem.isoformat()})
+        done.append({"kpi": kpi, "valor": value, "dia": ontem.isoformat()})
     return done, "; ".join(erros) or None
 
 

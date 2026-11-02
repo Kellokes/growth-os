@@ -271,27 +271,96 @@ def test_daily_kpi_collection_without_ai(logged, monkeypatch):
     s.close()
 
 
-def test_project_api_kpis_are_collected_by_code_from_the_configured_map(logged, monkeypatch):
+def test_project_api_uses_the_configured_endpoint_and_rejects_non_standard_json(logged, monkeypatch):
     (a,) = make_projects("A Ilha")
-    cfg = {"base_url": "https://jogar.exemplo.com/api/growth", "kpi_path": "/resumo?de={ontem}&ate={ontem}",
-           "kpi_fields": "cadastros=kpis.logins, visitantes=kpis.web_visitantes, nao_existe=kpis.x"}
-    connect(a, "project_api", cfg, monkeypatch)
+    connect(a, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth",
+                               "kpi_path": "/v2/diario?from={ontem}&to={ontem}"}, monkeypatch)
     seen = {}
 
     def handler(req: httpx.Request):
         seen["url"] = str(req.url)
-        return httpx.Response(200, json={"kpis": {"logins": 12, "web_visitantes": 55}})
+        return httpx.Response(200, json={"kpis": {"logins": 12}})
 
     s = dbmod.new_session()
     try:  # fechar a sessão: no Postgres uma transação aberta trava o drop_all do próximo teste
-        done = asyncio.run(acts.collect_kpis(s, mock(handler)))
+        (item,) = asyncio.run(acts.collect_project(s, s.query(dbmod.GrowthProject).filter_by(slug=a).one(), mock(handler)))
         yesterday = growth.local_today() - timedelta(days=1)
-        assert sorted(done) == [f"{a}/cadastros", f"{a}/visitantes"]
-        assert seen["url"] == f"https://jogar.exemplo.com/api/growth/resumo?de={yesterday}&ate={yesterday}"
-        pts = s.query(dbmod.MetricPoint).filter_by(day=yesterday).all()
-        assert sorted(p.value for p in pts) == [12.0, 55.0] and all(p.source == "integração:project_api" for p in pts)
+        assert seen["url"] == f"https://jogar.exemplo.com/api/growth/v2/diario?from={yesterday}&to={yesterday}"
+        assert item["kpis"] == [] and "formato padrão" in item["erro"]
     finally:
         s.close()
+
+
+def _daily(day, events, actors=None, extra_totals=None):
+    actors = actors if actors is not None else events
+    totals = {k: {"events": v, "actors": actors.get(k, 0)} for k, v in events.items()}
+    totals.update(extra_totals or {})
+    return {"periodo": {"from": day, "to": day, "tz": "America/Sao_Paulo"}, "include_internal": False,
+            "totals": totals, "series": [{"date": day, "events": events, "actors": actors}]}
+
+
+def test_project_api_matches_daily_events_to_kpis_without_any_field_config(logged, monkeypatch, caplog):
+    from app import eventcatalog
+
+    (a,) = make_projects("Zombie Party")
+    connect(a, "project_api", {"base_url": "https://zombie.exemplo.com/api/growth"}, monkeypatch)
+    yesterday = growth.local_today() - timedelta(days=1)
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json=_daily(yesterday.isoformat(),
+                                               {"app_ready": 2, "page_view": 1, "signup_completed": 4, "evento_novo": 9},
+                                               {"app_ready": 2, "page_view": 1, "signup_completed": 3, "session_start": 5}))
+
+    s = dbmod.new_session()
+    try:
+        res = asyncio.run(acts.collect_project(s, s.query(dbmod.GrowthProject).filter_by(slug=a).one(), mock(handler)))
+        assert seen["url"] == f"https://zombie.exemplo.com/api/growth/daily?from={yesterday}&to={yesterday}"
+        (item,) = res
+        got = {k["kpi"]: k["valor"] for k in item["kpis"]}
+        assert set(got) == set(eventcatalog.EVENTS) | {"cadastros", "usuarios_ativos"}
+        assert got["app_ready"] == 2 and got["page_view"] == 1 and got["signup_completed"] == 4
+        assert got["landing_view"] == 0 and got["pwa_prompt"] == 0  # faltou no envelope: 0, sem quebrar
+        assert got["cadastros"] == 4 and got["usuarios_ativos"] == 5
+        assert "evento_novo" not in got and "fora do catálogo" in item["erro"] and "evento_novo" in item["erro"]
+        assert "evento_novo" in caplog.text
+        series = {m["key"]: m for m in growth.metric_series(s, pid(a), 7)}
+        assert series["app_ready"]["points"][-1] == {"day": yesterday.isoformat(), "value": 2.0, "source": "integração:project_api"}
+        assert series["landing_view"]["area"] == "growth" and series["screen_view"]["area"] == "produto"
+    finally:
+        s.close()
+
+
+def test_project_api_daily_with_empty_day_records_zeros(logged, monkeypatch):
+    from app import eventcatalog
+
+    (a,) = make_projects("A Ilha")
+    connect(a, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth"}, monkeypatch)
+    yesterday = growth.local_today() - timedelta(days=1)
+    body = {"periodo": {"from": yesterday.isoformat(), "to": yesterday.isoformat()}, "include_internal": False,
+            "totals": {}, "series": [{"date": yesterday.isoformat(), "events": {}, "actors": {}}]}
+    s = dbmod.new_session()
+    try:
+        done = asyncio.run(acts.collect_kpis(s, mock(lambda req: httpx.Response(200, json=body))))
+        assert len(done) == len(eventcatalog.EVENTS) + len(eventcatalog.DERIVED)
+        assert {p.value for p in s.query(dbmod.MetricPoint).filter_by(day=yesterday).all()} == {0.0}
+    finally:
+        s.close()
+
+
+def test_event_catalog_match_reads_the_requested_day_from_a_longer_series():
+    from datetime import date
+
+    from app import eventcatalog
+
+    data = {"periodo": {"from": "2026-11-01", "to": "2026-11-02"}, "totals": {"login": {"events": 7, "actors": 4}},
+            "series": [{"date": "2026-11-01", "events": {"login": 3}, "actors": {"login": 2}},
+                       {"date": "2026-11-02", "events": {"login": 4}, "actors": {"login": 2}}]}
+    vals, avisos = eventcatalog.match(data, date(2026, 11, 2))
+    assert vals["login"] == 4 and avisos == []
+    vals, avisos = eventcatalog.match(data, date(2026, 10, 30))
+    assert vals["login"] == 0 and "não veio na série" in avisos[0]
 
 
 def test_weekly_kpi_report_is_computed_in_code_without_ai(logged, monkeypatch):

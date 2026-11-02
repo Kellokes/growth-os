@@ -84,6 +84,7 @@ async def lifespan(_app: FastAPI):
     db = new_session()
     try:
         growth.seed_defaults(db)
+        growth.fail_orphan_commands(db)
         growth.requeue_approved(db)
     finally:
         db.close()

@@ -1161,3 +1161,4 @@ dialog.wide-ish { max-width: 680px; }
 .reset-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
 .reset-form label { flex: 1 1 200px; min-width: 0; }
 .reset-form label b { color: var(--danger); letter-spacing: .06em; }
+.reset-busy { margin: 8px 0; padding-left: 18px; } .reset-busy code { word-break: break-all; }

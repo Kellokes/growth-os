@@ -171,3 +171,19 @@ def test_reset_is_one_transaction(client, monkeypatch):
 def test_sidebar_has_settings_icon(logged):
     side = logged.get("/dashboard").text
     assert 'href="/config"' in side and 'aria-label="Configurações"' in side
+
+
+def test_orphan_running_command_is_failed_on_startup_and_unblocks_reset(client):
+    """Comando que ficou "running" de um restart antigo não trava o reset para sempre."""
+    s = dbmod.new_session()
+    s.add(dbmod.CommandRun(command="sleep 999", risk="safe", status="running"))
+    s.commit()
+    p = rst.preview(s)
+    assert p["busy"]["commands"] == 1 and p["busy"]["items"][0]["label"] == "sleep 999"
+    assert growth.fail_orphan_commands(s) != []
+    run = s.query(dbmod.CommandRun).one()
+    assert run.status == "failed" and "interrompido" in run.output
+    assert rst.preview(s)["busy"] is None
+    rst.reset_data(s, "RESETAR", "owner")
+    s.close()
+    assert _count("command_runs") == 0

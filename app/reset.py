@@ -104,8 +104,23 @@ def preview(db: DB) -> dict:
         "word": CONFIRM_WORD,
         "clear": [{"table": m.__tablename__, "label": label, "count": _count(db, m)} for m, label in CLEAR],
         "keep": keep,
-        "busy": {"tasks": b.tasks, "commands": b.commands, "actions": b.actions} if b else None,
+        "busy": {"tasks": b.tasks, "commands": b.commands, "actions": b.actions, "items": running_items(db)} if b else None,
     }
+
+
+def running_items(db: DB, limit: int = 10) -> list[dict]:
+    """O que está rodando, para o owner saber o que espera (comando, tarefa ou ação)."""
+    out = []
+    for r in db.query(CommandRun).filter(CommandRun.status == "running").order_by(CommandRun.id).limit(limit):
+        out.append({"kind": "comando", "id": r.id, "label": r.command[:160], "since": r.created_at.isoformat(),
+                    "conversation_id": r.conversation_id})
+    for t in db.query(Task).filter(Task.status == "running").order_by(Task.id).limit(limit):
+        out.append({"kind": "tarefa", "id": t.id, "label": t.title[:160], "since": (t.decided_at or t.created_at).isoformat(),
+                    "conversation_id": t.conversation_id})
+    for a in db.query(Action).filter(Action.status == "running").order_by(Action.id).limit(limit):
+        out.append({"kind": "ação", "id": a.id, "label": (a.title or f"{a.integration}.{a.operation}")[:160],
+                    "since": a.created_at.isoformat(), "conversation_id": None})
+    return out
 
 
 def reset_data(db: DB, confirm: str, actor: str, ip: str = "") -> dict[str, int]:

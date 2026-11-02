@@ -20,7 +20,14 @@
     busy = !!p.busy;
     const b = $("#reset-busy");
     b.hidden = !busy;
-    if (busy) b.textContent = `Tem trabalho rodando agora (${p.busy.tasks} tarefa(s), ${p.busy.commands} comando(s), ${p.busy.actions} ação(ões)). Espere terminar para resetar.`;
+    if (busy) {
+      const items = (p.busy.items || []).map((i) => {
+        const link = i.conversation_id ? ` · <a href="/?c=${i.conversation_id}">abrir thread</a>` : "";
+        return `<li>${esc(i.kind)} #${i.id}: <code>${esc(i.label)}</code> (desde ${esc(new Date(i.since + "Z").toLocaleString("pt-BR"))})${link}</li>`;
+      }).join("");
+      b.innerHTML = `Tem trabalho rodando agora. Espere terminar para resetar.<ul class="reset-busy">${items}</ul>
+        Se nada está rodando de verdade, é sobra de um restart do app: reiniciar o Growth OS marca esses comandos como interrompidos.`;
+    }
     ready();
   }
 

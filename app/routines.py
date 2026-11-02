@@ -42,10 +42,13 @@ SKILL_TEMPLATES = [
      "4. Entregue uma lista priorizada (impacto x esforço). Correções de código só por branch + PR."),
     ("relatorio_kpis", "Relatório semanal de KPIs",
      "Resume a semana: o que subiu, o que caiu e o porquê provável.", "growth,financeiro",
-     "1. Compare cada KPI do projeto com a semana anterior e com a meta.\n"
-     "2. Destaque os 3 maiores ganhos e as 3 maiores quedas, com hipótese de causa.\n"
-     "3. Liste o que falta medir (KPIs sem dado) e como obter.\n"
-     "4. Termine com 3 prioridades para a próxima semana."),
+     "1. Leia os números na API do projeto: gos-int run project_api get '{\"caminho\": \"/resumo?de=AAAA-MM-DD&ate=AAAA-MM-DD\"}'.\n"
+     "   Semana atual: de = hoje - 7 dias, ate = hoje. Semana anterior (para comparar): de = hoje - 14 dias, ate = hoje - 7.\n"
+     "   Calcule as datas com: date -d '7 days ago' +%F. Não invente outras rotas (ex.: /kpis não existe).\n"
+     "2. Compare cada KPI do projeto com a semana anterior e com a meta.\n"
+     "3. Destaque os 3 maiores ganhos e as 3 maiores quedas, com hipótese de causa.\n"
+     "4. Liste o que falta medir (KPIs sem dado) e como obter.\n"
+     "5. Termine com 3 prioridades para a próxima semana."),
     ("saude_containers", "Checagem de saúde dos containers",
      "Vê containers, reinícios e erros recentes nos logs do projeto.", "tech",
      "1. Rode gos-docker ps no projeto compose e anote status e reinícios.\n"

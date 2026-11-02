@@ -878,6 +878,21 @@ class TaskRunner:
 runner = TaskRunner()
 
 
+def fail_orphan_commands(db: DB) -> list[int]:
+    """No startup: nenhum comando sobrevive a um restart do app, então os que ficaram "running" viram falha.
+
+    Sem isso a linha fica presa para sempre (e o reset de dados acha que tem trabalho rodando).
+    """
+    rows = db.query(CommandRun).filter(CommandRun.status == "running").all()
+    for r in rows:
+        r.status = "failed"
+        note = "[interrompido: o app reiniciou enquanto o comando rodava]"
+        r.output = f"{r.output}\n{note}" if r.output else note
+    if rows:
+        db.commit()
+    return [r.id for r in rows]
+
+
 def requeue_approved(db: DB, hours: int = 48) -> list[int]:
     """No startup: tarefas aprovadas recentemente que ficaram sem rodar (restart, erro) voltam para a fila."""
     since = utcnow() - timedelta(hours=hours)

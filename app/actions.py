@@ -226,58 +226,84 @@ KPI_SOURCES = {
 SITE_DOWN_BELOW = 99.0  # uptime (%) abaixo disso na coleta diária vira o evento site.down
 
 
-async def collect_kpis(db: DB, transport: httpx.AsyncBaseTransport | None = None) -> list[str]:
-    """Lê as integrações prontas de cada projeto e grava os KPIs do dia, sem gastar token de IA."""
-    done = []
-    for project in db.query(GrowthProject).filter(GrowthProject.enabled.is_(True)).all():
-        for kind in _ready(db, project):
-            if kind == "project_api":
-                done += await _collect_project_api(db, project, transport)
-                continue
-            src = KPI_SOURCES.get(kind)
-            if src is None:
-                continue
-            operation, mapping = src
-            ticket = Ticket(0, project.id, "coleta", 0)
-            args = {"dias": 1} if kind in ("umami", "plausible") else {}
-            res = await run_operation(db, ticket, kind, operation, args, transport)
-            if res["status"] != "done":
-                continue
-            for kpi, field in mapping.items():
-                value = res["result"].get(field)
-                if isinstance(value, (int, float)):
-                    try:
-                        growth.record_point(db, project.id, kpi, float(value), growth.local_today(), source=f"integração:{kind}")
-                        done.append(f"{project.slug}/{kpi}")
-                        if kpi == "uptime" and float(value) < SITE_DOWN_BELOW:
-                            approvals.emit(db, project.id, "site.down", "integration", None,
-                                           {"integration": kind, "site": project.slug, "uptime": float(value)})
-                    except KeyError:
-                        pass  # o projeto não tem esse KPI
-    return done
+async def _collect_source(db: DB, project: GrowthProject, kind: str,
+                          transport: httpx.AsyncBaseTransport | None) -> tuple[list[dict], str | None]:
+    """Lê uma integração pronta (Umami, Plausible, Uptime Kuma) e grava os KPIs de hoje."""
+    operation, mapping = KPI_SOURCES[kind]
+    ticket = Ticket(0, project.id, "coleta", 0)
+    args = {"dias": 1} if kind in ("umami", "plausible") else {}
+    res = await run_operation(db, ticket, kind, operation, args, transport)
+    if res["status"] != "done":
+        return [], res.get("message") or "a leitura falhou"
+    today = growth.local_today()
+    done, erros = [], []
+    for kpi, field in mapping.items():
+        value = res["result"].get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            erros.append(f"{kpi}: o campo '{field}' não veio na resposta")
+            continue
+        try:
+            growth.record_point(db, project.id, kpi, float(value), today, source=f"integração:{kind}")
+        except KeyError:
+            erros.append(f"{kpi}: o projeto não tem esse KPI")
+            continue
+        done.append({"kpi": kpi, "valor": float(value), "dia": today.isoformat()})
+        if kpi == "uptime" and float(value) < SITE_DOWN_BELOW:
+            approvals.emit(db, project.id, "site.down", "integration", None,
+                           {"integration": kind, "site": project.slug, "uptime": float(value)})
+    return done, "; ".join(erros) or None
 
 
-async def _collect_project_api(db: DB, project: GrowthProject, transport: httpx.AsyncBaseTransport | None) -> list[str]:
-    """KPIs da API do próprio projeto: o caminho e os campos vêm da configuração da integração (ontem)."""
+async def _collect_project_api(db: DB, project: GrowthProject,
+                               transport: httpx.AsyncBaseTransport | None) -> tuple[list[dict], str | None]:
+    """KPIs da API do próprio projeto: caminho e campos vêm da configuração; os números são de ontem."""
     row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "project_api").one()
     cfg = routines._config(row)
     fields = kpireport.parse_fields(cfg.get("kpi_fields", ""))
-    path = kpireport.render_path(cfg.get("kpi_path", ""), growth.local_today())
+    today = growth.local_today()
+    path = kpireport.render_path(cfg.get("kpi_path", ""), today)
     if not fields or not path.startswith("/"):
-        return []
+        return [], "configure a leitura diária e os campos KPI na integração"
     res = await run_operation(db, Ticket(0, project.id, "coleta", 0), "project_api", "get", {"caminho": path}, transport)
     if res["status"] != "done":
-        return []
-    done = []
+        return [], res.get("message") or "a leitura falhou"
+    ontem = today - timedelta(days=1)
+    done, erros = [], []
     for kpi, field in fields.items():
         value = kpireport.dig(res["result"].get("dados"), field)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            try:
-                growth.record_point(db, project.id, kpi, float(value), growth.local_today() - timedelta(days=1),
-                                    source="integração:project_api")
-                done.append(f"{project.slug}/{kpi}")
-            except KeyError:
-                pass  # o projeto não tem esse KPI
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            erros.append(f"{kpi}: '{field}' não veio na resposta")
+            continue
+        try:
+            growth.record_point(db, project.id, kpi, float(value), ontem, source="integração:project_api")
+        except KeyError:
+            erros.append(f"{kpi}: o projeto não tem esse KPI")
+            continue
+        done.append({"kpi": kpi, "valor": float(value), "dia": ontem.isoformat()})
+    return done, "; ".join(erros) or None
+
+
+async def collect_project(db: DB, project: GrowthProject,
+                          transport: httpx.AsyncBaseTransport | None = None) -> list[dict]:
+    """Coleta sem IA das integrações prontas de UM projeto: quais KPIs entraram e o erro de cada integração."""
+    out = []
+    for kind, info in _ready(db, project).items():
+        if kind == "project_api":
+            done, erro = await _collect_project_api(db, project, transport)
+        elif kind in KPI_SOURCES:
+            done, erro = await _collect_source(db, project, kind, transport)
+        else:
+            continue
+        out.append({"integracao": kind, "nome": info["name"], "kpis": done, "erro": erro})
+    return out
+
+
+async def collect_kpis(db: DB, transport: httpx.AsyncBaseTransport | None = None) -> list[str]:
+    """Coleta diária de todos os projetos ativos, sem gastar token de IA."""
+    done = []
+    for project in db.query(GrowthProject).filter(GrowthProject.enabled.is_(True)).all():
+        for item in await collect_project(db, project, transport):
+            done.extend(f"{project.slug}/{k['kpi']}" for k in item["kpis"])
     return done
 
 

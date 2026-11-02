@@ -228,3 +228,38 @@ def test_sidebar_menu_has_sections_then_threads_on_every_page(logged):
         assert side.index('class="nav"') < side.index('id="conv-list"') < side.index('id="logout"')
         assert 'href="/settings"' in side and 'href="/automations"' in side
         assert html.count('id="conv-list"') == 1
+
+
+def test_manual_collect_and_no_ai_actions_list(logged, monkeypatch):
+    (a, b) = make_projects("A Ilha", "Take One")
+    # Sem integração pronta: a coleta responde vazia; a lista mostra as coletas possíveis, todas desligadas.
+    assert logged.post(f"/api/gprojects/{a}/collect").json() == {"integracoes": []}
+    sem = logged.get(f"/api/gprojects/{a}/acoes-sem-ia").json()
+    assert sem["relatorios"] == [] and sem["coletas"] and not any(c["pronta"] for c in sem["coletas"])
+
+    # API do projeto ligada sem campos de KPI: a coleta diz o que falta, sem sair para a rede.
+    s = dbmod.new_session()
+    p = s.query(dbmod.GrowthProject).filter_by(slug=a).one()
+    routines.save_integration(s, p, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth"}, True)
+    monkeypatch.setenv(routines.secret_env_name(p, "project_api"), "chave-de-teste")  # a chave fica no .env do VPS
+    s.close()
+    res = logged.post(f"/api/gprojects/{a}/collect").json()["integracoes"]
+    assert res == [{"integracao": "project_api", "nome": "API do próprio projeto", "kpis": [],
+                    "erro": "configure a leitura diária e os campos KPI na integração"}]
+    coletas = {c["integracao"]: c for c in logged.get(f"/api/gprojects/{a}/acoes-sem-ia").json()["coletas"]}
+    assert coletas["project_api"]["pronta"] is True
+
+    # Relatório feito em código aparece na lista e só nesse projeto.
+    s = dbmod.new_session()
+    skill = dbmod.Skill(project_id=pid(a), name="Relatório semanal de KPIs", description="", instructions="x",
+                        agents="growth", template="relatorio_kpis")
+    s.add(skill)
+    s.commit()
+    s.add(dbmod.Automation(project_id=pid(a), agent_slug="growth", title="Relatório semanal de KPIs",
+                           skill_id=skill.id, frequency="weekly", weekday=0, hour=9))
+    s.commit()
+    s.close()
+    rel = logged.get(f"/api/gprojects/{a}/acoes-sem-ia").json()["relatorios"]
+    assert [r["titulo"] for r in rel] == ["Relatório semanal de KPIs"] and rel[0]["ultima"] is None
+    assert logged.get(f"/api/gprojects/{b}/acoes-sem-ia").json()["relatorios"] == []
+    assert logged.post(f"/api/gprojects/{b}/collect").json() == {"integracoes": []}

@@ -59,8 +59,13 @@
       <div class="tab-panel" data-panel="integracoes" hidden>
         <div class="panel-head">
           <p class="muted">Ferramentas grátis ou que rodam no próprio VPS primeiro. Aqui fica só a configuração pública; a chave vai no <code>.env</code> do VPS e nunca passa por esta tela.</p>
+          <button class="btn primary" type="button" id="collect-now">Coletar agora</button>
         </div>
+        <div class="int-result" id="collect-result" hidden></div>
         <div class="tiles" id="integrations"></div>
+        <h3 class="section-title">Ações sem IA</h3>
+        <p class="muted">Coleta de KPIs e relatórios feitos em código. Não usam token de IA e rodam no horário marcado ou quando você pedir.</p>
+        <div class="tiles" id="deterministic"></div>
       </div>
 
       <div class="tab-panel" data-panel="rotinas" hidden>

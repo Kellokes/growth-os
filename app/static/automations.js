@@ -82,7 +82,47 @@
     </article>`;
   }
   function renderIntegrations() { $("#integrations").innerHTML = integrations.map(intCard).join(""); }
-  async function loadIntegrations() { integrations = await api(`/api/gprojects/${project}/integrations`); renderIntegrations(); }
+  async function loadIntegrations() { integrations = await api(`/api/gprojects/${project}/integrations`); renderIntegrations(); await loadDeterministic(); }
+
+  // ---------- ações sem IA: coleta agora e relatórios em código ----------
+  function showCollect(res) {
+    const box = $("#collect-result"); box.hidden = false;
+    const itens = res.integracoes;
+    if (!itens.length) { box.innerHTML = `<p class="muted">Nenhuma integração pronta neste projeto. Ligue e configure uma acima.</p>`; return; }
+    box.innerHTML = itens.map((r) => {
+      const kpis = r.kpis.map((k) => `<li>✓ ${esc(k.kpi)} = ${esc(String(k.valor))} <span class="muted">(${esc(k.dia)})</span></li>`).join("");
+      const erro = r.erro ? `<li class="muted">⚠ ${esc(r.erro)}</li>` : "";
+      return `<div class="card tile"><strong>${esc(r.nome)}</strong><ul>${kpis}${erro}</ul>${!r.kpis.length && !r.erro ? '<span class="muted">nenhum KPI gravado</span>' : ""}</div>`;
+    }).join("");
+  }
+  async function loadDeterministic() {
+    const d = await api(`/api/gprojects/${project}/acoes-sem-ia`);
+    const coletas = d.coletas.map((c) => `<article class="tile card ${c.pronta ? "" : "off"}">
+      <header><span class="tile-icon">${icon("repeat")}</span><div class="grow"><h2>Coleta · ${esc(c.nome)}</h2><span class="muted">sem IA · diária</span></div><span class="badge ${c.pronta ? "ok" : ""}">${c.pronta ? "pronta" : "não pronta"}</span></header>
+      <div class="task-tags">${c.kpis.map((k) => `<span class="tag">${esc(k)}</span>`).join("")}</div>
+    </article>`);
+    const relat = d.relatorios.map((r) => `<article class="tile card ${r.ativa ? "" : "off"}">
+      <header><span class="tile-icon">${icon("repeat")}</span><div class="grow"><h2>${esc(r.titulo)}</h2><span class="muted">relatório em código · sem IA</span></div></header>
+      <div class="tile-foot"><span class="muted">${r.ultima ? "última: " + esc(STATUS[r.ultima] || r.ultima) : "ainda não rodou"}</span><button class="btn small primary" type="button" data-det-run="${r.id}">${icon("play")} Rodar agora</button></div>
+    </article>`);
+    $("#deterministic").innerHTML = [...coletas, ...relat].join("") || `<div class="empty-card card tile-empty"><h2>Nenhuma ação sem IA</h2><p class="muted">Ligue uma integração de KPIs ou crie um relatório semanal em código.</p></div>`;
+  }
+  page.addEventListener("click", async (ev) => {
+    const t = ev.target;
+    if (t.closest("#collect-now")) {
+      const b = t.closest("#collect-now"); b.disabled = true; b.textContent = "Coletando…";
+      try { showCollect(await api(`/api/gprojects/${project}/collect`, { method: "POST" })); }
+      catch (e) { alert(e.message); }
+      finally { b.disabled = false; b.textContent = "Coletar agora"; }
+      return;
+    }
+    const run = t.closest("[data-det-run]");
+    if (run) {
+      run.disabled = true;
+      try { await api(`/api/gprojects/${project}/automations/${run.dataset.detRun}/run`, { method: "POST" }); run.innerHTML = "Feito ✓"; await loadAutos(); }
+      catch (e) { alert(e.message); run.disabled = false; }
+    }
+  });
 
   // ---------- rotinas ----------
   const fmtNext = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";

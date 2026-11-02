@@ -42,9 +42,10 @@ SKILL_TEMPLATES = [
      "4. Entregue uma lista priorizada (impacto x esforço). Correções de código só por branch + PR."),
     ("relatorio_kpis", "Relatório semanal de KPIs",
      "Resume a semana: o que subiu, o que caiu e o porquê provável.", "growth,financeiro",
-     "1. Leia os números na API do projeto: gos-int run project_api get '{\"caminho\": \"/resumo?de=AAAA-MM-DD&ate=AAAA-MM-DD\"}'.\n"
-     "   Semana atual: de = hoje - 7 dias, ate = hoje. Semana anterior (para comparar): de = hoje - 14 dias, ate = hoje - 7.\n"
-     "   Calcule as datas com: date -d '7 days ago' +%F. Não invente outras rotas (ex.: /kpis não existe).\n"
+     "1. Descubra a API do projeto na integração \"API do próprio projeto\": a URL base e a documentação cadastradas "
+     "(gos-int list mostra a configuração). Leia a documentação e use só os endpoints que ela lista; não chute rotas.\n"
+     "   Se a documentação tiver datas, use a semana atual (últimos 7 dias) e a anterior (7 dias antes) para comparar. "
+     "Calcule as datas com: date -d '7 days ago' +%F.\n"
      "2. Compare cada KPI do projeto com a semana anterior e com a meta.\n"
      "3. Destaque os 3 maiores ganhos e as 3 maiores quedas, com hipótese de causa.\n"
      "4. Liste o que falta medir (KPIs sem dado) e como obter.\n"

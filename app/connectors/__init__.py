@@ -112,6 +112,9 @@ async def request_json(ctx: Ctx, method: str, url: str, params: dict | None = No
             r = await c.request(method, url, params=params, json=body, headers=headers if headers is not None else ctx.auth())
     except httpx.HTTPError as e:
         raise TransientError(f"não consegui falar com {urlparse(url).netloc}: {e.__class__.__name__}") from e
+    if r.status_code in (301, 302, 303, 307, 308):
+        dest = urlparse(r.headers.get("location", "")).netloc or "outro endereço"
+        raise ConnectorError(f"a ferramenta redirecionou ({r.status_code}) para {dest}: use a URL final na integração")
     if r.status_code in (401, 403):
         raise ConnectorError("a ferramenta recusou a chave (confira a variável no .env do VPS)")
     if r.status_code == 429 or r.status_code >= 500:
@@ -123,7 +126,8 @@ async def request_json(ctx: Ctx, method: str, url: str, params: dict | None = No
     try:
         return r.json()
     except ValueError as e:
-        raise ConnectorError("a resposta não veio em JSON") from e
+        kind = r.headers.get("content-type", "sem tipo").split(";")[0]
+        raise ConnectorError(f"a resposta não veio em JSON (status {r.status_code}, {kind}): confira a URL base") from e
 
 
 async def get_json(ctx: Ctx, url: str, params: dict | None = None) -> dict | list:

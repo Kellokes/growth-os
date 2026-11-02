@@ -1346,7 +1346,8 @@ def deterministic_actions(slug: str, auth: Auth = Depends(current_auth), db: DB 
             continue
         last = db.query(Task).filter(Task.automation_id == a.id).order_by(Task.id.desc()).first()
         relatorios.append({"id": a.id, "titulo": a.title, "ativa": a.enabled,
-                           "ultima": last.status if last else None})
+                           "ultima": last.status if last else None,
+                           "resultado": (last.result or "")[:6000] if last and last.status == "done" else ""})
     return {"coletas": coletas, "relatorios": relatorios}
 
 
@@ -1485,7 +1486,7 @@ def run_automation_now(slug: str, aid: int, request: Request, auth: Auth = Depen
     """Rodar agora é o owner pedindo: a tarefa já nasce aprovada e entra na fila."""
     p = _project_or_404(db, slug)
     a = _automation_or_404(db, p, aid)
-    if routines.has_open_run(db, a):
+    if not routines.is_code_report(db, a) and routines.has_open_run(db, a):
         raise HTTPException(409, "a última execução desta automação ainda está aberta no kanban")
     t = routines.create_run(db, a, approved=True, actor=auth.user.username)
     if t.status == "approved":  # o relatório de KPIs já nasce concluído (feito em código)

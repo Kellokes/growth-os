@@ -103,6 +103,7 @@
     </article>`);
     const relat = d.relatorios.map((r) => `<article class="tile card ${r.ativa ? "" : "off"}">
       <header><span class="tile-icon">${icon("repeat")}</span><div class="grow"><h2>${esc(r.titulo)}</h2><span class="muted">relatório em código · sem IA</span></div></header>
+      ${r.resultado ? `<details><summary>Ver o último relatório</summary><pre class="pre">${esc(r.resultado)}</pre></details>` : ""}
       <div class="tile-foot"><span class="muted">${r.ultima ? "última: " + esc(STATUS[r.ultima] || r.ultima) : "ainda não rodou"}</span><button class="btn small primary" type="button" data-det-run="${r.id}">${icon("play")} Rodar agora</button></div>
     </article>`);
     $("#deterministic").innerHTML = [...coletas, ...relat].join("") || `<div class="empty-card card tile-empty"><h2>Nenhuma ação sem IA</h2><p class="muted">Ligue uma integração de KPIs ou crie um relatório semanal em código.</p></div>`;
@@ -200,7 +201,7 @@
     const run = t.closest("[data-det-run]");
     if (run) {
       run.disabled = true;
-      try { await api(`/api/gprojects/${project}/automations/${run.dataset.detRun}/run`, { method: "POST" }); run.innerHTML = "Feito ✓"; await loadAutos(); }
+      try { await api(`/api/gprojects/${project}/automations/${run.dataset.detRun}/run`, { method: "POST" }); run.innerHTML = "Feito ✓"; await Promise.all([loadAutos(), loadDeterministic()]); }
       catch (e) { alert(e.message); run.disabled = false; }
     }
   });

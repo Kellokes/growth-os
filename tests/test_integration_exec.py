@@ -103,6 +103,33 @@ def test_other_readers(logged, monkeypatch):
         assert r["status"] == "error"
 
 
+def test_project_api_docs_reads_the_configured_link(logged, monkeypatch):
+    (a,) = make_projects("A Ilha")
+    cfg = {"base_url": "https://jogar.exemplo.com/api/growth",
+           "docs": "https://github.com/dono/repo/blob/meu/ramo/docs/growth-api.md"}
+    connect(a, "project_api", cfg, monkeypatch)
+    monkeypatch.setenv("GOS_GITHUB_TOKEN", "x")
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["url"], seen["auth"] = str(req.url), req.headers.get("authorization")
+        return httpx.Response(200, text="GET /resumo?de=&ate=")
+
+    res = run(a, "project_api", "docs", transport=mock(handler))
+    assert res["status"] == "done" and "/resumo" in res["result"]["documentacao"]
+    assert seen["url"] == "https://raw.githubusercontent.com/dono/repo/meu/ramo/docs/growth-api.md"
+    assert seen["auth"] != "Bearer chave-secreta"  # a chave da API do projeto nunca vai para o GitHub
+
+    # caminho da própria API usa a chave do projeto; domínio estranho é recusado; sem docs avisa
+    connect(a, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth", "docs": "/docs"}, monkeypatch)
+    assert run(a, "project_api", "docs", transport=mock(handler))["status"] == "done"
+    assert seen["url"] == "https://jogar.exemplo.com/api/growth/docs" and seen["auth"] == "Bearer chave-secreta"
+    connect(a, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth", "docs": "https://evil.com/x"}, monkeypatch)
+    assert "só pode estar" in run(a, "project_api", "docs", transport=mock(handler))["message"]
+    connect(a, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth"}, monkeypatch)
+    assert "não tem a documentação" in run(a, "project_api", "docs", transport=mock(handler))["message"]
+
+
 def test_errors_are_reported_not_raised(logged, monkeypatch):
     (a,) = make_projects("Zombie Party")
     assert "não está pronta" in run(a, "umami", "ler_visitas")["message"]  # não ligada

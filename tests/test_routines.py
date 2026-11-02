@@ -237,15 +237,15 @@ def test_manual_collect_and_no_ai_actions_list(logged, monkeypatch):
     sem = logged.get(f"/api/gprojects/{a}/acoes-sem-ia").json()
     assert sem["relatorios"] == [] and sem["coletas"] and not any(c["pronta"] for c in sem["coletas"])
 
-    # API do projeto ligada sem campos de KPI: a coleta diz o que falta, sem sair para a rede.
+    # API do projeto com caminho de leitura inválido: a coleta diz o que falta, sem sair para a rede.
     s = dbmod.new_session()
     p = s.query(dbmod.GrowthProject).filter_by(slug=a).one()
-    routines.save_integration(s, p, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth"}, True)
+    routines.save_integration(s, p, "project_api", {"base_url": "https://jogar.exemplo.com/api/growth", "kpi_path": "daily"}, True)
     monkeypatch.setenv(routines.secret_env_name(p, "project_api"), "chave-de-teste")  # a chave fica no .env do VPS
     s.close()
     res = logged.post(f"/api/gprojects/{a}/collect").json()["integracoes"]
     assert res == [{"integracao": "project_api", "nome": "API do próprio projeto", "kpis": [],
-                    "erro": "configure a leitura diária e os campos KPI na integração"}]
+                    "erro": "a leitura diária precisa começar com /"}]
     coletas = {c["integracao"]: c for c in logged.get(f"/api/gprojects/{a}/acoes-sem-ia").json()["coletas"]}
     assert coletas["project_api"]["pronta"] is True
 

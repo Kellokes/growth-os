@@ -29,6 +29,7 @@ from . import missions
 from . import modelcfg
 from . import routines
 from . import projects as proj
+from . import reset as rst
 from .providers import all_providers
 from .security import (
     LOGIN_CHALLENGE_SECONDS, LOGIN_COOKIE, SESSION_COOKIE, Auth, check_password, client_ip,
@@ -276,6 +277,11 @@ def projects_page(request: Request, db: DB = Depends(get_db)):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "settings.html", "models")
+
+
+@app.get("/config", response_class=HTMLResponse)
+def config_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "config.html", "config")
 
 
 # ---------- API ----------
@@ -627,6 +633,35 @@ def audit_log(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
         {"at": r.at.isoformat(), "actor": r.actor, "action": r.action, "detail": r.detail, "ip": r.ip}
         for r in rows
     ]
+
+
+# ---------- configurações: resetar dados ----------
+
+class ResetIn(BaseModel):
+    confirm: str = Field(max_length=32)
+    totp: str = Field(min_length=6, max_length=8)
+
+
+@app.get("/api/reset/preview")
+def reset_preview(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Só conta o que seria apagado e o que fica. Abrir a página nunca apaga nada."""
+    return rst.preview(db)
+
+
+@app.post("/api/reset")
+def reset_data(body: ResetIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    ip = client_ip(request)
+    if (body.confirm or "").strip() != rst.CONFIRM_WORD:
+        raise HTTPException(400, f"digite {rst.CONFIRM_WORD} para confirmar")
+    if not consume_totp(db, auth.user, body.totp):
+        audit(db, auth.user.username, "data_reset_failed", "código 2FA inválido", ip)
+        raise HTTPException(403, "código 2FA inválido")
+    try:
+        deleted = rst.reset_data(db, body.confirm, auth.user.username, ip)
+    except rst.ResetError as e:
+        raise HTTPException(e.status, e.detail) from None
+    growth.runner.clear()
+    return {"ok": True, "deleted": deleted}
 
 
 # ---------- projetos (etapa 2) ----------

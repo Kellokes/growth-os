@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Configurações · Growth OS{% endblock %}
+{% block body %}
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
+  <main class="main">
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("gear") }}<span>Configurações</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1>Configurações</h1><p class="lede muted">Opções do sistema. Provider e modelo de cada atividade ficam em <a href="/settings">Modelos</a>.</p></div>
+      </div>
+    </header>
+    <section class="page">
+      <div class="alerts" id="alerts"></div>
+      <h3 class="section-title">Dados</h3>
+      <article class="card reset-card" id="reset-card">
+        <header><div class="grow"><h2>Resetar dados</h2>
+          <p class="muted small-print">Apaga todas as threads e o histórico de atividades. Habilidades, integrações, rotinas, agentes e projetos continuam como estão. Não dá para desfazer.</p></div></header>
+        <div class="reset-cols">
+          <div><h4 class="reset-h bad">Vai ser apagado</h4><ul class="reset-list" id="reset-clear"><li class="muted">Carregando…</li></ul></div>
+          <div><h4 class="reset-h">Fica como está</h4><ul class="reset-list" id="reset-keep"></ul></div>
+        </div>
+        <p class="alert" id="reset-busy" hidden></p>
+        <form class="reset-form" id="reset-form" autocomplete="off">
+          <label><span>Digite <b id="reset-word">RESETAR</b> para confirmar</span><input id="reset-confirm" type="text" spellcheck="false" autocapitalize="characters" maxlength="32" required></label>
+          <label>Código 2FA<input id="reset-totp" type="text" inputmode="numeric" pattern="[0-9]{6,8}" maxlength="8" required></label>
+          <button class="btn danger" id="reset-go" type="submit" disabled>{{ ic("trash") }} Apagar dados</button>
+        </form>
+        <p class="muted small-print" id="reset-done" hidden></p>
+      </article>
+    </section>
+  </main>
+</div>
+{% include "_audit.html" %}
+<script src="/static/config.js"></script>
+{% endblock %}

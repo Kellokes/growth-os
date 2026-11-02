@@ -833,6 +833,21 @@ class TaskRunner:
         else:
             raise RuntimeError("fila de tarefas ainda não iniciou")
 
+    def clear(self) -> None:
+        """Esvazia a fila (depois do reset de dados os ids enfileirados não existem mais)."""
+        def _drain():
+            while not self.queue.empty():
+                self.queue.get_nowait()
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and (self.loop is None or running is self.loop):
+            _drain()
+        elif self.loop is not None and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(_drain)
+
     @staticmethod
     def _key(task_id: int) -> tuple[int, str] | None:
         db = new_session()

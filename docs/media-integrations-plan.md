@@ -1,7 +1,8 @@
 # Plano de integrações de mídia
 
 Pesquisa de 2026-11-02 para automatizar o processo de mídia de cada projeto (takeone, zombie-party, a-ilha):
-coletar dados de mercado e de concorrentes, gerar peças (imagem, vídeo, motion), aprovar, guardar e publicar.
+coletar dados de mercado e de concorrentes, gerar peças (imagem, vídeo, motion), aprovar, guardar, publicar e rodar
+mídia paga.
 
 Este documento é só o plano. Nenhum código ou configuração foi alterado.
 
@@ -62,6 +63,7 @@ Comece pelo que depende de aprovação de terceiros, porque isso corre em parale
 | 10 | Apify | Coletar TikTok, Instagram e anúncios onde não há API | US$ 5/mês grátis | Social, Marketing | 15 min |
 | 11 | Remotion (no VPS) | Motion graphics com template | Grátis até 3 pessoas | Design | meio dia |
 | 12 | Opcionais: fal.ai, Higgsfield, ElevenLabs, X, Threads, Pinterest, Google Trends | Mais modelos, voz e canais | Varia | Design, Social, Growth | — |
+| 13 | Mídia paga: Meta Ads, Google Ads, TikTok Ads, LinkedIn Ads | Criar e otimizar campanhas | API grátis; o gasto é o da campanha | Marketing, Financeiro | 1 a 3 dias por plataforma |
 
 ---
 
@@ -275,6 +277,71 @@ Um projeto no Google Cloud serve para as duas coisas.
 
 ---
 
+## 13. Mídia paga (executar campanhas)
+
+O agente Marketing já tem a missão de planejar e otimizar campanhas pagas por CAC e ROAS. Estas integrações deixam
+ele criar, pausar e ajustar campanhas de verdade. Como aqui sai dinheiro, a regra é mais dura que no resto:
+
+- **Criar campanha** é `internal`: ela sempre nasce **pausada**, e você vê o rascunho completo em Aprovações.
+- **Ativar, aumentar orçamento ou mudar lance** é `external` com risco **alto**, ou seja, precisa da sua aprovação com 2FA.
+- **Pausar** pode rodar sem aprovação (só reduz gasto), se você liberar.
+- **Teto duplo:** um teto de gasto diário por projeto no Growth OS e um limite de gasto configurado na própria conta de
+  anúncios, para o caso de o OS errar.
+- **Ler resultado** (gasto, CPC, CPA, ROAS) é `read` e roda todo dia; o Financeiro usa isso para vigiar o caixa.
+
+### 13.1 Meta Ads (Instagram e Facebook)
+
+- **Passo a passo** ✅ ([Meta, autorização](https://developers.facebook.com/docs/marketing-api/overview/authorization)):
+  1. No mesmo app da Meta do item 4, adicione o produto **Marketing API**.
+  2. No Business Manager, dê ao System User acesso à conta de anúncios de cada projeto e gere um token com
+     `ads_management` e `ads_read`.
+  3. Na tela de Integrações, informe o ID da conta de anúncios (`act_...`).
+- **Precisa de App Review?** ✅ Não. Para gerenciar só as suas próprias contas, o acesso padrão (standard) a
+  `ads_management` basta. Só que esse nível tem limite de chamadas apertado por conta, pensado para desenvolvimento.
+  Para o volume de um agente que mexe algumas vezes por dia deve bastar ❓. Se apertar, aí sim pede App Review.
+- **Variável:** `GOS_INT_<PROJETO>_META_ADS_ACCESS_TOKEN` (kind **novo** `meta_ads`).
+- **Limite de gasto na conta** ❓: Gerenciador de Anúncios > Configurações de pagamento > Limite de gastos da conta.
+
+### 13.2 Google Ads (Pesquisa, YouTube, Performance Max)
+
+- **Mudou em 2026** ✅ ([developer token](https://developers.google.com/google-ads/api/docs/api-policy/developer-token)):
+  o developer token foi desativado em 2026-09-09. O acesso agora é do **projeto do Google Cloud**, e não precisa de conta
+  de administrador (MCC) para uma conta só.
+- **Passo a passo** ✅ ([níveis de acesso](https://developers.google.com/google-ads/api/docs/api-policy/access-levels)):
+  1. No mesmo projeto do Google Cloud do item 8, ative a **Google Ads API**. Isso dá acesso **Test** (só contas de teste).
+  2. Na página Overview da Google Ads API no Cloud Console, peça **Explorer**: libera contas reais com 2.880 operações por
+     dia, o que sobra para um agente.
+  3. Crie um OAuth client e autorize com a sua conta do Google Ads para gerar o refresh token.
+     ❓ O escopo é `https://www.googleapis.com/auth/adwords`.
+  4. Na tela de Integrações, informe o Customer ID da conta (`123-456-7890`).
+- **Variável:** `GOS_INT_<PROJETO>_GOOGLE_ADS_OAUTH_JSON` com `client_id`, `client_secret` e `refresh_token` num JSON só,
+  porque o código guarda um segredo por integração (kind **novo** `google_ads`).
+- **Níveis acima** ✅: Basic (15 mil operações por dia, exige verificação de marca) e Standard (sem limite, auditoria de
+  ~10 dias úteis). Não precisa no começo.
+
+### 13.3 TikTok Ads
+
+- **Passo a passo** 🟡 ([guia de parceiro](https://www.mintive.com/docs/tiktok-ads-mcp-setup); a doc oficial fica em
+  business-api.tiktok.com/portal):
+  1. Entre em business-api.tiktok.com/portal com a conta do TikTok for Business > **Become a Developer**.
+  2. My Apps > Create an App, com redirect para o Growth OS (ex.: `https://os.takeonestudio.io/oauth/tiktok-ads`, rota que
+     ainda vai ser criada).
+  3. Escopos: **Ad Account Management**, **Ads Management** e **Reporting**.
+  4. Espere a aprovação (2 a 3 dias úteis). Depois, autorize as contas de anúncios e guarde o token, que não vence a
+     menos que seja revogado.
+- **Variável:** `GOS_INT_<PROJETO>_TIKTOK_ADS_ACCESS_TOKEN` (kind **novo** `tiktok_ads`); o `advertiser_id` vai na tela.
+- É um app **diferente** do app de publicação do item 2, em outro portal.
+
+### 13.4 LinkedIn Ads (só se fizer sentido B2B)
+
+- ❓ Usa a mesma **Advertising API** que o item 9 já pede, com os escopos `r_ads`, `rw_ads` e `r_ads_reporting` e a conta
+  de anúncios ligada à página. Não conferi a doc oficial nesta pesquisa.
+- **Variável:** `GOS_INT_<PROJETO>_LINKEDIN_ADS_ACCESS_TOKEN` (kind **novo** `linkedin_ads`). ❓ O token do LinkedIn vence
+  em cerca de 60 dias, então o conector precisa renovar.
+
+**Agentes:** Marketing executa, Design entrega os criativos, Financeiro vigia o gasto e o Coordenador junta tudo numa
+missão com orçamento. Recomendo começar pelo Meta Ads, que é onde já estão os criativos do Instagram.
+
 ## O que falta no código para "ligar" tudo
 
 Configurar as chaves é a sua parte. Para o fluxo rodar sozinho, o Growth OS ainda precisa destas mudanças (cada uma é um
@@ -288,6 +355,8 @@ PR pequeno; posso fazer na ordem abaixo quando você quiser):
    (com teto de gasto) e `meta_ads_library`.
 5. **Leitura de resultado dos posts** voltando para os KPIs do projeto.
 6. **Remotion** como serviço no docker-compose, com templates por projeto.
+7. **Mídia paga:** conectores `meta_ads`, `google_ads`, `tiktok_ads` com campanha nascendo pausada, ativação com 2FA,
+   teto de gasto diário por projeto e leitura diária de gasto e ROAS nos KPIs.
 
 Regras que continuam valendo: tudo por projeto; gerar e ler rodam na hora; publicar, agendar e gastar acima do teto
 pedem a sua aprovação; nenhuma chave aparece na tela, no banco ou para a IA.
@@ -306,4 +375,6 @@ pedem a sua aprovação; nenhuma chave aparece na tela, no banco ou para a IA.
 - [ ] Projeto Google Cloud: OAuth para o Postiz + API key de dados
 - [ ] App LinkedIn + formulário da Advertising API
 - [ ] Token do Apify
+- [ ] Mídia paga: token de Ads do System User da Meta, Google Ads API em Explorer, app do TikTok Ads aprovado
+- [ ] Limite de gasto configurado em cada conta de anúncios
 - [ ] Reiniciar Postiz e growth-os depois de mexer nos envs

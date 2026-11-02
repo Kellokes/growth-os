@@ -16,7 +16,7 @@ from datetime import timedelta
 import httpx
 from sqlalchemy.orm import Session as DB
 
-from . import approvals, growth, routines
+from . import approvals, growth, kpireport, routines
 from .audit import audit
 from .connectors import REGISTRY, ConnectorError, Ctx, TransientError
 from .db import Action, GrowthProject, Integration, Task, utcnow
@@ -231,6 +231,9 @@ async def collect_kpis(db: DB, transport: httpx.AsyncBaseTransport | None = None
     done = []
     for project in db.query(GrowthProject).filter(GrowthProject.enabled.is_(True)).all():
         for kind in _ready(db, project):
+            if kind == "project_api":
+                done += await _collect_project_api(db, project, transport)
+                continue
             src = KPI_SOURCES.get(kind)
             if src is None:
                 continue
@@ -251,6 +254,30 @@ async def collect_kpis(db: DB, transport: httpx.AsyncBaseTransport | None = None
                                            {"integration": kind, "site": project.slug, "uptime": float(value)})
                     except KeyError:
                         pass  # o projeto não tem esse KPI
+    return done
+
+
+async def _collect_project_api(db: DB, project: GrowthProject, transport: httpx.AsyncBaseTransport | None) -> list[str]:
+    """KPIs da API do próprio projeto: o caminho e os campos vêm da configuração da integração (ontem)."""
+    row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "project_api").one()
+    cfg = routines._config(row)
+    fields = kpireport.parse_fields(cfg.get("kpi_fields", ""))
+    path = kpireport.render_path(cfg.get("kpi_path", ""), growth.local_today())
+    if not fields or not path.startswith("/"):
+        return []
+    res = await run_operation(db, Ticket(0, project.id, "coleta", 0), "project_api", "get", {"caminho": path}, transport)
+    if res["status"] != "done":
+        return []
+    done = []
+    for kpi, field in fields.items():
+        value = kpireport.dig(res["result"].get("dados"), field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                growth.record_point(db, project.id, kpi, float(value), growth.local_today() - timedelta(days=1),
+                                    source="integração:project_api")
+                done.append(f"{project.slug}/{kpi}")
+            except KeyError:
+                pass  # o projeto não tem esse KPI
     return done
 
 

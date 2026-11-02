@@ -1460,7 +1460,8 @@ def run_automation_now(slug: str, aid: int, request: Request, auth: Auth = Depen
     if routines.has_open_run(db, a):
         raise HTTPException(409, "a última execução desta automação ainda está aberta no kanban")
     t = routines.create_run(db, a, approved=True, actor=auth.user.username)
-    growth.runner.submit(t.id)
+    if t.status == "approved":  # o relatório de KPIs já nasce concluído (feito em código)
+        growth.runner.submit(t.id)
     return _task_json(t, {p.id: p})
 
 

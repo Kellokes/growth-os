@@ -932,8 +932,8 @@ async def run_automations(now: datetime) -> list[int]:
         for t in created:
             if t.status == "approved":
                 runner.submit(t.id)
-            else:
-                waiting.append(t)
+            elif t.status == "proposed":
+                waiting.append(t)  # as já concluídas (relatório de KPIs em código) não esperam ninguém
         if waiting:
             names = {p.id: p.name for p in db.query(GrowthProject).all()}
             lines = "\n".join(f"• {names.get(t.project_id, '?')}: {t.title}" for t in waiting)

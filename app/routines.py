@@ -113,7 +113,9 @@ INTEGRATIONS = [
      "secret": "RESTRICTED_KEY", "kpis": "mrr, receita, churn"},
     {"kind": "project_api", "name": "API do próprio projeto", "icon": "🔌", "category": "Projeto", "cost": "Já é seu",
      "about": "Endpoints do próprio produto (usuários, pedidos, uso) para os agentes lerem números reais.",
-     "fields": [("base_url", "URL base", "https://api.seudominio.com"), ("docs", "Onde está a documentação", "/docs ou link")],
+     "fields": [("base_url", "URL base", "https://api.seudominio.com"), ("docs", "Onde está a documentação", "/docs ou link"),
+                ("kpi_path", "Leitura diária de KPIs (opcional)", "/resumo?de={ontem}&ate={ontem}"),
+                ("kpi_fields", "KPI = campo do JSON (opcional)", "cadastros=kpis.logins, visitantes=kpis.web_visitantes")],
      "secret": "TOKEN", "kpis": "usuarios_ativos, cadastros"},
 ]
 INTEGRATION_BY_KIND = {i["kind"]: i for i in INTEGRATIONS}
@@ -304,6 +306,8 @@ def has_open_run(db: DB, a: Automation) -> bool:
 
 def create_run(db: DB, a: Automation, approved: bool, actor: str, context: str = "") -> Task:
     skill = db.get(Skill, a.skill_id) if a.skill_id else None
+    if skill is not None and skill.template == "relatorio_kpis":
+        return _create_kpi_report(db, a, actor)
     t = Task(
         project_id=a.project_id, agent_slug=a.agent_slug, title=a.title[:200],
         steps=(a.steps + ("\n\n" + context if context else ""))[:4000],
@@ -314,6 +318,23 @@ def create_run(db: DB, a: Automation, approved: bool, actor: str, context: str =
     db.add(t)
     db.commit()
     audit(db, actor, "automation_run", f"#{a.id} → tarefa #{t.id} ({t.status}): {a.title}"[:500])
+    return t
+
+
+def _create_kpi_report(db: DB, a: Automation, actor: str) -> Task:
+    """O relatório de KPIs é conta, não análise: a tabela sai do código, a tarefa já nasce concluída e não usa IA."""
+    from . import growth, kpireport  # import tardio: growth importa este módulo
+
+    now = utcnow()
+    t = Task(
+        project_id=a.project_id, agent_slug=a.agent_slug, title=a.title[:200], steps=a.steps[:4000],
+        rationale=f"Atividade rotineira: {describe_schedule(a).lower()} · calculada em código, sem IA",
+        status="done", decided_at=now, finished_at=now, automation_id=a.id,
+        result=kpireport.weekly_report(db, a.project_id, growth.local_today()),
+    )
+    db.add(t)
+    db.commit()
+    audit(db, actor, "automation_run", f"#{a.id} → relatório #{t.id} (sem IA): {a.title}"[:500])
     return t
 
 

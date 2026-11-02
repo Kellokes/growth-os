@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -268,3 +269,43 @@ def test_daily_kpi_collection_without_ai(logged, monkeypatch):
     assert s.query(dbmod.MetricPoint).filter(dbmod.MetricPoint.source.like("integração:%")).count() == 2
     assert s.query(dbmod.Action).filter(dbmod.Action.task_id.isnot(None)).count() == 0  # coleta não é de nenhuma tarefa
     s.close()
+
+
+def test_project_api_kpis_are_collected_by_code_from_the_configured_map(logged, monkeypatch):
+    (a,) = make_projects("A Ilha")
+    cfg = {"base_url": "https://jogar.exemplo.com/api/growth", "kpi_path": "/resumo?de={ontem}&ate={ontem}",
+           "kpi_fields": "cadastros=kpis.logins, visitantes=kpis.web_visitantes, nao_existe=kpis.x"}
+    connect(a, "project_api", cfg, monkeypatch)
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json={"kpis": {"logins": 12, "web_visitantes": 55}})
+
+    s = dbmod.new_session()
+    done = asyncio.run(acts.collect_kpis(s, mock(handler)))
+    yesterday = growth.local_today() - timedelta(days=1)
+    assert sorted(done) == [f"{a}/cadastros", f"{a}/visitantes"]
+    assert seen["url"] == f"https://jogar.exemplo.com/api/growth/resumo?de={yesterday}&ate={yesterday}"
+    pts = s.query(dbmod.MetricPoint).filter_by(day=yesterday).all()
+    assert sorted(p.value for p in pts) == [12.0, 55.0] and all(p.source == "integração:project_api" for p in pts)
+
+
+def test_weekly_kpi_report_is_computed_in_code_without_ai(logged, monkeypatch):
+    (a,) = make_projects("A Ilha")
+    s = dbmod.new_session()
+    today = growth.local_today()
+    for i in range(1, 8):  # semana atual: 10 por dia; anterior: 5 por dia
+        growth.record_point(s, pid(a), "cadastros", 10.0, today - timedelta(days=i))
+        growth.record_point(s, pid(a), "cadastros", 5.0, today - timedelta(days=i + 7))
+    skill = dbmod.Skill(project_id=pid(a), name="Relatório semanal de KPIs", description="", instructions="x",
+                        agents="growth", template="relatorio_kpis")
+    s.add(skill)
+    s.commit()
+    auto = dbmod.Automation(project_id=pid(a), agent_slug="growth", title="Relatório semanal de KPIs", skill_id=skill.id,
+                            frequency="weekly", weekday=0, hour=9)
+    s.add(auto)
+    s.commit()
+    t = routines.create_run(s, auto, approved=False, actor="teste")
+    assert t.status == "done" and t.finished_at is not None  # nasce concluída, sem fila nem agente
+    assert "| Cadastros | 70 | 35 | +100,0% | 7/7 |" in t.result and "sem IA" in t.result

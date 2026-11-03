@@ -24,16 +24,37 @@ def new_piece(slug="zombie-party", channel="instagram", fmt="carrossel", **kw):
     return cid
 
 
+TEMPLATE = ("<html><body style='margin:0'><div style='background-image:{{bg}}'><h1>{{titulo}}</h1>"
+            "<p>{{texto}}</p><small>{{marca}}</small></div></body></html>")
+RENDERS: list[str] = []
+
+
 def approve_layout(logged, monkeypatch, fmt="carrossel"):
+    """Layout aprovado -> convertido em template HTML -> template aprovado (IA e renderizador simulados)."""
     async def fake(model, prompt, refs, ratio):
         return PNG, "image/png"
 
+    async def fake_html(model, prompt, image):
+        return "```html\n" + TEMPLATE + "\n```"
+
+    def fake_render(html, f):
+        RENDERS.append(html)
+        return PNG + b"R"
+
     monkeypatch.setattr(lay, "request_image", fake)
+    monkeypatch.setattr(lay, "request_html", fake_html)
+    monkeypatch.setattr(lay, "render_png", fake_render)
+    RENDERS.clear()
     s = dbmod.new_session()
     modelcfg.save(s, "image", "openrouter", "google/gemini-2.5-flash-image", "")
+    modelcfg.save(s, "layout_html", "openrouter", "google/gemini-2.5-pro", "")
     s.close()
     r = logged.post("/api/layouts/generate", json={"project": "zombie-party", "format": fmt, "count": 1})
-    logged.post(f"/api/layouts/{r.json()['layouts'][0]['id']}/decide", json={"approve": True})
+    lid = r.json()["layouts"][0]["id"]
+    logged.post(f"/api/layouts/{lid}/decide", json={"approve": True})
+    t = logged.post(f"/api/layouts/{lid}/template", json={})
+    assert t.status_code == 200, t.text
+    logged.post(f"/api/layouts/{t.json()['id']}/decide", json={"approve": True})
 
 
 def test_norm_visual_and_block_ingest():
@@ -67,11 +88,11 @@ def test_visual_piece_cannot_be_approved_or_scheduled_without_image(logged, monk
     assert logged.post(f"/api/content/{other}/image/upload", json={"data": B64}).status_code == 422  # peça sem formato visual
 
 
-def test_generate_needs_approved_layout_then_uses_it(logged, monkeypatch):
+def test_generate_needs_approved_template_then_fills_it(logged, monkeypatch):
     make_projects("Zombie Party")
-    cid = new_piece()
+    cid = new_piece(title="Festa de Halloween", img_text="Sábado, 20h")
     r = logged.post(f"/api/content/{cid}/image", json={})
-    assert r.status_code == 422 and "layout" in r.json()["detail"].lower()
+    assert r.status_code == 422 and "template" in r.json()["detail"].lower()
     approve_layout(logged, monkeypatch)
     seen = {}
 
@@ -80,21 +101,33 @@ def test_generate_needs_approved_layout_then_uses_it(logged, monkeypatch):
         return PNG + b"2", "image/png"
 
     monkeypatch.setattr(lay, "request_image", fake)
+    RENDERS.clear()
     r = logged.post(f"/api/content/{cid}/image", json={"feedback": "mais verde"})
     assert r.status_code == 200 and r.json()["image_url"] and r.json()["image_error"] == ""
-    assert seen["n"] == 1 and seen["ratio"] == "4:5" and "foto da festa" in seen["prompt"] and "mais verde" in seen["prompt"]
+    assert seen["ratio"] == "4:5" and "NO text" in seen["prompt"] and "foto da festa" in seen["prompt"] and "mais verde" in seen["prompt"]
+    html = RENDERS[-1]
+    assert "<h1>Festa de Halloween</h1>" in html and "<p>Sábado, 20h</p>" in html and 'url("data:image/png;base64,' in html
     first = r.json()["image_url"]
     again = logged.post(f"/api/content/{cid}/image", json={}).json()["image_url"]
     assert again != first and logged.get(first).status_code == 404  # a versão anterior é apagada
-    assert logged.delete(again.replace("/api/layouts/assets/", "/api/layouts/assets/")).status_code == 409  # só pela peça
+    assert logged.delete(again).status_code == 409  # só pela peça
+
+    # editar o texto da imagem refaz só a imagem final, com o mesmo fundo e sem chamar a IA
+    n = seen["n"]
+    seen.clear()
+    r = logged.patch(f"/api/content/{cid}", json={"img_title": "NOVO <b>TÍTULO</b>"})
+    assert r.status_code == 200 and not seen and r.json()["image_url"] != again
+    assert "NOVO &lt;b&gt;TÍTULO&lt;/b&gt;" in RENDERS[-1]  # texto sempre escapado
     assert logged.delete(f"/api/content/{cid}").status_code == 200
-    assert logged.get(again).status_code == 404
+    s = dbmod.new_session()
+    assert s.query(dbmod.LayoutAsset).filter(dbmod.LayoutAsset.kind.in_(("piece", "background"))).count() == 0
+    s.close()
 
 
 def test_autogen_runs_once_per_piece_and_records_failure(logged, monkeypatch):
     make_projects("Zombie Party")
     ok, bad, text_only = new_piece(), new_piece(), new_piece(channel="linkedin", fmt="")
-    asyncio.run(lay.autogen_pending())  # sem layout aprovado: não gasta nada
+    asyncio.run(lay.autogen_pending())  # sem template aprovado: não gasta nada
     s = dbmod.new_session()
     assert s.get(dbmod.ContentItem, ok).image_id is None and s.get(dbmod.ContentItem, ok).image_error == ""
     s.close()
@@ -111,10 +144,70 @@ def test_autogen_runs_once_per_piece_and_records_failure(logged, monkeypatch):
     assert asyncio.run(lay.autogen_pending()) == 2
     s = dbmod.new_session()
     a, b, t = (s.get(dbmod.ContentItem, i) for i in (ok, bad, text_only))
-    assert a.image_id and a.image_error == "" and b.image_id is None and "sem créditos" in b.image_error
+    assert a.image_id and a.bg_id and a.image_error == "" and b.image_id is None and "sem créditos" in b.image_error
     assert t.image_id is None and t.image_error == ""  # peça de texto não gera imagem
     s.close()
     assert asyncio.run(lay.autogen_pending()) == 0  # a que falhou não tenta de novo sozinha
     assert calls["n"] == 2
     r = logged.post(f"/api/content/{bad}/image", json={})  # o botão do owner tenta de novo
     assert r.status_code == 200 and r.json()["image_error"] == ""
+
+
+def test_template_sanitize_and_fill():
+    ok = lay.sanitize_template(TEMPLATE)
+    assert ok == TEMPLATE
+    for bad in ("", TEMPLATE + "<script>x()</script>", TEMPLATE.replace("<div", "<div onclick='x'"),
+                TEMPLATE + "<img src='https://evil.com/x.png'>", TEMPLATE.replace("{{texto}}", ""),
+                TEMPLATE + "<style>@import url(x.css)</style>"):
+        try:
+            lay.sanitize_template(bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+    out = lay.fill_template(TEMPLATE, "none", "A {{texto}} B", "<i>x</i>", "Marca & Cia")
+    assert "A {{texto}} B" in out and "&lt;i&gt;x&lt;/i&gt;" in out and "Marca &amp; Cia" in out  # uma passada só
+
+
+def test_template_flow_requires_approved_layout_and_model(logged, monkeypatch):
+    make_projects("Zombie Party")
+    approve_layout(logged, monkeypatch)
+    st = logged.get("/api/layouts?project=zombie-party").json()
+    assert [t["status"] for t in st["templates"]] == ["approved"] and st["html_model"]["model"] == "google/gemini-2.5-pro"
+    lid = st["layouts"][0]["id"]
+    assert logged.post(f"/api/layouts/{lid + 99}/template", json={}).status_code == 404
+    r = logged.post("/api/layouts/generate", json={"project": "zombie-party", "format": "story", "count": 1})
+    proposed = r.json()["layouts"][0]["id"]
+    assert logged.post(f"/api/layouts/{proposed}/template", json={}).status_code == 409  # layout ainda não aprovado
+
+    async def bad_html(model, prompt, image):
+        return "```html\n<html><script>x()</script>{{bg}}{{titulo}}{{texto}}</html>\n```"
+
+    monkeypatch.setattr(lay, "request_html", bad_html)
+    logged.post(f"/api/layouts/{proposed}/decide", json={"approve": True})
+    r = logged.post(f"/api/layouts/{proposed}/template", json={})
+    assert r.status_code == 422 and "recusado" in r.json()["detail"]
+    tid = logged.get("/api/layouts?project=zombie-party").json()["templates"][0]["id"]
+    assert logged.delete(f"/api/layouts/assets/{tid}").status_code == 409  # template oficial não se apaga
+
+
+def test_render_png_talks_to_gotenberg(monkeypatch):
+    sent = {}
+
+    class Resp:
+        status_code, content = 200, PNG
+
+    def fake_post(url, files, data, timeout):
+        sent.update(url=url, name=files["files"][0], data=data)
+        return Resp()
+
+    monkeypatch.setattr(lay.httpx, "post", fake_post)
+    assert lay.render_png("<html/>", "story") == PNG
+    assert sent["url"].endswith("/forms/chromium/screenshot/html") and sent["name"] == "index.html"
+    assert (sent["data"]["width"], sent["data"]["height"], sent["data"]["format"]) == ("1080", "1920", "png")
+    Resp.status_code = 500
+    try:
+        lay.render_png("<html/>", "story")
+    except ProviderError:
+        pass
+    else:
+        raise AssertionError("500 deveria virar ProviderError")

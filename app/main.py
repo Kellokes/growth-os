@@ -1547,6 +1547,8 @@ class ContentIn(BaseModel):
     recipient: str | None = Field(default=None, max_length=300)
     purpose: str | None = Field(default=None, max_length=60)
     media: str | None = Field(default=None, max_length=4000)
+    img_title: str | None = Field(default=None, max_length=200)  # título curto escrito NA imagem
+    img_text: str | None = Field(default=None, max_length=400)  # frase de apoio escrita NA imagem
     visual_format: str | None = Field(default=None, max_length=12)  # story | carrossel | reel | "" (sem imagem)
     scheduled_at: str | None = Field(default=None, max_length=20)  # "AAAA-MM-DDTHH:MM" local; "" limpa
 
@@ -1625,7 +1627,7 @@ def _apply_content(c: ContentItem, body: ContentIn) -> None:
     data = body.model_dump(exclude_unset=True)
     if "channel" in data and body.channel is not None:
         c.channel = cnt.norm_channel(body.channel)
-    for field in ("title", "body", "recipient", "purpose", "media"):
+    for field in ("title", "body", "recipient", "purpose", "media", "img_title", "img_text"):
         if data.get(field) is not None:
             setattr(c, field, str(data[field]).strip())
     if data.get("visual_format") is not None:
@@ -1659,6 +1661,8 @@ def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Dep
     if c.status == "failed":
         c.status, c.note = "approved", ""
     db.commit()
+    if {"title", "body", "img_title", "img_text"} & set(body.model_dump(exclude_unset=True)):
+        lay.rerender_piece(db, c)  # o texto da imagem mudou: refaz a imagem final, com o mesmo fundo
     audit(db, auth.user.username, "content_edit", f"#{c.id}: {sorted(body.model_dump(exclude_unset=True))}", client_ip(request))
     return _content_json(db, c)
 
@@ -1833,8 +1837,9 @@ def delete_content(cid: int, request: Request, auth: Auth = Depends(current_auth
     c = _content_or_404(db, cid)
     if c.status == "sent":
         raise HTTPException(409, "conteúdo enviado fica no histórico")
-    if c.image_id and (img := db.get(LayoutAsset, c.image_id)) is not None:
-        db.delete(img)
+    for aid in (c.image_id, c.bg_id):
+        if aid and (img := db.get(LayoutAsset, aid)) is not None:
+            db.delete(img)
     db.delete(c)
     db.commit()
     audit(db, auth.user.username, "content_delete", f"#{cid} {c.channel}: {c.title or c.body[:60]}"[:500], client_ip(request))
@@ -1944,6 +1949,13 @@ def _asset_or_404(db: DB, aid: int) -> LayoutAsset:
     return a
 
 
+def _html_model(db: DB) -> dict:
+    try:
+        return {"model": lay.html_choice(db).model, "problem": ""}
+    except ProviderError as e:
+        return {"model": "", "problem": str(e)}
+
+
 @app.get("/api/layouts")
 def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     p = _project_or_404(db, project)
@@ -1959,6 +1971,8 @@ def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Dep
         "formats": [{"key": k, "name": v[0], "ratio": v[1], "use": v[2]} for k, v in lay.FORMATS.items()],
         "references": [lay.asset_json(a) for a in rows if a.kind == "reference"],
         "layouts": [lay.asset_json(a) for a in rows if a.kind == "layout"],
+        "templates": [lay.asset_json(a) for a in rows if a.kind == "template"],
+        "html_model": _html_model(db),
         "image_model": model, "problem": problem,
         "limits": {"references": lay.MAX_REFERENCES, "per_request": lay.MAX_PER_REQUEST},
     }
@@ -2030,15 +2044,34 @@ async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depe
     return {"layouts": [lay.asset_json(a) for a in made], "error": error}
 
 
+class TemplateIn(BaseModel):
+    feedback: str = Field(default="", max_length=1000)
+
+
+@app.post("/api/layouts/{aid}/template")
+async def layouts_make_template(aid: int, body: TemplateIn, request: Request, auth: Auth = Depends(current_auth),
+                                db: DB = Depends(get_db)):
+    """Converte um layout APROVADO em template HTML (uma chamada de IA). O template precisa da sua aprovação para valer."""
+    a = _asset_or_404(db, aid)
+    if a.kind != "layout" or a.status != "approved":
+        raise HTTPException(409, "aprove o layout antes de convertê-lo em HTML")
+    try:
+        t = await lay.generate_template(db, a, body.feedback)
+    except ProviderError as e:
+        raise HTTPException(422, str(e)) from e
+    audit(db, auth.user.username, "layout_template", f"#{a.id} -> #{t.id} {a.format} {t.model}", client_ip(request))
+    return lay.asset_json(t)
+
+
 @app.post("/api/layouts/{aid}/decide")
 def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth = Depends(current_auth),
                    db: DB = Depends(get_db)):
     """Aprovar vira o layout oficial do projeto naquele formato (o anterior é arquivado); rejeitar descarta a proposta."""
     a = _asset_or_404(db, aid)
-    if a.kind != "layout" or a.status not in ("proposed", "rejected", "approved"):
+    if a.kind not in ("layout", "template") or a.status not in ("proposed", "rejected", "approved"):
         raise HTTPException(409, "este layout não está em votação")
     if body.approve:
-        for old in db.query(LayoutAsset).filter(LayoutAsset.project_id == a.project_id, LayoutAsset.kind == "layout",
+        for old in db.query(LayoutAsset).filter(LayoutAsset.project_id == a.project_id, LayoutAsset.kind == a.kind,
                                                 LayoutAsset.format == a.format, LayoutAsset.status == "approved",
                                                 LayoutAsset.id != a.id).all():
             old.status = "archived"
@@ -2056,9 +2089,9 @@ def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth 
 @app.delete("/api/layouts/assets/{aid}")
 def layouts_delete(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     a = _asset_or_404(db, aid)
-    if a.kind == "piece":
+    if a.kind in ("piece", "background"):
         raise HTTPException(409, "a imagem de uma peça se troca na Central de Conteúdo")
-    if a.kind == "layout" and a.status == "approved":
+    if a.kind in ("layout", "template") and a.status == "approved":
         raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo antes de apagar")
     db.delete(a)
     db.commit()

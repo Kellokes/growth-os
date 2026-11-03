@@ -1178,3 +1178,4 @@ dialog.wide-ish { max-width: 680px; }
 .cimg.big { max-height: 420px; object-fit: contain; background: var(--panel); }
 .cneeds { color: var(--danger); white-space: normal; }
 .cf-image { display: grid; gap: 8px; }
+.lay-sub { margin: 6px 0 0; }

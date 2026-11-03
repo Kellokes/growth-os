@@ -313,6 +313,9 @@ class ContentItem(Base):
     visual_format: Mapped[str] = mapped_column(String(12), default="")  # story | carrossel | reel; vazio = não exige imagem
     image_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=piece)
     image_error: Mapped[str] = mapped_column(Text, default="")  # por que a imagem automática não saiu
+    bg_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=background)
+    img_title: Mapped[str] = mapped_column(String(200), default="")  # título curto que vai NA imagem
+    img_text: Mapped[str] = mapped_column(String(400), default="")  # frase de apoio que vai NA imagem
     # pending (aguardando aprovação) | approved | sent | rejected | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)  # hora local do owner
@@ -330,6 +333,8 @@ class LayoutAsset(Base):
     """Imagem do estúdio de layouts: uma referência que o owner subiu ou um layout gerado pela IA.
 
     kind=reference: imagem de referência do projeto (logo, posts que o owner gosta, paleta).
+    kind=template: layout aprovado convertido em HTML (data = prévia PNG); só ele é usado nas peças.
+    kind=background: fundo gerado para uma peça, sem texto (para refazer a imagem sem pagar de novo).
     kind=piece: imagem de uma peça da Central de Conteúdo (content_items.image_id aponta para ela).
     kind=layout: proposta gerada; status proposed | approved | rejected | archived. Só um approved por projeto e formato.
     """
@@ -344,6 +349,7 @@ class LayoutAsset(Base):
     note: Mapped[str] = mapped_column(Text, default="")  # referência: o que ela mostra; layout: comentário do owner
     prompt: Mapped[str] = mapped_column(Text, default="")
     model: Mapped[str] = mapped_column(String(120), default="")
+    html: Mapped[str] = mapped_column(Text, default="")  # kind=template: o HTML com {{bg}}, {{titulo}}, {{texto}}, {{marca}}
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
@@ -458,7 +464,11 @@ _NEW_COLUMNS = {
         "visual_format": "VARCHAR(12) NOT NULL DEFAULT ''",
         "image_id": "INTEGER NULL",
         "image_error": "TEXT NOT NULL DEFAULT ''",
+        "bg_id": "INTEGER NULL",
+        "img_title": "VARCHAR(200) NOT NULL DEFAULT ''",
+        "img_text": "VARCHAR(400) NOT NULL DEFAULT ''",
     },
+    "layout_assets": {"html": "TEXT NOT NULL DEFAULT ''"},
 }
 
 

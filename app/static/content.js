@@ -165,14 +165,15 @@
 
   function renderImage() {
     const it = current; const box = $("#cf-image");
+    $("#cf-imgtext").hidden = !$("#cf-format").value;
     const can = it && ["pending", "approved", "failed"].includes(it.status) && $("#cf-format").value;
     box.innerHTML = `${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça">` : ""}
       ${it?.image_error ? `<div class="alert">${esc(it.image_error)}</div>` : ""}
       ${can && it.visual_format ? `<div class="row"><button class="btn small" type="button" data-img="gen">${it.image_url ? "Gerar outra versão" : "Gerar imagem"}</button>
         <button class="btn small ghost" type="button" data-img="up">Subir minha imagem</button></div>
-        <small class="muted">Gerar usa o layout aprovado do projeto e cobra uma imagem do OpenRouter.</small>` : ""}`;
+        <small class="muted">Gera só o fundo (cobra uma imagem do OpenRouter) e monta o texto no template aprovado do projeto.</small>` : ""}`;
   }
-  $("#cf-format").onchange = renderImage;
+  $("#cf-format").onchange = () => { $("#cf-imgtext").hidden = !$("#cf-format").value; renderImage(); };
   $("#cf-image").addEventListener("click", async (ev) => {
     const b = ev.target.closest("[data-img]"); if (!b || !current) return;
     if (b.dataset.img === "up") return $("#cf-image-file").click();
@@ -203,7 +204,7 @@
   }
 
   const formBody = () => ({ channel: $("#cf-channel").value, title: $("#cf-head").value, recipient: $("#cf-to").value,
-    purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, visual_format: $("#cf-format").value, scheduled_at: $("#cf-when").value });
+    purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, visual_format: $("#cf-format").value, img_title: $("#cf-imgtitle").value, img_text: $("#cf-imgtext-in").value, scheduled_at: $("#cf-when").value });
   // Os campos do formulário têm o mesmo nome que os do JSON da peça.
   const changed = () => { const f = formBody(); return Object.keys(f).some((k) => (f[k] || "") !== (current[k] || "")); };
 

@@ -36,6 +36,23 @@ services:
     mem_limit: 128m
     pids_limit: 64
 
+  # Chromium isolado só para transformar o template HTML do layout em imagem (Gotenberg).
+  # Fica numa rede interna SEM saída para a internet: o HTML gerado pela IA não alcança nada fora daqui.
+  renderer:
+    image: gotenberg/gotenberg:8
+    container_name: growth-os-renderer
+    restart: unless-stopped
+    command: ["gotenberg", "--api-timeout=60s", "--chromium-disable-javascript=true"]
+    networks: [render]
+    # Sem "ports": só o app alcança, pela rede "render".
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 256
+
   growth-os:
     build:
       context: .
@@ -48,11 +65,13 @@ services:
     environment:
       GOS_DATABASE_URL: postgresql+psycopg://gos:${GOS_POSTGRES_PASSWORD}@postgres:5432/gos
       DOCKER_GATEWAY_URL: http://docker-gateway:2375
+      GOS_RENDERER_URL: http://renderer:3000
     depends_on:
       postgres:
         condition: service_healthy
       docker-gateway:
         condition: service_started
+    networks: [default, render]
     # Só o Caddy do host enxerga a porta; nada fica exposto direto na internet.
     ports:
       - "127.0.0.1:8100:8000"
@@ -78,6 +97,10 @@ services:
       - no-new-privileges:true
     mem_limit: 2g
     pids_limit: 512
+
+networks:
+  render:
+    internal: true
 
 volumes:
   gos-pgdata:

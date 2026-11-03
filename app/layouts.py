@@ -6,10 +6,13 @@ modelo de imagem configurado em /settings (atividade "image", só OpenRouter) e 
 owner: nunca roda sozinha nem em laço.
 """
 import base64
+import html as htmllib
+import re
 
 import httpx
 
 from . import modelcfg
+from .config import get_settings
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
 from .providers.base import ProviderError
@@ -138,67 +141,245 @@ def asset_json(a: LayoutAsset) -> dict:
     }
 
 
-# ---------- imagem de cada peça da Central de Conteúdo ----------
+# ---------- template HTML do layout ----------
+# A IA desenha o layout UMA vez; depois ele vira um template HTML. As peças só trocam o texto e o fundo,
+# então todas saem com o mesmo desenho e o texto nunca é "escrito" pela IA dentro da imagem.
+
+CANVAS = {"story": (1080, 1920), "carrossel": (1080, 1350), "reel": (1080, 1920)}
+REQUIRED_TOKENS = ("{{bg}}", "{{titulo}}", "{{texto}}")
+_TOKEN = re.compile(r"\{\{(bg|titulo|texto|marca)\}\}")
+_FORBIDDEN = re.compile(r"<\s*(script|iframe|object|embed|link|meta|base|form)\b|\bon\w+\s*=|javascript:|@import|https?:|//\w", re.I)
+SAMPLE_BG = "linear-gradient(135deg, #1f2937, #4b5563)"
+MAX_HTML = 60_000
+
+
+def sanitize_template(html: str) -> str:
+    """O HTML veio de uma IA: nada de script, nem de recurso externo. Exige os espaços do título, texto e fundo."""
+    html = (html or "").strip()
+    if not html or len(html) > MAX_HTML:
+        raise ValueError("o template veio vazio ou grande demais")
+    if _FORBIDDEN.search(html):
+        raise ValueError("o template tem script, link externo ou recurso proibido")
+    missing = [t for t in REQUIRED_TOKENS if t not in html]
+    if missing:
+        raise ValueError("faltam no template: " + ", ".join(missing))
+    return html
+
+
+def fill_template(html: str, bg: str, title: str, text: str, brand: str = "") -> str:
+    """Troca os espaços numa passada só (o texto do post nunca vira outro espaço). Texto sempre escapado."""
+    values = {"bg": bg, "titulo": htmllib.escape(title), "texto": htmllib.escape(text), "marca": htmllib.escape(brand)}
+    return _TOKEN.sub(lambda m: values[m.group(1)], html)
+
+
+def bg_css(data: bytes, mime: str) -> str:
+    return f'url("{data_url(data, mime)}")'
+
+
+def render_png(html: str, fmt: str) -> bytes:
+    """HTML -> PNG no Chromium isolado (Gotenberg). Sem internet e sem JavaScript lá dentro."""
+    w, h = CANVAS[fmt]
+    try:
+        resp = httpx.post(
+            get_settings().renderer_url.rstrip("/") + "/forms/chromium/screenshot/html",
+            files={"files": ("index.html", html.encode(), "text/html")},
+            data={"width": str(w), "height": str(h), "format": "png", "waitDelay": "300ms"},
+            timeout=90.0,
+        )
+    except httpx.HTTPError as e:
+        raise ProviderError(f"o renderizador de imagens não respondeu ({type(e).__name__}); confira se o container renderer está de pé") from e
+    if resp.status_code != 200 or detect_mime(resp.content) != "image/png":
+        raise ProviderError(f"o renderizador falhou ({resp.status_code})")
+    return resp.content
+
+
+def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> str:
+    w, h = CANVAS[fmt]
+    lines = [
+        f"Convert the attached brand layout image into ONE self-contained HTML document with a fixed canvas of {w}x{h} pixels "
+        f"for the brand \"{project_name}\" ({FORMATS[fmt][0]}). Recreate the layout as faithfully as you can: composition, "
+        "colors, typography feel, shapes, margins and where each text goes.",
+        "Rules:",
+        f"- html and body: margin 0, width {w}px, height {h}px, overflow hidden. Only an inline <style> block; no <script>, "
+        "no external URLs, no web fonts (use system font stacks such as Impact, 'Arial Black', Arial, sans-serif).",
+        "- The full-size background element must use exactly: background-image: {{bg}}; background-size: cover; "
+        "background-position: center;  (the placeholder {{bg}} is replaced by the real image).",
+        "- Placeholders (exact text, used once each): {{titulo}} for the headline, {{texto}} for the supporting line, "
+        "{{marca}} for the brand name/logo text. Style them so long text wraps and never overflows (word-wrap, max sizes).",
+        "- Draw any decorative shapes with CSS only. Do not put any other text on the page.",
+        "Answer with the HTML document only, inside a ```html code block.",
+    ]
+    if feedback.strip():
+        lines.append(f"Adjustments requested by the owner: {feedback.strip()[:1000]}")
+    return "\n".join(lines)
+
+
+def extract_html(text: str) -> str:
+    m = re.search(r"```html\s*\n(.*?)```", text or "", re.S) or re.search(r"(<!doctype html.*</html>)", text or "", re.S | re.I)
+    if not m:
+        raise ProviderError("o modelo não devolveu um documento HTML; tente de novo ou escolha outro modelo em Modelos")
+    return m.group(1).strip()
+
+
+async def request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str:
+    """Pede ao modelo (com visão) o HTML do layout. Devolve o texto da resposta."""
+    key = _api_key()
+    if not key:
+        raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
+    body = {"model": model, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url(*image)}}]}]}
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.post(OPENROUTER_URL, json=body, headers={"Authorization": f"Bearer {key}"})
+    except httpx.HTTPError as e:
+        raise ProviderError(f"não consegui falar com o OpenRouter: {type(e).__name__}") from e
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {}
+    if resp.status_code != 200:
+        _, msg = _error_detail(payload)
+        raise _explain(resp.status_code, msg, model)
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        content = ""
+    if isinstance(content, list):
+        content = "".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+    return str(content or "")
+
+
+def html_choice(db) -> modelcfg.Choice:
+    c = modelcfg.resolve(db, "layout_html")
+    if c.provider != "openrouter" or not c.model:
+        raise ProviderError("Escolha em Modelos um modelo do OpenRouter com visão para \"Layouts · converter em HTML\" antes de converter.")
+    return c
+
+
+def approved_asset(db, project_id: int, kind: str, fmt: str) -> LayoutAsset | None:
+    return (db.query(LayoutAsset).filter(LayoutAsset.project_id == project_id, LayoutAsset.kind == kind,
+                                         LayoutAsset.format == fmt, LayoutAsset.status == "approved").first())
+
+
+def approved_layout(db, project_id: int, fmt: str) -> LayoutAsset | None:
+    return approved_asset(db, project_id, "layout", fmt)
+
+
+def approved_template(db, project_id: int, fmt: str) -> LayoutAsset | None:
+    return approved_asset(db, project_id, "template", fmt)
+
+
+async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> LayoutAsset:
+    """Converte um layout aprovado em template HTML (uma chamada de IA) e guarda a prévia renderizada."""
+    choice = html_choice(db)
+    project = db.get(GrowthProject, layout.project_id)
+    name = project.name if project else ""
+    prompt = build_template_prompt(name, layout.format, feedback)
+    text = await request_html(choice.model, prompt, (layout.data, layout.mime))
+    try:
+        html = sanitize_template(extract_html(text))
+    except ValueError as e:
+        raise ProviderError(f"template recusado: {e}. Tente de novo.") from e
+    preview = render_png(fill_template(html, SAMPLE_BG, "TÍTULO DO POST", "Frase de apoio do post, em uma ou duas linhas.", name), layout.format)
+    t = LayoutAsset(project_id=layout.project_id, kind="template", format=layout.format, status="proposed", mime="image/png",
+                    data=preview, html=html, note=feedback.strip(), prompt=prompt, model=choice.model)
+    db.add(t)
+    db.commit()
+    return t
+
+
+# ---------- imagem de cada peça: fundo gerado + texto no template ----------
 
 AUTOGEN_PER_TICK = 3  # imagens automáticas por passada do agendador (limita o custo)
 
 
-def approved_layout(db, project_id: int, fmt: str) -> LayoutAsset | None:
-    return (db.query(LayoutAsset).filter(LayoutAsset.project_id == project_id, LayoutAsset.kind == "layout",
-                                         LayoutAsset.format == fmt, LayoutAsset.status == "approved").first())
+def piece_texts(c: ContentItem) -> tuple[str, str]:
+    """O que vai escrito NA imagem: o que o agente pediu ou, na falta, o título e o começo do texto."""
+    body = c.body.strip()
+    if c.img_title or c.title:
+        return (c.img_title or c.title)[:80], (c.img_text or body)[:140]
+    first, _, rest = body.partition("\n")
+    return (c.img_title or first)[:80], (c.img_text or rest.strip())[:140]
 
 
-def build_piece_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
+def build_background_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
     name, ratio, _ = FORMATS[c.visual_format]
     lines = [
-        f"Create the final {name} image ({ratio}) for a social media post of the brand \"{project_name}\".",
-        "The FIRST attached image is the approved brand layout: keep its composition, color palette, typography and "
-        "logo placement. Any other attached images are brand references.",
-        f"Post title: {c.title[:200]}" if c.title else "",
-        f"Post text (for context; put only a short headline on the image): {c.body[:600]}",
-        f"What the image must show: {c.media[:1000]}" if c.media.strip() else "",
-        "Any text on the image must be in Brazilian Portuguese and spelled correctly.",
+        f"Create a BACKGROUND image ({ratio}) for a {name} social media post of the brand \"{project_name}\".",
+        "ABSOLUTELY NO text, letters, numbers, logos, watermarks or interface elements anywhere. Leave calm, uncluttered "
+        "areas where text will be placed on top later.",
+        f"Subject: {c.media[:1000]}" if c.media.strip() else f"Subject: {(c.title or c.body)[:300]}",
         f"Brand style brief: {brief.strip()[:1500]}" if brief.strip() else "",
+        "Attached images, if any, are brand references: follow their palette and mood.",
         f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
     ]
     return "\n".join(x for x in lines if x)
 
 
-def set_piece_image(db, c: ContentItem, data: bytes, mime: str, model: str = "", prompt: str = "") -> None:
-    """Guarda a imagem da peça e apaga a anterior (uma imagem por peça)."""
-    old = db.get(LayoutAsset, c.image_id) if c.image_id else None
-    a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, status="", mime=mime, data=data,
-                    model=model, prompt=prompt)
-    db.add(a)
+def _replace_asset(db, c: ContentItem, attr: str, asset: LayoutAsset) -> None:
+    old = db.get(LayoutAsset, getattr(c, attr)) if getattr(c, attr) else None
+    db.add(asset)
     db.flush()
-    c.image_id, c.image_error = a.id, ""
+    setattr(c, attr, asset.id)
     if old is not None:
         db.delete(old)
+
+
+def set_piece_image(db, c: ContentItem, data: bytes, mime: str, model: str = "", prompt: str = "") -> None:
+    """Guarda a imagem final da peça e apaga a anterior (uma imagem por peça)."""
+    _replace_asset(db, c, "image_id", LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime=mime,
+                                                   data=data, model=model, prompt=prompt))
+    c.image_error = ""
     db.commit()
 
 
+def render_piece(db, c: ContentItem, bg: LayoutAsset, template: LayoutAsset) -> bytes:
+    project = db.get(GrowthProject, c.project_id)
+    title, text = piece_texts(c)
+    return render_png(fill_template(template.html, bg_css(bg.data, bg.mime), title, text, project.name if project else ""),
+                      c.visual_format)
+
+
+def rerender_piece(db, c: ContentItem) -> None:
+    """Texto da imagem mudou: refaz só a imagem final, com o mesmo fundo (sem gastar IA). Erros ficam em image_error."""
+    if not (c.image_id and c.bg_id and c.visual_format):
+        return
+    bg, template = db.get(LayoutAsset, c.bg_id), approved_template(db, c.project_id, c.visual_format)
+    if bg is None or template is None:
+        return
+    try:
+        set_piece_image(db, c, render_piece(db, c, bg, template), "image/png", "template")
+    except ProviderError as e:
+        db.rollback()
+        c.image_error = str(e)[:500]
+        db.commit()
+
+
 async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
-    """Gera a imagem da peça no layout aprovado do projeto. ProviderError com o motivo em linguagem do owner."""
+    """Gera um fundo novo (a única parte paga) e monta a imagem final no template aprovado do projeto."""
     if not c.visual_format:
         raise ProviderError("esta peça não é visual (story, carrossel ou reel)")
-    layout = approved_layout(db, c.project_id, c.visual_format)
-    if layout is None:
-        raise ProviderError(f"Defina o layout de {FORMATS[c.visual_format][0]} deste projeto em Layouts antes de gerar a imagem.")
+    template = approved_template(db, c.project_id, c.visual_format)
+    if template is None:
+        raise ProviderError(f"Defina o template de {FORMATS[c.visual_format][0]} deste projeto em Layouts antes de gerar a imagem.")
     choice = image_choice(db)
     project = db.get(GrowthProject, c.project_id)
     refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
-                 .order_by(LayoutAsset.id).limit(MAX_REFS_SENT - 1).all())
-    refs = [(layout.data, layout.mime)] + [(a.data, a.mime) for a in refs_rows]
-    prompt = build_piece_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
-    data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
-    set_piece_image(db, c, data, mime, choice.model, prompt)
+                 .order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all())
+    prompt = build_background_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
+    data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in refs_rows], FORMATS[c.visual_format][1])
+    bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
+                     model=choice.model, prompt=prompt)
+    final = render_piece(db, c, bg, template)  # renderiza antes de guardar: se o renderizador cair, o fundo não fica órfão
+    _replace_asset(db, c, "bg_id", bg)
+    set_piece_image(db, c, final, "image/png", choice.model, prompt)
 
 
 async def autogen_pending() -> int:
     """Passada do agendador: imagem para peças que aguardam aprovação, até AUTOGEN_PER_TICK por vez.
 
     Cada peça tem uma tentativa automática: se falhar, o motivo fica em image_error e só o botão do owner tenta de novo.
-    Sem layout aprovado ou sem modelo de imagem configurado, a peça espera sem gastar nada.
+    Sem template aprovado ou sem modelo de imagem configurado, a peça espera sem gastar nada.
     """
     done = 0
     db = new_session()
@@ -209,7 +390,7 @@ async def autogen_pending() -> int:
         for c in rows:
             if done >= AUTOGEN_PER_TICK:
                 break
-            if approved_layout(db, c.project_id, c.visual_format) is None:
+            if approved_template(db, c.project_id, c.visual_format) is None:
                 continue
             try:
                 image_choice(db)

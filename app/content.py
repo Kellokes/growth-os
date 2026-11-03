@@ -36,6 +36,10 @@ CHANNELS: dict[str, tuple[str, str, str]] = {
 _ALIASES = {"twitter": "x", "ig": "instagram", "insta": "instagram", "e-mail": "email", "mail": "email",
             "newsletter": "email", "artigo": "blog", "site": "blog", "fb": "facebook", "yt": "youtube",
             "zap": "whatsapp", "wpp": "whatsapp"}
+# Formato visual padrão por canal quando o agente não diz (vazio = o canal não exige imagem).
+DEFAULT_VISUAL = {"instagram": "carrossel", "facebook": "carrossel", "tiktok": "reel", "youtube": "reel"}
+VISUAL_FORMATS = ("story", "carrossel", "reel")
+_FORMAT_ALIASES = {"stories": "story", "carousel": "carrossel", "carrosel": "carrossel", "reels": "reel", "video": "reel"}
 GROUPS = {"social": "Redes sociais", "email": "E-mails", "mensagem": "Mensagens", "site": "Site", "outro": "Outros"}
 
 STATUSES = ("pending", "approved", "sent", "rejected", "failed")
@@ -53,6 +57,22 @@ def norm_channel(raw: str) -> str:
     c = str(raw or "").strip().lower()
     c = _ALIASES.get(c, c)
     return c if c in CHANNELS else "outro"
+
+
+def norm_visual(raw, channel: str) -> str:
+    """Formato visual da peça: o que o agente pediu ("formato") ou o padrão do canal."""
+    f = str(raw or "").strip().lower()
+    f = _FORMAT_ALIASES.get(f, f)
+    if f in VISUAL_FORMATS:
+        return f
+    if f in ("nenhum", "texto", "sem imagem", "none"):
+        return ""
+    return DEFAULT_VISUAL.get(channel, "")
+
+
+def needs_image(c: ContentItem) -> bool:
+    """Peça visual (story, carrossel, reel) ainda sem imagem: não pode ser aprovada nem agendada assim."""
+    return bool(c.visual_format) and not c.image_id
 
 
 def parse_when(raw) -> datetime | None:
@@ -88,9 +108,11 @@ ou uma lista), e ela vai para a Central de Conteúdo esperar a aprovação do ow
 ```conteudo
 {{"canal": "instagram", "titulo": "título ou assunto do e-mail", "texto": "o texto final, pronto para publicar",
  "para": "destinatário (e-mail) ou público", "objetivo": "parceria|contato|lançamento|...",
- "midia": "descrição da imagem/vídeo, se tiver", "quando": "AAAA-MM-DD HH:MM (sugestão, hora de Brasília)"}}
+ "midia": "descrição da imagem/vídeo (o que deve aparecer nela)", "formato": "story|carrossel|reel (só para posts visuais)", "quando": "AAAA-MM-DD HH:MM (sugestão, hora de Brasília)"}}
 ```
-Canais: {channels}. Só "canal" e "texto" são obrigatórios."""
+Canais: {channels}. Só "canal" e "texto" são obrigatórios.
+Posts visuais ganham a imagem pronta do sistema (no layout do projeto) antes de você aprovar: descreva em "midia" o que a
+imagem deve mostrar, sem gerar nem pedir arquivos."""
 
 
 def _items(raw: str) -> list[dict]:
@@ -128,6 +150,7 @@ def ingest_blocks(db: DB, task: Task, text: str) -> list[ContentItem]:
                 recipient=str(it.get("para") or "").strip()[:300],
                 purpose=str(it.get("objetivo") or "").strip()[:60],
                 media=str(it.get("midia") or it.get("mídia") or "").strip()[:4000],
+                visual_format=norm_visual(it.get("formato") or it.get("format"), channel),
                 scheduled_at=parse_when(it.get("quando")),
                 status="pending",
             )
@@ -144,6 +167,8 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         "id": c.id, "project": project_slug, "agent": c.agent_slug, "task_id": c.task_id,
         "channel": c.channel, "channel_name": name, "channel_icon": icon, "group": group,
         "title": c.title, "body": c.body, "recipient": c.recipient, "purpose": c.purpose, "media": c.media,
+        "visual_format": c.visual_format, "needs_image": needs_image(c), "image_error": c.image_error,
+        "image_url": f"/api/layouts/assets/{c.image_id}" if c.image_id else "",
         "status": c.status, "stage": stage(c, now), "link": c.link, "note": c.note,
         "scheduled_at": c.scheduled_at.isoformat(timespec="minutes") if c.scheduled_at else None,
         "sent_at": c.sent_at.isoformat() if c.sent_at else None,

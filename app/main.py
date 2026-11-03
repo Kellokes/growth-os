@@ -1547,6 +1547,7 @@ class ContentIn(BaseModel):
     recipient: str | None = Field(default=None, max_length=300)
     purpose: str | None = Field(default=None, max_length=60)
     media: str | None = Field(default=None, max_length=4000)
+    visual_format: str | None = Field(default=None, max_length=12)  # story | carrossel | reel | "" (sem imagem)
     scheduled_at: str | None = Field(default=None, max_length=20)  # "AAAA-MM-DDTHH:MM" local; "" limpa
 
 
@@ -1627,12 +1628,21 @@ def _apply_content(c: ContentItem, body: ContentIn) -> None:
     for field in ("title", "body", "recipient", "purpose", "media"):
         if data.get(field) is not None:
             setattr(c, field, str(data[field]).strip())
+    if data.get("visual_format") is not None:
+        vf = body.visual_format.strip().lower()
+        if vf and vf not in cnt.VISUAL_FORMATS:
+            raise HTTPException(422, "formato visual inválido (story, carrossel ou reel)")
+        if vf != c.visual_format and c.image_id:
+            raise HTTPException(422, "a peça já tem imagem; apague-a antes de mudar o formato")
+        c.visual_format = vf
     if "scheduled_at" in data:
         raw = (body.scheduled_at or "").strip()
         when = cnt.parse_when(raw) if raw else None
         if raw and when is None:
             raise HTTPException(422, "data inválida (use AAAA-MM-DD HH:MM)")
         c.scheduled_at = when
+    if c.scheduled_at and c.status == "approved" and cnt.needs_image(c):
+        raise HTTPException(409, "esta peça é visual e ainda não tem imagem: gere ou suba a imagem antes de agendar")
     if not c.body.strip():
         raise HTTPException(422, "o texto não pode ficar vazio")
     cnt.touch(c)
@@ -1691,6 +1701,8 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
     c = _content_or_404(db, cid)
     if c.status not in ("approved", "failed"):
         raise HTTPException(409, "só conteúdo aprovado pode ser publicado")
+    if cnt.needs_image(c):
+        raise HTTPException(409, "esta peça é visual e ainda não tem imagem: gere ou suba a imagem antes de publicar")
     project = db.get(GrowthProject, c.project_id)
     ip = client_ip(request)
     when = None
@@ -1773,11 +1785,56 @@ def reopen_content(cid: int, request: Request, auth: Auth = Depends(current_auth
     return _content_json(db, c)
 
 
+class PieceImageIn(BaseModel):
+    feedback: str = Field(default="", max_length=500)
+
+
+class PieceUploadIn(BaseModel):
+    data: str = Field(max_length=6_000_000)
+
+
+@app.post("/api/content/{cid}/image")
+async def content_generate_image(cid: int, body: PieceImageIn, request: Request, auth: Auth = Depends(current_auth),
+                                 db: DB = Depends(get_db)):
+    """O owner pede a imagem da peça (nova ou outra versão), no layout aprovado do projeto. Custa uma imagem."""
+    c = _content_or_404(db, cid)
+    if c.status not in cnt.EDITABLE:
+        raise HTTPException(409, "só dá para mudar a imagem de uma peça em aprovação ou aprovada")
+    try:
+        await lay.generate_piece_image(db, c, body.feedback)
+    except ProviderError as e:
+        c.image_error = str(e)[:500]
+        db.commit()
+        raise HTTPException(422, str(e)) from e
+    audit(db, auth.user.username, "content_image", f"#{c.id} {c.visual_format}", client_ip(request))
+    return _content_json(db, c)
+
+
+@app.post("/api/content/{cid}/image/upload")
+def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: Auth = Depends(current_auth),
+                         db: DB = Depends(get_db)):
+    """Imagem própria do owner no lugar da gerada (ou quando a geração não é possível)."""
+    c = _content_or_404(db, cid)
+    if c.status not in cnt.EDITABLE:
+        raise HTTPException(409, "só dá para mudar a imagem de uma peça em aprovação ou aprovada")
+    if not c.visual_format:
+        raise HTTPException(422, "esta peça não é visual: escolha story, carrossel ou reel antes")
+    try:
+        data, mime = lay.decode_image(body.data)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    lay.set_piece_image(db, c, data, mime, model="upload")
+    audit(db, auth.user.username, "content_image_upload", f"#{c.id}", client_ip(request))
+    return _content_json(db, c)
+
+
 @app.delete("/api/content/{cid}")
 def delete_content(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     c = _content_or_404(db, cid)
     if c.status == "sent":
         raise HTTPException(409, "conteúdo enviado fica no histórico")
+    if c.image_id and (img := db.get(LayoutAsset, c.image_id)) is not None:
+        db.delete(img)
     db.delete(c)
     db.commit()
     audit(db, auth.user.username, "content_delete", f"#{cid} {c.channel}: {c.title or c.body[:60]}"[:500], client_ip(request))
@@ -1999,6 +2056,8 @@ def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth 
 @app.delete("/api/layouts/assets/{aid}")
 def layouts_delete(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     a = _asset_or_404(db, aid)
+    if a.kind == "piece":
+        raise HTTPException(409, "a imagem de uma peça se troca na Central de Conteúdo")
     if a.kind == "layout" and a.status == "approved":
         raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo antes de apagar")
     db.delete(a)

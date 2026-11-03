@@ -64,7 +64,12 @@
       <label>Objetivo<input id="cf-purpose" maxlength="60" placeholder="parceria, contato, lançamento…"></label>
     </div>
     <label>Texto<textarea id="cf-body" rows="9" required maxlength="20000"></textarea></label>
-    <label>Mídia (imagem ou vídeo que acompanha)<textarea id="cf-media" rows="2" maxlength="4000" placeholder="Descrição do criativo, se tiver"></textarea></label>
+    <label>Mídia (o que a imagem deve mostrar)<textarea id="cf-media" rows="2" maxlength="4000" placeholder="Descrição do criativo, se tiver"></textarea></label>
+    <div class="cf-image" id="cf-image-box">
+      <label>Formato da imagem<select id="cf-format"><option value="">Sem imagem (só texto)</option><option value="story">Story · 9:16</option><option value="carrossel">Carrossel · 4:5</option><option value="reel">Reel · 9:16</option></select></label>
+      <div id="cf-image" aria-live="polite"></div>
+      <input id="cf-image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    </div>
     <label>Quando sai<input id="cf-when" type="datetime-local"><small class="muted">Vazio = sai quando você publicar. Hora de Brasília.</small></label>
     <div class="sent-box" id="cf-sent-box" hidden>
       <label>Link de onde saiu (opcional)<input id="cf-link" type="url" maxlength="500" placeholder="https://…"></label>

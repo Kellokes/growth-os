@@ -10,7 +10,7 @@ import base64
 import httpx
 
 from . import modelcfg
-from .db import LayoutAsset
+from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
 from .providers.base import ProviderError
 
@@ -136,3 +136,89 @@ def asset_json(a: LayoutAsset) -> dict:
         "id": a.id, "kind": a.kind, "format": a.format, "status": a.status, "note": a.note, "model": a.model,
         "mime": a.mime, "url": f"/api/layouts/assets/{a.id}", "created_at": a.created_at.isoformat(),
     }
+
+
+# ---------- imagem de cada peça da Central de Conteúdo ----------
+
+AUTOGEN_PER_TICK = 3  # imagens automáticas por passada do agendador (limita o custo)
+
+
+def approved_layout(db, project_id: int, fmt: str) -> LayoutAsset | None:
+    return (db.query(LayoutAsset).filter(LayoutAsset.project_id == project_id, LayoutAsset.kind == "layout",
+                                         LayoutAsset.format == fmt, LayoutAsset.status == "approved").first())
+
+
+def build_piece_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
+    name, ratio, _ = FORMATS[c.visual_format]
+    lines = [
+        f"Create the final {name} image ({ratio}) for a social media post of the brand \"{project_name}\".",
+        "The FIRST attached image is the approved brand layout: keep its composition, color palette, typography and "
+        "logo placement. Any other attached images are brand references.",
+        f"Post title: {c.title[:200]}" if c.title else "",
+        f"Post text (for context; put only a short headline on the image): {c.body[:600]}",
+        f"What the image must show: {c.media[:1000]}" if c.media.strip() else "",
+        "Any text on the image must be in Brazilian Portuguese and spelled correctly.",
+        f"Brand style brief: {brief.strip()[:1500]}" if brief.strip() else "",
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+def set_piece_image(db, c: ContentItem, data: bytes, mime: str, model: str = "", prompt: str = "") -> None:
+    """Guarda a imagem da peça e apaga a anterior (uma imagem por peça)."""
+    old = db.get(LayoutAsset, c.image_id) if c.image_id else None
+    a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, status="", mime=mime, data=data,
+                    model=model, prompt=prompt)
+    db.add(a)
+    db.flush()
+    c.image_id, c.image_error = a.id, ""
+    if old is not None:
+        db.delete(old)
+    db.commit()
+
+
+async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
+    """Gera a imagem da peça no layout aprovado do projeto. ProviderError com o motivo em linguagem do owner."""
+    if not c.visual_format:
+        raise ProviderError("esta peça não é visual (story, carrossel ou reel)")
+    layout = approved_layout(db, c.project_id, c.visual_format)
+    if layout is None:
+        raise ProviderError(f"Defina o layout de {FORMATS[c.visual_format][0]} deste projeto em Layouts antes de gerar a imagem.")
+    choice = image_choice(db)
+    project = db.get(GrowthProject, c.project_id)
+    refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
+                 .order_by(LayoutAsset.id).limit(MAX_REFS_SENT - 1).all())
+    refs = [(layout.data, layout.mime)] + [(a.data, a.mime) for a in refs_rows]
+    prompt = build_piece_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
+    data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
+    set_piece_image(db, c, data, mime, choice.model, prompt)
+
+
+async def autogen_pending() -> int:
+    """Passada do agendador: imagem para peças que aguardam aprovação, até AUTOGEN_PER_TICK por vez.
+
+    Cada peça tem uma tentativa automática: se falhar, o motivo fica em image_error e só o botão do owner tenta de novo.
+    Sem layout aprovado ou sem modelo de imagem configurado, a peça espera sem gastar nada.
+    """
+    done = 0
+    db = new_session()
+    try:
+        rows = (db.query(ContentItem).filter(ContentItem.status == "pending", ContentItem.visual_format != "",
+                                             ContentItem.image_id.is_(None), ContentItem.image_error == "")
+                .order_by(ContentItem.id).limit(50).all())
+        for c in rows:
+            if done >= AUTOGEN_PER_TICK:
+                break
+            if approved_layout(db, c.project_id, c.visual_format) is None:
+                continue
+            try:
+                image_choice(db)
+                await generate_piece_image(db, c)
+            except ProviderError as e:
+                db.rollback()
+                c.image_error = str(e)[:500]
+                db.commit()
+            done += 1
+    finally:
+        db.close()
+    return done

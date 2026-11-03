@@ -942,6 +942,12 @@ async def scheduler_loop() -> None:
             await run_automations(datetime.now(tz))
         except Exception:  # noqa: BLE001
             log.exception("automações")
+        try:
+            from . import layouts  # import tardio: layouts importa o banco, não este módulo
+
+            await layouts.autogen_pending()
+        except Exception:  # noqa: BLE001
+            log.exception("imagens das peças")
         await asyncio.sleep(60)
 
 

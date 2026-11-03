@@ -310,6 +310,9 @@ class ContentItem(Base):
     recipient: Mapped[str] = mapped_column(String(300), default="")  # e-mail: para quem; post: público
     purpose: Mapped[str] = mapped_column(String(60), default="")  # parceria, contato, lançamento...
     media: Mapped[str] = mapped_column(Text, default="")  # descrição da imagem/vídeo que acompanha
+    visual_format: Mapped[str] = mapped_column(String(12), default="")  # story | carrossel | reel; vazio = não exige imagem
+    image_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=piece)
+    image_error: Mapped[str] = mapped_column(Text, default="")  # por que a imagem automática não saiu
     # pending (aguardando aprovação) | approved | sent | rejected | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)  # hora local do owner
@@ -327,6 +330,7 @@ class LayoutAsset(Base):
     """Imagem do estúdio de layouts: uma referência que o owner subiu ou um layout gerado pela IA.
 
     kind=reference: imagem de referência do projeto (logo, posts que o owner gosta, paleta).
+    kind=piece: imagem de uma peça da Central de Conteúdo (content_items.image_id aponta para ela).
     kind=layout: proposta gerada; status proposed | approved | rejected | archived. Só um approved por projeto e formato.
     """
     __tablename__ = "layout_assets"
@@ -450,6 +454,11 @@ _NEW_COLUMNS = {
     },
     "events": {"handled": "INTEGER NOT NULL DEFAULT 0"},
     "growth_projects": {"style_brief": "TEXT NOT NULL DEFAULT ''"},
+    "content_items": {
+        "visual_format": "VARCHAR(12) NOT NULL DEFAULT ''",
+        "image_id": "INTEGER NULL",
+        "image_error": "TEXT NOT NULL DEFAULT ''",
+    },
 }
 
 

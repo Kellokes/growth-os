@@ -15,8 +15,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as DB
 
 from .db import (
-    Action, AgentNote, Approval, AuditLog, CommandRun, ContentItem, Conversation, Event, Message, Mission, Plan,
-    Task, TaskLink,
+    Action, AgentNote, Approval, AuditLog, CommandRun, ContentItem, Conversation, Event, LayoutAsset, Message, Mission,
+    Plan, Task, TaskLink,
 )
 
 CONFIRM_WORD = "RESETAR"
@@ -138,6 +138,8 @@ def reset_data(db: DB, confirm: str, actor: str, ip: str = "") -> dict[str, int]
     try:
         for model, _label in CLEAR:
             deleted[model.__tablename__] = db.query(model).delete(synchronize_session=False)
+        # Imagens e fundos das peças apagadas ficariam órfãos; layouts, templates e referências são configuração e ficam.
+        db.query(LayoutAsset).filter(LayoutAsset.kind.in_(("piece", "background"))).delete(synchronize_session=False)
         detail = ", ".join(f"{t}={n}" for t, n in deleted.items())
         db.add(AuditLog(actor=actor, action="data_reset", detail=detail[:4000], ip=ip))
         db.commit()

@@ -73,6 +73,7 @@
       <header class="cpiece-top"><span class="cchan">${esc(c.icon)} ${esc(c.name)}</span><span class="badge ${STAGE_BADGE[it.stage] || ""}">${esc(STAGE_LABEL[it.stage] || it.stage)}</span></header>
       ${head}
       <p class="cbody">${esc(it.body)}</p>
+      ${it.image_url ? `<img class="cimg" src="${esc(it.image_url)}" alt="imagem da peça" loading="lazy">` : it.needs_image ? `<div class="cmedia cneeds">🖼 Sem imagem${it.image_error ? ` · ${esc(it.image_error)}` : " · aguardando layout ou geração"}</div>` : ""}
       ${it.media ? `<div class="cmedia">🖼 ${esc(it.media)}</div>` : ""}
       <div class="task-tags"><span class="tag">${esc(aname(it.agent))}</span>${project === "all" ? `<span class="tag">${esc(pinfo(it.project).icon)} ${esc(pinfo(it.project).name)}</span>` : ""}${it.purpose ? `<span class="tag">${esc(it.purpose)}</span>` : ""}</div>
       <footer class="cpiece-foot"><span class="muted">${it.scheduled_at && it.stage !== "sent" ? icon("calendar") : ""}${esc(date)}</span>${actions ? `<div class="kcard-actions">${actions}</div>` : ""}</footer>
@@ -147,7 +148,7 @@
     fillChannels(it?.channel || "instagram");
     labelsFor(it?.channel || "instagram");
     $("#cf-head").value = it?.title || ""; $("#cf-to").value = it?.recipient || ""; $("#cf-purpose").value = it?.purpose || "";
-    $("#cf-body").value = it?.body || ""; $("#cf-media").value = it?.media || ""; $("#cf-when").value = it?.scheduled_at || "";
+    $("#cf-body").value = it?.body || ""; $("#cf-media").value = it?.media || ""; $("#cf-format").value = it?.visual_format; $("#cf-when").value = it?.scheduled_at || "";
     $("#content-form").querySelectorAll("input, textarea, select").forEach((el) => { if (el.id !== "cf-link") el.disabled = !!ro; });
     $("#cf-tags").innerHTML = isNew ? "" : `<span class="badge ${STAGE_BADGE[it.stage] || ""}">${esc(STAGE_LABEL[it.stage] || it.stage)}</span>
       <span class="tag">${esc(aname(it.agent))}</span><span class="tag">${esc(pinfo(it.project).icon)} ${esc(pinfo(it.project).name)}</span>
@@ -158,9 +159,36 @@
     note.hidden = !(it && (it.note || it.stage === "ready"));
     note.textContent = it?.note ? `Motivo: ${it.note}` : it?.stage === "ready" ? "Aprovada. O envio automático chega com as integrações; por enquanto copie o texto, publique e marque como enviada." : "";
     $("#cf-sent-box").hidden = true; $("#cf-link").value = "";
-    renderActions();
+    renderActions(); renderImage();
     $("#content-dialog").showModal();
   }
+
+  function renderImage() {
+    const it = current; const box = $("#cf-image");
+    $("#cf-imgtext").hidden = !$("#cf-format").value;
+    const can = it && ["pending", "approved", "failed"].includes(it.status) && $("#cf-format").value;
+    box.innerHTML = `${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça">` : ""}
+      ${it?.image_error ? `<div class="alert">${esc(it.image_error)}</div>` : ""}
+      ${can && it.visual_format ? `<div class="row"><button class="btn small" type="button" data-img="gen">${it.image_url ? "Gerar outra versão" : "Gerar imagem"}</button>
+        <button class="btn small ghost" type="button" data-img="up">Subir minha imagem</button></div>
+        <small class="muted">Gera só o fundo (cobra uma imagem do OpenRouter) e monta o texto no template aprovado do projeto.</small>` : ""}`;
+  }
+  $("#cf-format").onchange = () => { $("#cf-imgtext").hidden = !$("#cf-format").value; renderImage(); };
+  $("#cf-image").addEventListener("click", async (ev) => {
+    const b = ev.target.closest("[data-img]"); if (!b || !current) return;
+    if (b.dataset.img === "up") return $("#cf-image-file").click();
+    b.disabled = true; b.textContent = "Gerando… (até 1 min)";
+    try { current = await api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) }); }
+    catch (e) { alert(e.message); }
+    await loadPieces(); renderImage(); renderActions();
+  });
+  $("#cf-image-file").onchange = async (ev) => {
+    const f = ev.target.files[0]; ev.target.value = ""; if (!f || !current) return;
+    const data = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
+    try { current = await api(`/api/content/${current.id}/image/upload`, { method: "POST", body: JSON.stringify({ data }) }); }
+    catch (e) { alert(e.message); }
+    await loadPieces(); renderImage();
+  };
 
   function renderActions() {
     const it = current; const b = [];
@@ -176,7 +204,7 @@
   }
 
   const formBody = () => ({ channel: $("#cf-channel").value, title: $("#cf-head").value, recipient: $("#cf-to").value,
-    purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, scheduled_at: $("#cf-when").value });
+    purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, visual_format: $("#cf-format").value, img_title: $("#cf-imgtitle").value, img_text: $("#cf-imgtext-in").value, scheduled_at: $("#cf-when").value });
   // Os campos do formulário têm o mesmo nome que os do JSON da peça.
   const changed = () => { const f = formBody(); return Object.keys(f).some((k) => (f[k] || "") !== (current[k] || "")); };
 

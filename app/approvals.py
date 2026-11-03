@@ -168,6 +168,8 @@ def decide_task(db: DB, t: Task, approve: bool, via: str = "clique") -> None:
 def decide_content(db: DB, c: ContentItem, approve: bool, note: str = "") -> None:
     if c.status != "pending":
         raise ApprovalError("este conteúdo não está aguardando aprovação")
+    if approve and cnt.needs_image(c):
+        raise ApprovalError("esta peça é visual e ainda não tem imagem: gere ou suba a imagem antes de aprovar")
     c.status = "approved" if approve else "rejected"
     c.note = "" if approve else note.strip()
     c.decided_at = utcnow()

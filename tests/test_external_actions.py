@@ -113,6 +113,25 @@ def test_postiz_flow_approve_publishes_once_with_raw_key(logged, monkeypatch):
     s.close()
 
 
+def test_postiz_instagram_payload_has_post_type_in_all_paths(logged, monkeypatch):
+    posts = []
+
+    def handler(req: httpx.Request):
+        if req.method == "GET":
+            return httpx.Response(200, json=[{"id": "ig", "name": "IG", "identifier": "instagram"},
+                                             {"id": "li", "name": "LI", "identifier": "linkedin"}])
+        posts.append(json.loads(req.content))
+        return httpx.Response(200, json=[{"postId": "p"}])
+
+    conn = senders.Postiz()
+    ctx = senders.Ctx(config=POSTIZ, secret="k", transport=mock(handler))
+    when = "2999-01-01T10:00:00Z"
+    for op, extra in (("publicar_post", {}), ("agendar_post", {"quando": when}), ("criar_rascunho", {})):
+        asyncio.run(conn.run(ctx, op, {"canal_id": "ig", "texto": "x", **extra}))
+    asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "li", "texto": "x"}))
+    assert [p["posts"][0]["settings"].get("post_type") for p in posts] == ["post", "post", "post", None]
+
+
 def test_postiz_rejects_unknown_channel_and_past_schedule(logged, monkeypatch):
     (a,) = make_projects("Zombie Party")
     connect(a, "postiz", POSTIZ, monkeypatch)

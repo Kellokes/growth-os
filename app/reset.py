@@ -46,6 +46,7 @@ KEEP_LABELS = {
     "integrations": "Integrações",
     "automations": "Rotinas",
     "model_settings": "Modelos",
+    "layout_assets": "Layouts e referências visuais",
     "kpis": "KPIs (definições)",
     "kpi_points": "KPIs (valores medidos)",
     "users": "Usuário",

@@ -1,0 +1,102 @@
+import base64
+
+from app import db as dbmod
+from app import layouts as lay
+from app import modelcfg
+from app.providers.base import ProviderError
+
+from .test_growth import make_projects  # noqa: F401 - fixtures
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 40
+B64 = base64.b64encode(PNG).decode()
+
+
+def set_image_model():
+    s = dbmod.new_session()
+    modelcfg.save(s, "image", "openrouter", "google/gemini-2.5-flash-image", "")
+    s.close()
+
+
+def test_layouts_need_login(client):
+    assert client.get("/layouts", follow_redirects=False).status_code == 303
+    assert client.get("/api/layouts?project=x").status_code == 401
+
+
+def test_page_and_nav(logged):
+    html = logged.get("/layouts").text
+    assert '<h1 id="page-title">Layouts</h1>' in html and 'href="/layouts" aria-current="page"' in html
+
+
+def test_detect_mime_and_decode():
+    assert lay.detect_mime(PNG) == "image/png" and lay.detect_mime(b"GIF89a") is None
+    assert lay.decode_image("data:image/png;base64," + B64) == (PNG, "image/png")
+    for bad in ("###", base64.b64encode(b"<svg/>").decode(), ""):
+        try:
+            lay.decode_image(bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+
+
+def test_references_brief_and_isolation(logged):
+    make_projects("Zombie Party", "A Ilha")
+    r = logged.post("/api/layouts/references", json={"project": "zombie-party", "data": B64, "note": "logo"})
+    assert r.status_code == 200 and r.json()["kind"] == "reference"
+    assert logged.post("/api/layouts/references", json={"project": "zombie-party", "data": "aGk="}).status_code == 422
+    assert logged.put("/api/layouts/brief", json={"project": "zombie-party", "brief": " sombrio "}).json()["brief"] == "sombrio"
+    st = logged.get("/api/layouts?project=zombie-party").json()
+    assert len(st["references"]) == 1 and st["brief"] == "sombrio" and "Modelos" in st["problem"]
+    other = logged.get("/api/layouts?project=a-ilha").json()
+    assert other["references"] == [] and other["brief"] == ""  # não vaza entre projetos
+    img = logged.get(r.json()["url"])
+    assert img.status_code == 200 and img.headers["content-type"] == "image/png" and img.content == PNG
+    for _ in range(lay.MAX_REFERENCES):
+        logged.post("/api/layouts/references", json={"project": "zombie-party", "data": B64})
+    assert logged.post("/api/layouts/references", json={"project": "zombie-party", "data": B64}).status_code == 422
+
+
+def test_generate_approve_and_replace(logged, monkeypatch):
+    make_projects("Zombie Party")
+    gen = {"n": 0, "refs": None}
+
+    async def fake(model, prompt, refs, ratio):
+        gen["n"] += 1
+        gen["refs"], gen["ratio"], gen["prompt"] = len(refs), ratio, prompt
+        if gen["n"] > 2:
+            raise ProviderError("sem créditos")
+        return PNG + bytes([gen["n"]]), "image/png"
+
+    monkeypatch.setattr(lay, "request_image", fake)
+    body = {"project": "zombie-party", "format": "story", "count": 2}
+    assert logged.post("/api/layouts/generate", json=body).status_code == 422  # sem modelo de imagem configurado
+    set_image_model()
+    logged.post("/api/layouts/references", json={"project": "zombie-party", "data": B64, "note": "logo verde"})
+    logged.put("/api/layouts/brief", json={"project": "zombie-party", "brief": "preto e verde ácido"})
+    assert logged.post("/api/layouts/generate", json={**body, "format": "tiktok"}).status_code == 422
+    assert logged.post("/api/layouts/generate", json={**body, "count": 9}).status_code == 422
+    r = logged.post("/api/layouts/generate", json=body)
+    assert r.status_code == 200 and len(r.json()["layouts"]) == 2 and r.json()["error"] == ""
+    assert gen["refs"] == 1 and gen["ratio"] == "9:16" and "preto e verde ácido" in gen["prompt"] and "logo verde" in gen["prompt"]
+    a, b = [x["id"] for x in r.json()["layouts"]]
+    partial = logged.post("/api/layouts/generate", json={**body, "count": 2})  # falha na 1ª: nada sai
+    assert partial.status_code == 502 and "sem créditos" in partial.json()["detail"]
+
+    assert logged.post(f"/api/layouts/{a}/decide", json={"approve": True}).json()["status"] == "approved"
+    assert logged.post(f"/api/layouts/{b}/decide", json={"approve": True}).json()["status"] == "approved"
+    layouts = {x["id"]: x["status"] for x in logged.get("/api/layouts?project=zombie-party").json()["layouts"]}
+    assert layouts == {b: "approved"}  # o anterior foi arquivado: só um oficial por formato
+    assert logged.delete(f"/api/layouts/assets/{b}").status_code == 409
+    assert logged.post(f"/api/layouts/{b}/decide", json={"approve": False}).status_code == 409
+    actions = [r["action"] for r in logged.get("/api/audit").json()]
+    assert "layout_generate" in actions and "layout_approve" in actions
+
+
+def test_extract_image():
+    ok = {"choices": [{"message": {"images": [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + B64}}]}}]}
+    assert lay.extract_image(ok) == (PNG, "image/png")
+    for bad in ({}, {"choices": [{"message": {"content": "oi"}}]}):
+        try:
+            lay.extract_image(bad)
+        except ProviderError:
+            continue
+        raise AssertionError(bad)

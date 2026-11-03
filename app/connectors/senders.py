@@ -12,6 +12,8 @@ from . import Connector, ConnectorError, Ctx, Op, TransientError, register, requ
 
 _EMAIL = re.compile(r"^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$")
 
+_IG_PROVIDERS = {"instagram", "instagram-standalone"}
+
 
 def _no_newlines(*values: str) -> None:
     if any("\r" in v or "\n" in v for v in values):
@@ -71,9 +73,12 @@ class Postiz(Connector):
                 when = when.replace(tzinfo=timezone.utc)
             if when <= datetime.now(timezone.utc):
                 raise ConnectorError("a data de agendamento já passou")
+        settings = {"__type": ch.get("identifier", "")}
+        if settings["__type"] in _IG_PROVIDERS:
+            settings["post_type"] = "post"  # o Postiz exige post_type (post|story) no Instagram; "post" = feed
         body = {"type": kind, "date": when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"), "shortLink": False,
                 "tags": [], "posts": [{"integration": {"id": ch["id"]}, "value": [{"content": params["texto"], "image": []}],
-                                       "settings": {"__type": ch.get("identifier", "")}}]}
+                                       "settings": settings}]}
         data = await request_json(ctx, "POST", f"{base}/api/public/v1/posts", body=body, headers=self._headers(ctx))
         ref = ""
         if isinstance(data, list) and data and isinstance(data[0], dict):

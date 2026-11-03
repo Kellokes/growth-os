@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -18,19 +18,21 @@ from .audit import audit
 from .config import get_settings
 from .db import (
     Agent, AgentNote, AuditLog, Automation, CommandRun, ContentItem, Conversation, GrowthProject, Integration, Message, Metric,
-    Mission, Action, Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
+    Mission, Action, LayoutAsset, Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
 from . import actions as acts
 from . import approvals as appr
 from . import content as cnt
 from . import growth
+from . import layouts as lay
 from . import missions
 from . import modelcfg
 from . import routines
 from . import projects as proj
 from . import reset as rst
 from .providers import all_providers
+from .providers.base import ProviderError
 from .security import (
     LOGIN_CHALLENGE_SECONDS, LOGIN_COOKIE, SESSION_COOKIE, Auth, check_password, client_ip,
     complete_login_challenge, create_login_challenge, create_session, current_auth,
@@ -268,6 +270,11 @@ def automations_page(request: Request, db: DB = Depends(get_db)):
 @app.get("/content", response_class=HTMLResponse)
 def content_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "content.html", "board")
+
+
+@app.get("/layouts", response_class=HTMLResponse)
+def layouts_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "layouts.html", "layouts")
 
 
 @app.get("/projects", response_class=HTMLResponse)
@@ -1846,3 +1853,155 @@ def agent_outputs(project: str = "all", days: int = 14, agent: str = "",
         j["content"] = pieces.get(t.id, [])
         out.append(j)
     return {"outputs": out, "days": days}
+
+
+# ---------- estúdio de layouts por projeto (referências + layouts gerados) ----------
+
+class BriefIn(BaseModel):
+    project: str = Field(max_length=48)
+    brief: str = Field(default="", max_length=3000)
+
+
+class ReferenceIn(BaseModel):
+    project: str = Field(max_length=48)
+    data: str = Field(max_length=6_000_000)  # base64 (aceita data:URL)
+    note: str = Field(default="", max_length=300)
+
+
+class GenerateIn(BaseModel):
+    project: str = Field(max_length=48)
+    format: str = Field(max_length=12)
+    count: int = Field(default=2, ge=1, le=lay.MAX_PER_REQUEST)
+    feedback: str = Field(default="", max_length=1000)
+
+
+class LayoutDecideIn(BaseModel):
+    approve: bool
+    note: str = Field(default="", max_length=300)
+
+
+def _asset_or_404(db: DB, aid: int) -> LayoutAsset:
+    a = db.get(LayoutAsset, aid)
+    if a is None:
+        raise HTTPException(404, "imagem não encontrada")
+    return a
+
+
+@app.get("/api/layouts")
+def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, project)
+    rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == p.id, LayoutAsset.status != "archived")
+            .order_by(LayoutAsset.id.desc()).all())
+    try:
+        c = lay.image_choice(db)
+        model, problem = c.model, ""
+    except ProviderError as e:
+        model, problem = "", str(e)
+    return {
+        "project": p.slug, "brief": p.style_brief or "",
+        "formats": [{"key": k, "name": v[0], "ratio": v[1], "use": v[2]} for k, v in lay.FORMATS.items()],
+        "references": [lay.asset_json(a) for a in rows if a.kind == "reference"],
+        "layouts": [lay.asset_json(a) for a in rows if a.kind == "layout"],
+        "image_model": model, "problem": problem,
+        "limits": {"references": lay.MAX_REFERENCES, "per_request": lay.MAX_PER_REQUEST},
+    }
+
+
+@app.get("/api/layouts/assets/{aid}")
+def layout_asset_file(aid: int, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    a = _asset_or_404(db, aid)
+    return Response(a.data, media_type=a.mime, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.put("/api/layouts/brief")
+def layouts_brief(body: BriefIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, body.project)
+    p.style_brief = body.brief.strip()
+    db.commit()
+    audit(db, auth.user.username, "layout_brief", p.slug, client_ip(request))
+    return {"brief": p.style_brief}
+
+
+@app.post("/api/layouts/references")
+def layouts_add_reference(body: ReferenceIn, request: Request, auth: Auth = Depends(current_auth),
+                          db: DB = Depends(get_db)):
+    p = _project_or_404(db, body.project)
+    if db.query(LayoutAsset).filter(LayoutAsset.project_id == p.id, LayoutAsset.kind == "reference").count() >= lay.MAX_REFERENCES:
+        raise HTTPException(422, f"no máximo {lay.MAX_REFERENCES} referências por projeto: apague alguma")
+    try:
+        data, mime = lay.decode_image(body.data)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, note=body.note.strip())
+    db.add(a)
+    db.commit()
+    audit(db, auth.user.username, "layout_reference_add", f"{p.slug} #{a.id}", client_ip(request))
+    return lay.asset_json(a)
+
+
+@app.post("/api/layouts/generate")
+async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depends(current_auth),
+                           db: DB = Depends(get_db)):
+    """Gera `count` layouts novos para o formato, com as referências do projeto. Um clique = no máximo 4 imagens."""
+    p = _project_or_404(db, body.project)
+    if body.format not in lay.FORMATS:
+        raise HTTPException(422, "formato inválido")
+    try:
+        choice = lay.image_choice(db)
+    except ProviderError as e:
+        raise HTTPException(422, str(e)) from e
+    refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == p.id, LayoutAsset.kind == "reference")
+                 .order_by(LayoutAsset.id).all())
+    refs = [(a.data, a.mime) for a in refs_rows]
+    prompt = lay.build_prompt(p.name, p.style_brief or "", body.format, body.feedback, [a.note for a in refs_rows])
+    ratio = lay.FORMATS[body.format][1]
+    made, error = [], ""
+    for _ in range(body.count):
+        try:
+            data, mime = await lay.request_image(choice.model, prompt, refs, ratio)
+        except ProviderError as e:
+            error = str(e)
+            break
+        a = LayoutAsset(project_id=p.id, kind="layout", format=body.format, status="proposed", mime=mime, data=data,
+                        note=body.feedback.strip(), prompt=prompt, model=choice.model)
+        db.add(a)
+        db.commit()
+        made.append(a)
+    audit(db, auth.user.username, "layout_generate", f"{p.slug} {body.format} x{len(made)} {choice.model}", client_ip(request))
+    if not made:
+        raise HTTPException(502, error or "não saiu nenhuma imagem")
+    return {"layouts": [lay.asset_json(a) for a in made], "error": error}
+
+
+@app.post("/api/layouts/{aid}/decide")
+def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth = Depends(current_auth),
+                   db: DB = Depends(get_db)):
+    """Aprovar vira o layout oficial do projeto naquele formato (o anterior é arquivado); rejeitar descarta a proposta."""
+    a = _asset_or_404(db, aid)
+    if a.kind != "layout" or a.status not in ("proposed", "rejected", "approved"):
+        raise HTTPException(409, "este layout não está em votação")
+    if body.approve:
+        for old in db.query(LayoutAsset).filter(LayoutAsset.project_id == a.project_id, LayoutAsset.kind == "layout",
+                                                LayoutAsset.format == a.format, LayoutAsset.status == "approved",
+                                                LayoutAsset.id != a.id).all():
+            old.status = "archived"
+        a.status = "approved"
+    else:
+        if a.status == "approved":
+            raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo")
+        a.status = "rejected"
+        a.note = body.note.strip() or a.note
+    db.commit()
+    audit(db, auth.user.username, "layout_" + ("approve" if body.approve else "reject"), f"#{a.id} {a.format}", client_ip(request))
+    return lay.asset_json(a)
+
+
+@app.delete("/api/layouts/assets/{aid}")
+def layouts_delete(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    a = _asset_or_404(db, aid)
+    if a.kind == "layout" and a.status == "approved":
+        raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo antes de apagar")
+    db.delete(a)
+    db.commit()
+    audit(db, auth.user.username, "layout_delete", f"#{aid}", client_ip(request))
+    return {"ok": True}

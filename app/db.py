@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, inspect,
+    Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, inspect,
     text as sql_text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -120,6 +120,7 @@ class GrowthProject(Base):
     name: Mapped[str] = mapped_column(String(80))
     icon: Mapped[str] = mapped_column(String(8), default="◆")
     description: Mapped[str] = mapped_column(Text, default="")
+    style_brief: Mapped[str] = mapped_column(Text, default="")  # briefing de estilo visual para os layouts
     repo: Mapped[str] = mapped_column(String(120), default="")  # DONO/REPO no GitHub
     domains: Mapped[str] = mapped_column(Text, default="")  # separados por vírgula
     compose_project: Mapped[str] = mapped_column(String(64), default="")  # liga aos containers
@@ -320,6 +321,28 @@ class ContentItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+# ---------- layouts de cada projeto (referência visual de stories, carrosséis e reels) ----------
+
+class LayoutAsset(Base):
+    """Imagem do estúdio de layouts: uma referência que o owner subiu ou um layout gerado pela IA.
+
+    kind=reference: imagem de referência do projeto (logo, posts que o owner gosta, paleta).
+    kind=layout: proposta gerada; status proposed | approved | rejected | archived. Só um approved por projeto e formato.
+    """
+    __tablename__ = "layout_assets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("growth_projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(12), index=True)
+    format: Mapped[str] = mapped_column(String(12), default="")  # story | carrossel | reel (só em layout)
+    status: Mapped[str] = mapped_column(String(12), default="")
+    mime: Mapped[str] = mapped_column(String(24), default="image/png")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    note: Mapped[str] = mapped_column(Text, default="")  # referência: o que ela mostra; layout: comentário do owner
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 # ---------- missões, aprovações, ações em integrações e eventos (sempre de um projeto) ----------
 
 class Mission(Base):
@@ -426,6 +449,7 @@ _NEW_COLUMNS = {
         "event_min": "INTEGER NOT NULL DEFAULT 20",
     },
     "events": {"handled": "INTEGER NOT NULL DEFAULT 0"},
+    "growth_projects": {"style_brief": "TEXT NOT NULL DEFAULT ''"},
 }
 
 

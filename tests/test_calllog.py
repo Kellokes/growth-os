@@ -160,3 +160,20 @@ def test_clear_errors_keeps_ok_and_running(logged):
     assert logged.delete("/api/calls?status=ok").status_code == 422
     assert logged.delete("/api/calls?status=error").json() == {"deleted": 1}
     assert sorted(r.status for r in rows()) == ["ok", "running"]
+
+
+def test_after_id_hides_older_calls_without_deleting_them(logged):
+    s = dbmod.new_session()
+    s.add_all([dbmod.AiCall(activity="threads", provider="a", status="error", error="velho") for _ in range(7)])
+    s.commit()
+    s.close()
+    first = logged.get("/api/calls?limit=5").json()
+    assert len(first["calls"]) == 5 and first["failed_total"] == 7
+    cut = first["latest_id"]
+    s = dbmod.new_session()
+    s.add(dbmod.AiCall(activity="threads", provider="a", status="ok"))
+    s.commit()
+    s.close()
+    after = logged.get(f"/api/calls?limit=5&after_id={cut}").json()
+    assert len(after["calls"]) == 1 and after["failed_total"] == 0 and after["failed_24h"] == 0
+    assert len(rows()) == 8  # nada foi apagado

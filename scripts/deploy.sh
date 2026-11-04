@@ -56,6 +56,7 @@ main() {
 
   echo "==> Build e subida (${NEW:0:7})"
   export GROWTH_OS_COMMIT="$NEW"
+  export CLI_REFRESH="$(date +%G-W%V)"
   docker compose up -d --build
 
   wait_healthy() {

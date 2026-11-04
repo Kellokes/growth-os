@@ -1,7 +1,11 @@
 FROM python:3.12-slim
 
 # Node é necessário para os CLIs oficiais do Claude Code e do Codex.
-RUN apt-get update \
+# CLI_REFRESH muda a cada semana (scripts/deploy.sh): sem isso o Docker reaproveita a camada em cache e os CLIs
+# ficam velhos, sem conhecer os modelos novos ("Model metadata for ... not found").
+ARG CLI_REFRESH=""
+RUN echo "CLIs: ${CLI_REFRESH}" \
+ && apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates git nodejs npm \
  && npm install -g @anthropic-ai/claude-code @openai/codex \
  && npm cache clean --force \

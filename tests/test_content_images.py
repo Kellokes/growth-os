@@ -355,7 +355,7 @@ def test_plate_hybrid_keeps_art_and_only_edits_scenery(logged, monkeypatch):
     assert prompts == []  # o layout já nasce sem texto: não há mais chamada de imagem para remover texto
     plate = s.get(dbmod.LayoutAsset, t.plate_id)
     assert plate.kind == "plate" and plate.data == layout.data
-    assert "NO text at all" in lay.build_prompt("Zombie Party", "", "story") and "LOREM" not in lay.build_prompt("Zombie Party", "", "story")
+    assert "NO TEXT" in lay.build_prompt("Zombie Party", "", "story") and "LOREM" not in lay.build_prompt("Zombie Party", "", "story")
     assert "ONLY the TEXT" in t.prompt and "{{marca}}" in t.prompt  # modelo só desenha texto
     t.status = "approved"
     s.commit()

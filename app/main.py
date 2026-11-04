@@ -18,11 +18,12 @@ from .agent import cmd_json, execute_run, run_agent, tool_message
 from .audit import audit
 from .config import get_settings
 from .db import (
-    Agent, AgentNote, AuditLog, Automation, CommandRun, ContentItem, Conversation, GrowthProject, Integration, Message, Metric,
+    Agent, AgentNote, AiCall, AuditLog, Automation, CommandRun, ContentItem, Conversation, GrowthProject, Integration, Message, Metric,
     Mission, Action, LayoutAsset, Plan, ProjectAgent, Skill, Task, TaskLink, User, get_db, init_db, new_session, utcnow,
 )
 from .executor import classify
 from . import actions as acts
+from . import calllog
 from . import approvals as appr
 from . import content as cnt
 from . import growth
@@ -83,6 +84,7 @@ async def lifespan(_app: FastAPI):
     _protect_process_memory()
     _write_github_token()
     init_db()
+    calllog.sweep(startup=True)
     growth.runner.bind(asyncio.get_running_loop())
     db = new_session()
     try:
@@ -642,6 +644,26 @@ def audit_log(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
         {"at": r.at.isoformat(), "actor": r.actor, "action": r.action, "detail": r.detail, "ip": r.ip}
         for r in rows
     ]
+
+
+@app.get("/api/calls")
+def ai_calls(limit: int = 100, status: str = "", activity: str = "", auth: Auth = Depends(current_auth),
+             db: DB = Depends(get_db)):
+    """Log das chamadas em segundo plano (IA, imagem, renderização), da mais nova para a mais antiga."""
+    calllog.sweep()
+    q = db.query(AiCall)
+    if status in ("running", "ok", "error"):
+        q = q.filter(AiCall.status == status)
+    if activity:
+        q = q.filter(AiCall.activity == activity)
+    rows = q.order_by(AiCall.id.desc()).limit(max(1, min(limit, 300))).all()
+    names = {p.id: p.name for p in db.query(GrowthProject).filter(GrowthProject.id.in_({r.project_id for r in rows if r.project_id})).all()}
+    running = db.query(AiCall).filter(AiCall.status == "running").count()
+    failed = db.query(AiCall).filter(AiCall.status == "error", AiCall.at >= utcnow() - timedelta(hours=24)).count()
+    labels = {a["key"]: a["label"] for a in modelcfg.ACTIVITIES} | calllog.ACTIVITY_LABELS
+    return {"running": running, "failed_24h": failed, "calls": [
+        calllog.call_json(r) | {"project": names.get(r.project_id, ""), "activity_label": labels.get(r.activity, r.activity)}
+        for r in rows]}
 
 
 # ---------- configurações: resetar dados ----------
@@ -2057,7 +2079,7 @@ async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depe
     if body.format not in lay.FORMATS:
         raise HTTPException(422, "formato inválido")
     try:
-        choice = lay.image_choice(db)
+        choice = lay.image_choice(db, log=True, project_id=p.id)
     except ProviderError as e:
         raise HTTPException(422, str(e)) from e
     refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == p.id, LayoutAsset.kind == "reference")
@@ -2068,7 +2090,8 @@ async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depe
     made, error = [], ""
     for _ in range(body.count):
         try:
-            data, mime = await lay.request_image(choice.model, prompt, refs, ratio)
+            with calllog.context("image", p.id, auth.user.username):
+                data, mime = await lay.request_image(choice.model, prompt, refs, ratio)
         except ProviderError as e:
             error = str(e)
             break

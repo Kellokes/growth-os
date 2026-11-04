@@ -53,6 +53,7 @@ KEEP_LABELS = {
     "sessions": "Sessões de login",
     "login_challenges": "Desafios de login",
     "audit_log": "Auditoria",
+    "ai_calls": "Log das chamadas em segundo plano",
 }
 
 CLEAR_TABLES = {model.__tablename__ for model, _ in CLEAR}

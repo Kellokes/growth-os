@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session as DB
 from starlette.concurrency import run_in_threadpool
 
 from .audit import audit
-from . import actions
+from . import actions, calllog
 from .config import get_settings
 from .projects import GatewayError, restart_container, restart_target
 from .db import CommandRun, Message
@@ -117,19 +117,23 @@ async def execute_run(db: DB, run: CommandRun) -> None:
     db.commit()
 
 
-async def _complete(provider: Provider, history: list[ChatTurn]) -> AsyncIterator[dict | str]:
+async def _complete(provider: Provider, history: list[ChatTurn], actor: str = "") -> AsyncIterator[dict | str]:
     """Chama o provider; enquanto ele pensa, solta {"type": "ping"}. O último item é o texto da resposta."""
-    task = asyncio.ensure_future(provider.complete(history))
-    try:
-        while True:
-            done, _ = await asyncio.wait({task}, timeout=HEARTBEAT_SECONDS)
-            if done:
-                break
-            yield {"type": "ping"}
-        yield task.result()
-    finally:
-        if not task.done():
-            task.cancel()
+    activity = calllog.current("activity") or "threads"
+    with calllog.track(provider.id, provider.model, activity, calllog.summarize_history(history), actor=actor) as call:
+        task = asyncio.ensure_future(provider.complete(history))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=HEARTBEAT_SECONDS)
+                if done:
+                    break
+                yield {"type": "ping"}
+            reply = task.result()
+            call.done(calllog.summarize_text(reply))
+            yield reply
+        finally:
+            if not task.done():
+                task.cancel()
 
 
 async def run_agent(db: DB, cid: int, provider: Provider, actor: str, ip: str) -> AsyncIterator[dict]:
@@ -139,7 +143,7 @@ async def run_agent(db: DB, cid: int, provider: Provider, actor: str, ip: str) -
         yield {"type": "step", "n": step + 1, "provider": provider.id}
         reply = ""
         try:
-            async for item in _complete(provider, build_history(db, cid)):
+            async for item in _complete(provider, build_history(db, cid), actor):
                 if isinstance(item, dict):
                     yield item
                 else:

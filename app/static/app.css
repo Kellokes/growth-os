@@ -1229,3 +1229,21 @@ body { padding-bottom: var(--foot-h); }
   .calllog-head .calllog-proj, .calllog-head .calllog-time { display: none; }
   .calllog-err, .calllog-det { padding-left: 4px; }
 }
+
+/* ---------- custos: espaçamento + gráficos ---------- */
+.cost-total, .cost-chart { padding: 20px 22px; }
+.cost-total h2 { margin: 0 0 10px; }
+.cost-total p { margin: 0 0 8px; line-height: 1.5; overflow-wrap: anywhere; }
+.cost-total p:last-child { margin-bottom: 0; }
+.cost-chart .chart { width: 100%; height: auto; display: block; margin-top: 10px; }
+.cost-chart .bar { fill: var(--ink); opacity: .85; }
+.cost-chart .bar:hover { opacity: 1; }
+.cost-chart .axis { stroke: var(--line-strong); stroke-width: 1; }
+.cost-chart .tick { fill: var(--muted); font-size: 11px; }
+.hbars { display: grid; gap: 14px; }
+.hbar-top { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; margin-bottom: 6px; }
+.hbar-track { height: 10px; border-radius: var(--pill); background: var(--panel-3); overflow: hidden; }
+.hbar-fill { height: 100%; border-radius: var(--pill); background: var(--lime-2); }
+.table-view table { min-width: 560px; }
+.table-view th, .table-view td { vertical-align: top; }
+@media (max-width: 720px) { .cost-total, .cost-chart, .table-view { padding: 16px; } }

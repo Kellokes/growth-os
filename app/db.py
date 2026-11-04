@@ -353,6 +353,7 @@ class LayoutAsset(Base):
     kind=reference: imagem de referência do projeto (logo, posts que o owner gosta, paleta).
     kind=template: layout aprovado convertido em HTML (data = prévia PNG); só ele é usado nas peças.
     kind=background: fundo gerado para uma peça, sem texto (para refazer a imagem sem pagar de novo).
+    kind=plate: a arte do layout aprovado SEM texto (logo, moldura, cenário); é o fundo de partida de todas as peças do formato.
     kind=video: MP4 animado da peça (mesmo template, texto e fundo; content_items.video_id aponta para ele).
     kind=piece: imagem de uma peça da Central de Conteúdo (content_items.image_id aponta para ela).
     kind=layout: proposta gerada; status proposed | approved | rejected | archived. Só um approved por projeto e formato.
@@ -368,6 +369,7 @@ class LayoutAsset(Base):
     note: Mapped[str] = mapped_column(Text, default="")  # referência: o que ela mostra; layout: comentário do owner
     prompt: Mapped[str] = mapped_column(Text, default="")
     model: Mapped[str] = mapped_column(String(120), default="")
+    plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # kind=template: layout_assets.id da arte sem texto (kind=plate)
     html: Mapped[str] = mapped_column(Text, default="")  # kind=template: o HTML com {{bg}}, {{titulo}}, {{texto}}, {{marca}}
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
@@ -488,7 +490,7 @@ _NEW_COLUMNS = {
         "img_title": "VARCHAR(200) NOT NULL DEFAULT ''",
         "img_text": "VARCHAR(400) NOT NULL DEFAULT ''",
     },
-    "layout_assets": {"html": "TEXT NOT NULL DEFAULT ''"},
+    "layout_assets": {"html": "TEXT NOT NULL DEFAULT ''", "plate_id": "INTEGER NULL"},
 }
 
 

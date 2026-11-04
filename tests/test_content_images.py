@@ -336,3 +336,40 @@ def test_sanitize_strips_harmless_boilerplate_but_blocks_real_risks():
             lay.sanitize_template(bad)
     with pytest.raises(ValueError, match="achei:"):
         lay.sanitize_template(page.replace("<h1>", "<h1 onclick='x()'>"))
+
+
+def test_plate_hybrid_keeps_art_and_only_edits_scenery(logged, monkeypatch):
+    make_projects("Zombie Party")
+    prompts = []
+
+    async def fake_img(model, prompt, refs, ratio):
+        prompts.append((prompt, len(refs), refs[0][0] if refs else b""))
+        return PNG + bytes([len(prompts)]), "image/png"
+
+    approve_layout(logged, monkeypatch)
+    monkeypatch.setattr(lay, "request_image", fake_img)
+    s = dbmod.new_session()
+    layout = s.query(dbmod.LayoutAsset).filter_by(kind="layout").first()
+    import asyncio as aio
+    t = aio.run(lay.generate_template(s, layout, "mais limpo"))
+    assert "ALL text removed" in prompts[0][0] and "mais limpo" in prompts[0][0] and prompts[0][2] == layout.data
+    plate = s.get(dbmod.LayoutAsset, t.plate_id)
+    assert plate.kind == "plate" and plate.data == PNG + b"\x01"
+    assert "ONLY the TEXT" in t.prompt and "{{marca}}" in t.prompt  # modelo só desenha texto
+    t.status = "approved"
+    s.commit()
+    s.query(dbmod.LayoutAsset).filter(dbmod.LayoutAsset.kind == "template", dbmod.LayoutAsset.id != t.id).update({"status": "archived"})
+    s.commit()
+    cid = new_piece()
+    s2 = dbmod.new_session()
+    c = s2.get(dbmod.ContentItem, cid)
+    aio.run(lay.generate_piece_image(s2, c))
+    scenery, nrefs, ref = prompts[-1]
+    assert "CHANGE ONLY the photographic scenery" in scenery and "foto da festa" in scenery and nrefs == 1 and ref == plate.data
+    # apagar o template leva a arte junto
+    s3 = dbmod.new_session()
+    lay.delete_template(s3, s3.get(dbmod.LayoutAsset, t.id))
+    s3.commit()
+    assert s3.get(dbmod.LayoutAsset, plate.id) is None
+    for x in (s, s2, s3):
+        x.close()

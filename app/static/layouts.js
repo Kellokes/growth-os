@@ -32,7 +32,7 @@
           <figure class="lay-thumb ratio-${f.ratio.replace(":", "x")} ${l.status === "approved" ? "official" : ""}">
             <img src="${esc(l.url)}" alt="layout ${esc(f.name)}" loading="lazy">
             <figcaption><b>${STATUS[l.status] || l.status}</b>${l.note ? ` · ${esc(l.note)}` : ""}</figcaption>
-            <div class="row">${l.status === "approved" ? `<button class="btn small primary" type="button" data-html="${l.id}">Converter em HTML</button>` : `<button class="btn small primary" type="button" data-ok="${l.id}">Aprovar</button>`}
+            <div class="row">${l.status === "approved" ? `<button class="btn small primary" type="button" data-html="${l.id}">Preparar arte sem texto</button>` : `<button class="btn small primary" type="button" data-ok="${l.id}">Aprovar</button>`}
               ${l.status === "proposed" ? `<button class="btn small" type="button" data-no="${l.id}">Rejeitar</button>` : ""}
               ${l.status === "approved" ? "" : `<button class="btn small danger" type="button" data-del="${l.id}">Apagar</button>`}</div>
           </figure>`).join("") : `<div class="muted">Nenhum layout ainda. Gere propostas acima.</div>`}</div>
@@ -43,7 +43,7 @@
   function templatesBlock(f) {
     const rows = (state.templates || []).filter((t) => t.format === f.key);
     const hm = state.html_model || {};
-    return `<h4 class="lay-sub">Template HTML ${hm.problem && !rows.length ? `<small class="muted">· ${esc(hm.problem)}</small>` : ""}</h4>
+    return `<h4 class="lay-sub">Arte sem texto + texto ${hm.problem && !rows.length ? `<small class="muted">· ${esc(hm.problem)}</small>` : ""}</h4>
       <p class="muted">É o que vale nos posts: o desenho fica fixo e só o texto e o fundo mudam. Aprove um por formato.</p>
       <div class="lay-grid">${rows.length ? rows.map((t) => `
         <figure class="lay-thumb ratio-${f.ratio.replace(":", "x")} ${t.status === "approved" ? "official" : ""}">
@@ -52,7 +52,7 @@
           <div class="row">${t.status === "approved" ? "" : `<button class="btn small primary" type="button" data-ok="${t.id}">Aprovar</button>`}
             ${t.status === "proposed" ? `<button class="btn small" type="button" data-no="${t.id}">Rejeitar</button>` : ""}
             ${t.status === "approved" ? "" : `<button class="btn small danger" type="button" data-del="${t.id}">Apagar</button>`}</div>
-        </figure>`).join("") : `<div class="muted">Aprove um layout e use "Converter em HTML".</div>`}</div>`;
+        </figure>`).join("") : `<div class="muted">Aprove um layout e use "Preparar arte sem texto".</div>`}</div>`;
   }
 
   async function load() {

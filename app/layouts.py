@@ -238,19 +238,21 @@ def sanitize_template(html: str) -> str:
 def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> str:
     w, h = CANVAS[fmt]
     lines = [
-        f"Convert the attached brand layout image into ONE self-contained HTML document with a fixed canvas of {w}x{h} pixels "
-        f"for the brand \"{project_name}\" ({FORMATS[fmt][0]}). Recreate the layout as faithfully as you can: composition, "
-        "colors, typography feel, shapes, margins and where each text goes.",
+        f"Build ONE self-contained HTML document with a fixed canvas of {w}x{h} pixels for the brand \"{project_name}\" "
+        f"({FORMATS[fmt][0]}). The attached layout image already has its artwork (logo, frame, ornaments, scenery) and I will "
+        "supply that artwork myself as the full-size background. Your job is ONLY the TEXT: place the headline and the supporting "
+        "line exactly where the layout shows them, with the same color, weight, size, alignment and letter case. Do NOT redraw the "
+        "logo, frame, borders, ornaments, dividers or any shape: they are in the background already.",
         "Rules:",
         f"- html and body: margin 0, width {w}px, height {h}px, overflow hidden. Only an inline <style> block; no <script>, "
         "no <link>, no <meta>, no <iframe>, no comments, no xmlns, no `//` or `http` anywhere, "
         "no external URLs, no web fonts (use system font stacks such as Impact, 'Arial Black', Arial, sans-serif).",
         "- The full-size background element must use exactly: background-image: {{bg}}; background-size: cover; "
         "background-position: center;  (the placeholder {{bg}} is replaced by the real image).",
-        "- Placeholders (exact text, used once each): {{titulo}} for the headline, {{texto}} for the supporting line, "
-        "{{marca}} for the brand name/logo text. Style them so long text wraps and never overflows (word-wrap, max sizes).",
+        "- Placeholders (exact text, used once each): {{titulo}} for the headline, {{texto}} for the supporting line. "
+        "Do not use {{marca}}: the logo is part of the background. Style them so long text wraps and never overflows (word-wrap, max sizes).",
         "- Fonts: use ONLY these families, first in the font-family list: " + ", ".join(BUNDLED_FONTS[:13]) + ". Any other family is replaced.",
-        "- Draw any decorative shapes with CSS only. Do not put any other text on the page.",
+        "- Do not put any other text on the page, and keep the page background transparent apart from the {{bg}} layer.",
         "Answer with the HTML document only, inside a ```html code block.",
     ]
     if feedback.strip():
@@ -347,9 +349,25 @@ def approved_template(db, project_id: int, fmt: str) -> LayoutAsset | None:
     return approved_asset(db, project_id, "template", fmt)
 
 
+def build_plate_prompt(fmt: str, feedback: str = "") -> str:
+    lines = [
+        f"Edit the attached {FORMATS[fmt][0]} layout. Return the SAME image with ALL text removed: every headline, supporting line, "
+        "caption, number and letter. Do not remove or change the logo/emblem if it is a drawn symbol, the frame, borders, ornaments, "
+        "dividers, scenery, colors, lighting or composition. Where text was, leave the panel or background clean and calm so new "
+        "text can be written there later. Keep exactly the same proportions. No new text, letters or watermarks.",
+    ]
+    if feedback.strip():
+        lines.append(f"Adjustments requested by the owner: {feedback.strip()[:500]}")
+    return "\n".join(lines)
+
+
 async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> LayoutAsset:
-    """Converte um layout aprovado em template HTML (uma chamada de IA) e guarda a prévia renderizada."""
+    """Layout aprovado -> arte sem texto (1 imagem) + HTML só com o texto (1 chamada). A prévia usa as duas."""
     choice = html_choice(db, log=True, project_id=layout.project_id)
+    img_choice = image_choice(db, log=True, project_id=layout.project_id)
+    with calllog.context("image", layout.project_id):
+        plate_data, plate_mime = await request_image(img_choice.model, build_plate_prompt(layout.format, feedback),
+                                                     [(layout.data, layout.mime)], FORMATS[layout.format][1])
     project = db.get(GrowthProject, layout.project_id)
     name = project.name if project else ""
     prompt = build_template_prompt(name, layout.format, feedback)
@@ -362,13 +380,24 @@ async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> Layo
     from . import motion  # import tardio: motion importa este módulo
 
     with calllog.context("layout_html", layout.project_id):
-        preview = await asyncio.to_thread(motion.render_still, html, layout.format, None, "TÍTULO DO POST",
+        preview = await asyncio.to_thread(motion.render_still, html, layout.format, (plate_data, plate_mime), "TÍTULO DO POST",
                                           "Frase de apoio do post, em uma ou duas linhas.", name)
+    plate = LayoutAsset(project_id=layout.project_id, kind="plate", format=layout.format, status="proposed", mime=plate_mime,
+                        data=plate_data, model=img_choice.model, prompt=build_plate_prompt(layout.format, feedback))
+    db.add(plate)
+    db.flush()
     t = LayoutAsset(project_id=layout.project_id, kind="template", format=layout.format, status="proposed", mime="image/png",
-                    data=preview, html=html, note=feedback.strip(), prompt=prompt, model=choice.model)
+                    data=preview, html=html, note=feedback.strip(), prompt=prompt, model=choice.model, plate_id=plate.id)
     db.add(t)
     db.commit()
     return t
+
+
+def delete_template(db, t: LayoutAsset) -> None:
+    """Apaga o template e a arte sem texto que veio com ele."""
+    if t.plate_id and (plate := db.get(LayoutAsset, t.plate_id)) is not None:
+        db.delete(plate)
+    db.delete(t)
 
 
 # ---------- imagem de cada peça: fundo gerado + texto no template ----------
@@ -394,6 +423,19 @@ def build_background_prompt(project_name: str, brief: str, c: ContentItem, feedb
         f"Subject: {c.media[:1000]}" if c.media.strip() else f"Subject: {(c.title or c.body)[:300]}",
         f"Brand style brief: {brief.strip()[:1500]}" if brief.strip() else "",
         "Attached images, if any, are brand references: follow their palette and mood.",
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+def build_scenery_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
+    name, ratio, _ = FORMATS[c.visual_format]
+    lines = [
+        f"Edit the attached artwork of the brand \"{project_name}\" ({name}). KEEP EXACTLY as they are: the logo/emblem, the frame, "
+        "borders, ornaments, dividers, the panel or area reserved for text, the composition and the colors of those elements. "
+        f"CHANGE ONLY the photographic scenery/background to fit this subject: {(c.media.strip() or c.title or c.body)[:600]}.",
+        "ABSOLUTELY NO text, letters or numbers anywhere; keep the text area clean.",
+        f"Brand style brief: {brief.strip()[:1000]}" if brief.strip() else "",
         f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
     ]
     return "\n".join(x for x in lines if x)
@@ -461,9 +503,15 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
     project = db.get(GrowthProject, c.project_id)
     refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
                  .order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all())
-    prompt = build_background_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
+    plate = db.get(LayoutAsset, template.plate_id) if template.plate_id else None
+    if plate is not None:  # arte aprovada sem texto: o modelo só troca o cenário e mantém logo e moldura
+        prompt = build_scenery_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
+        refs = [(plate.data, plate.mime)]
+    else:  # template antigo, sem arte: fundo novo como antes
+        prompt = build_background_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
+        refs = [(a.data, a.mime) for a in refs_rows]
     with calllog.context("image", c.project_id):
-        data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in refs_rows], FORMATS[c.visual_format][1])
+        data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
     bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
                      model=choice.model, prompt=prompt)
     with calllog.context("image", c.project_id):

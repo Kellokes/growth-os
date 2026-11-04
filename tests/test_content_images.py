@@ -430,3 +430,9 @@ def test_still_has_no_zoom_but_video_does():
     still = motion.build_composition("<style>.a{}</style><div>{{titulo}}</div>", "story", "none", "t", "x", zoom=False)
     video = motion.build_composition("<style>.a{}</style><div>{{titulo}}</div>", "story", "none", "t", "x")
     assert "scale: 1.05" not in still and "scale: 1.05" in video
+
+
+def test_prompts_keep_text_in_the_empty_panel():
+    assert "EMPTY text panel" in lay.build_template_prompt("Marca", "story") and "Never place text over a photograph" in lay.build_template_prompt("Marca", "story")
+    c = dbmod.ContentItem(visual_format="story", title="t", body="b", media="cartas")
+    assert "ONLY in the photo window" in lay.build_scenery_prompt("Marca", "", c)

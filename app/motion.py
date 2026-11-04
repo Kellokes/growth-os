@@ -63,7 +63,7 @@ def build_composition(template: str, fmt: str, bg_value: str, title: str, text: 
 <style>
 html, body {{ margin: 0; width: {w}px; height: {h}px; overflow: hidden; }}
 {styles}
-.m-title, .m-text {{ display: inline-block; max-width: 100%; }}
+.m-title, .m-text {{ display: inline-block; max-width: 100%; overflow-wrap: break-word; text-wrap: balance; text-shadow: 0 2px 10px rgba(0,0,0,.55), 0 0 2px rgba(0,0,0,.6); }}
 #m-frame, #m-kb {{ position: absolute; inset: 0; overflow: hidden; }}
 </style>
 </head>

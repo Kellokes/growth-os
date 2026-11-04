@@ -68,21 +68,24 @@ def build_prompt(project_name: str, brief: str, fmt: str, feedback: str = "", no
     name, ratio, use = FORMATS[fmt]
     lines = [
         f"Create a brand layout template for social media: {name} ({ratio}, {use}) for the brand \"{project_name}\".",
-        "This is a visual REFERENCE that will guide future posts, not a finished post: show the composition, "
-        "color palette, typography style, graphic elements, margins and where the logo, headline and body text go.",
-        "TEXT RULE: the image must contain NO text at all: no headline, no supporting line, no captions, labels, URLs, dates, "
-        "numbers, small print or fake words. Only the brand logo (the drawn emblem and its own wordmark, if the references have one) "
-        "and the graphic frame, borders, ornaments and scenery. Leave a clean, calm panel or empty area where a headline and a "
-        "supporting line will be written later, in the same place for every post. Do not invent real claims, prices or people.",
+        "This is a visual REFERENCE of the ARTWORK only: show the composition, color palette, graphic elements, frame, margins "
+        "and the position of the logo. It is NOT a finished post and it has NO words on it.",
+        "ABSOLUTE RULE, NO TEXT: do not render any letters, words, numbers, symbols that look like writing, headline, subtitle, "
+        "caption, label, button, URL, date, small print, placeholder or fake/garbled words anywhere. The ONLY lettering allowed is "
+        "the one that is part of the brand logo itself (copy it exactly from the reference images). Everything else is pure artwork: "
+        "frame, borders, ornaments, scenery, textures. Leave the large central/lower area completely empty, calm and dark or plain "
+        "(no lines, no placeholder bars), because text will be added later by software. Do not invent real claims, prices or people.",
     ]
     if brief.strip():
         lines.append(f"Brand style brief from the owner: {brief.strip()[:3000]}")
     if notes:
         lines.append("Reference images are attached. What each one shows: " + " | ".join(n[:200] for n in notes if n))
     else:
-        lines.append("Reference images, if attached, define the visual style: follow their palette, mood and typography.")
+        lines.append("Reference images, if attached, define the visual style: follow their palette, mood and ornaments, but ignore any text they contain except the logo.")
     if feedback.strip():
         lines.append(f"Adjustments requested by the owner for this round: {feedback.strip()[:1000]}")
+    lines.append("FINAL CHECK before answering: the image has zero text except the logo's own lettering. If the style brief or "
+                 "adjustments above mention titles, typography or text, they refer to the later software step: do NOT draw them.")
     return "\n".join(lines)
 
 

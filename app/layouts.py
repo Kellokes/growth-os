@@ -98,19 +98,12 @@ def extract_image(data: dict) -> tuple[bytes, str]:
     raise ProviderError("o modelo não devolveu nenhuma imagem; tente de novo ou escolha outro modelo de imagem em /settings")
 
 
-async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
-    """Pede UMA imagem ao OpenRouter, com as referências junto."""
-    key = _api_key()
-    if not key:
-        raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
-    content: list[dict] = [{"type": "text", "text": prompt}]
-    content += [{"type": "image_url", "image_url": {"url": data_url(d, m)}} for d, m in refs[:MAX_REFS_SENT]]
-    body = {
-        "model": model,
-        "messages": [{"role": "user", "content": content}],
-        "modalities": ["image", "text"],
-        "image_config": {"aspect_ratio": ratio},
-    }
+# Modelos que geram imagem e texto (Gemini, GPT Image) pedem ["image", "text"]; os que só geram imagem (Seedream, FLUX...)
+# recusam isso com 404 "No endpoints found that support the requested output modalities". Tenta uma, depois a outra.
+MODALITY_TRIES = (["image", "text"], ["image"])
+
+
+async def _post_chat(key: str, body: dict) -> tuple[int, dict]:
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             resp = await client.post(OPENROUTER_URL, json=body, headers={"Authorization": f"Bearer {key}"})
@@ -120,10 +113,35 @@ async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], 
         payload = resp.json()
     except ValueError:
         payload = {}
-    if resp.status_code != 200:
+    return resp.status_code, payload if isinstance(payload, dict) else {}
+
+
+def _is_modality_error(status: int, msg: str) -> bool:
+    return status in (400, 404) and "modalit" in msg.lower()
+
+
+async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
+    """Pede UMA imagem ao OpenRouter, com as referências junto."""
+    key = _api_key()
+    if not key:
+        raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    content += [{"type": "image_url", "image_url": {"url": data_url(d, m)}} for d, m in refs[:MAX_REFS_SENT]]
+    for i, modalities in enumerate(MODALITY_TRIES):
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": content}],
+            "modalities": modalities,
+            "image_config": {"aspect_ratio": ratio},
+        }
+        status, payload = await _post_chat(key, body)
+        if status == 200:
+            return extract_image(payload)
         _, msg = _error_detail(payload)
-        raise _explain(resp.status_code, msg, model)
-    return extract_image(payload)
+        if i + 1 < len(MODALITY_TRIES) and _is_modality_error(status, msg):
+            continue
+        raise _explain(status, msg, model)
+    raise ProviderError("o OpenRouter recusou o pedido de imagem")  # inalcançável: o laço sempre retorna ou levanta
 
 
 def image_choice(db) -> modelcfg.Choice:

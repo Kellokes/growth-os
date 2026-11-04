@@ -148,7 +148,9 @@
     fillChannels(it?.channel || "instagram");
     labelsFor(it?.channel || "instagram");
     $("#cf-head").value = it?.title || ""; $("#cf-to").value = it?.recipient || ""; $("#cf-purpose").value = it?.purpose || "";
-    $("#cf-body").value = it?.body || ""; $("#cf-media").value = it?.media || ""; $("#cf-format").value = it?.visual_format; $("#cf-when").value = it?.scheduled_at || "";
+    $("#cf-body").value = it?.body || ""; $("#cf-media").value = it?.media || ""; $("#cf-format").value = it?.visual_format;
+    $("#cf-mode").value = it?.image_mode || "template"; $("#cf-iprompt").value = it?.image_prompt || ""; delete $("#cf-tpl").dataset.sel; delete $("#cf-ref").dataset.sel;
+    $("#cf-when").value = it?.scheduled_at || "";
     $("#content-form").querySelectorAll("input, textarea, select").forEach((el) => { if (el.id !== "cf-link") el.disabled = !!ro; });
     $("#cf-tags").innerHTML = isNew ? "" : `<span class="badge ${STAGE_BADGE[it.stage] || ""}">${esc(STAGE_LABEL[it.stage] || it.stage)}</span>
       <span class="tag">${esc(aname(it.agent))}</span><span class="tag">${esc(pinfo(it.project).icon)} ${esc(pinfo(it.project).name)}</span>
@@ -163,26 +165,68 @@
     $("#content-dialog").showModal();
   }
 
+  // templates e referências do projeto da peça, para o seletor "Como gerar a imagem"
+  const layoutCache = {};
+  async function projectLayouts(slug) {
+    if (!slug) return { templates: [], references: [] };
+    try { layoutCache[slug] ||= await api(`/api/layouts?project=${encodeURIComponent(slug)}`); } catch (e) { return { templates: [], references: [] }; }
+    return layoutCache[slug];
+  }
+  const MODE_HINT = {
+    template: "Gera só o fundo (uma imagem do OpenRouter) e monta o texto no template do projeto: todas as peças saem iguais.",
+    reference: "Sem template: o modelo cria a imagem inteira a partir da referência escolhida, sem texto escrito nela.",
+    prompt: "Sem template e sem referência: a imagem sai só do prompt abaixo (o agente propõe um; você pode editar).",
+  };
+  async function renderMode() {
+    const fmt = $("#cf-format").value; const mode = $("#cf-mode").value;
+    $("#cf-modebox").hidden = !fmt;
+    $("#cf-imgtext").hidden = !fmt || mode !== "template";
+    if (!fmt) return;
+    const slug = current ? current.project : $("#cf-project").value;
+    const lay = await projectLayouts(slug);
+    const tpls = (lay.templates || []).filter((t) => t.format === fmt && ["approved", "proposed"].includes(t.status));
+    const tsel = $("#cf-tpl").dataset.sel ?? String(current?.template_id || "");
+    $("#cf-tpl").innerHTML = `<option value="">Template aprovado do projeto</option>` + tpls.map((t) => `<option value="${t.id}">#${t.id} · ${t.status === "approved" ? "aprovado" : "proposto"}</option>`).join("");
+    $("#cf-tpl").value = tpls.some((t) => String(t.id) === tsel) ? tsel : "";
+    const rsel = $("#cf-ref").dataset.sel ?? String(current?.ref_id || "");
+    const refs = lay.references || [];
+    $("#cf-ref").innerHTML = `<option value="">Todas as referências do projeto</option>` + refs.map((r) => `<option value="${r.id}">#${r.id}${r.note ? " · " + esc(r.note) : ""}</option>`).join("");
+    $("#cf-ref").value = refs.some((r) => String(r.id) === rsel) ? rsel : "";
+    $("#cf-tpl-wrap").hidden = mode !== "template";
+    $("#cf-ref-wrap").hidden = mode !== "reference";
+    $("#cf-iprompt-wrap").hidden = mode === "template";
+    $("#cf-modehint").textContent = MODE_HINT[mode];
+  }
+  const modeBody = () => ({ image_mode: $("#cf-mode").value, template_id: Number($("#cf-tpl").value) || 0, ref_id: Number($("#cf-ref").value) || 0, image_prompt: $("#cf-iprompt").value });
+  async function saveMode() {  // grava a escolha de modo antes de gerar, senão o botão usaria a escolha antiga
+    if (!current) return;
+    const m = modeBody();
+    if (m.image_mode === (current.image_mode || "template") && m.template_id === (current.template_id || 0) && m.ref_id === (current.ref_id || 0) && m.image_prompt === (current.image_prompt || "")) return;
+    current = await api(`/api/content/${current.id}`, { method: "PATCH", body: JSON.stringify(m) });
+  }
+  ["cf-mode", "cf-tpl", "cf-ref"].forEach((id) => $("#" + id).addEventListener("change", () => { $("#" + id).dataset.sel = $("#" + id).value; renderMode(); }));
+  $("#cf-project").addEventListener("change", () => { $("#cf-tpl").dataset.sel = ""; $("#cf-ref").dataset.sel = ""; renderMode(); });
+
   function renderImage() {
     const it = current; const box = $("#cf-image");
-    $("#cf-imgtext").hidden = !$("#cf-format").value;
+    renderMode();
     const can = it && ["pending", "approved", "failed"].includes(it.status) && $("#cf-format").value;
     box.innerHTML = `${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça">` : ""}
       ${it?.image_error ? `<div class="alert">${esc(it.image_error)}</div>` : ""}
       ${can && it.visual_format ? `<div class="row"><button class="btn small" type="button" data-img="gen">${it.image_url ? "Gerar outra versão" : "Gerar imagem"}</button>
         <button class="btn small ghost" type="button" data-img="up">Subir minha imagem</button></div>
-        <small class="muted">Gera só o fundo (cobra uma imagem do OpenRouter) e monta o texto no template aprovado do projeto.</small>` : ""}
+        <small class="muted">Cobra uma imagem do OpenRouter por geração.</small>` : ""}
       ${it?.video_url ? `<video class="cimg big" src="${esc(it.video_url)}" controls playsinline preload="metadata"></video>` : ""}
       ${can && it.can_video ? `<div class="row"><button class="btn small" type="button" data-vid="gen">${it.video_url ? "Gerar o vídeo de novo" : "Gerar vídeo (6 s)"}</button>
         ${it.video_url ? '<button class="btn small ghost" type="button" data-vid="del">Apagar vídeo</button>' : ""}</div>
         <small class="muted">Anima o mesmo template com o texto e o fundo desta peça. Sem custo de IA; leva alguns segundos. Se você mudar o texto da imagem, o vídeo sai e precisa ser gerado de novo.</small>` : ""}`;
   }
-  $("#cf-format").onchange = () => { $("#cf-imgtext").hidden = !$("#cf-format").value; renderImage(); };
+  $("#cf-format").onchange = () => { renderImage(); };
   $("#cf-image").addEventListener("click", async (ev) => {
     const b = ev.target.closest("[data-img]"); if (!b || !current) return;
     if (b.dataset.img === "up") return $("#cf-image-file").click();
     b.disabled = true; b.textContent = "Gerando… (até 1 min)";
-    try { current = await api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) }); }
+    try { await saveMode(); current = await api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) }); }
     catch (e) { alert(e.message); }
     await loadPieces(); renderImage(); renderActions();
   });
@@ -216,7 +260,7 @@
   }
 
   const formBody = () => ({ channel: $("#cf-channel").value, title: $("#cf-head").value, recipient: $("#cf-to").value,
-    purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, visual_format: $("#cf-format").value, img_title: $("#cf-imgtitle").value, img_text: $("#cf-imgtext-in").value, scheduled_at: $("#cf-when").value });
+    purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, visual_format: $("#cf-format").value, ...modeBody(), img_title: $("#cf-imgtitle").value, img_text: $("#cf-imgtext-in").value, scheduled_at: $("#cf-when").value });
   // Os campos do formulário têm o mesmo nome que os do JSON da peça.
   const changed = () => { const f = formBody(); return Object.keys(f).some((k) => (f[k] || "") !== (current[k] || "")); };
 

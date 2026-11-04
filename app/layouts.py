@@ -458,6 +458,46 @@ def build_scenery_prompt(project_name: str, brief: str, c: ContentItem, feedback
     return "\n".join(x for x in lines if x)
 
 
+def build_reference_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
+    name, ratio, _ = FORMATS[c.visual_format]
+    lines = [
+        f"Create a finished {name} image ({ratio}) for a social media post of the brand \"{project_name}\".",
+        f"Subject: {(c.image_prompt.strip() or c.media.strip() or c.title or c.body)[:1000]}",
+        "The attached images are the brand references: keep their palette, mood and visual identity, and the brand logo if it appears.",
+        f"Brand style brief: {brief.strip()[:1500]}" if brief.strip() else "",
+        "Do not write any headline or sentence on the image; no garbled letters.",
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+def propose_prompt(project_name: str, brief: str, c: ContentItem) -> str:
+    """Prompt que o gerador de conteúdo propõe quando o agente não mandou um: assunto da peça + estilo do projeto."""
+    name, ratio, _ = FORMATS[c.visual_format]
+    subject = (c.media.strip() or c.title or c.body)[:600]
+    style = f" Style: {brief.strip()[:500]}." if brief.strip() else ""
+    return f"{name} image ({ratio}) for the brand \"{project_name}\". {subject}.{style} No text, letters or logos in the image."
+
+
+def build_free_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
+    base = c.image_prompt.strip() or propose_prompt(project_name, brief, c)
+    name, ratio, _ = FORMATS[c.visual_format]
+    lines = [base, f"Format: {name} {ratio}.",
+             f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else ""]
+    return "\n".join(x for x in lines if x)
+
+
+def piece_template(db, c: ContentItem) -> LayoutAsset | None:
+    """Template da peça: o escolhido (do mesmo projeto e formato) ou, sem escolha, o aprovado do projeto."""
+    if c.template_id:
+        t = db.get(LayoutAsset, c.template_id)
+        if (t is None or t.kind != "template" or t.project_id != c.project_id or t.format != c.visual_format
+                or t.status not in ("approved", "proposed")):
+            raise ProviderError("o template escolhido não existe mais ou não serve para este formato: escolha outro")
+        return t
+    return approved_template(db, c.project_id, c.visual_format)
+
+
 def _replace_asset(db, c: ContentItem, attr: str, asset: LayoutAsset) -> None:
     old = db.get(LayoutAsset, getattr(c, attr)) if getattr(c, attr) else None
     db.add(asset)
@@ -496,7 +536,13 @@ def rerender_piece(db, c: ContentItem) -> None:
     """Texto da imagem mudou: refaz só a imagem final, com o mesmo fundo (sem gastar IA). Erros ficam em image_error."""
     if not (c.image_id and c.bg_id and c.visual_format):
         return
-    bg, template = db.get(LayoutAsset, c.bg_id), approved_template(db, c.project_id, c.visual_format)
+    if (c.image_mode or "template") != "template":
+        return
+    try:
+        template = piece_template(db, c)
+    except ProviderError:
+        return
+    bg = db.get(LayoutAsset, c.bg_id)
     if bg is None or template is None:
         return
     try:
@@ -513,7 +559,10 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
     """Gera um fundo novo (a única parte paga) e monta a imagem final no template aprovado do projeto."""
     if not c.visual_format:
         raise ProviderError("esta peça não é visual (story, carrossel ou reel)")
-    template = approved_template(db, c.project_id, c.visual_format)
+    mode = c.image_mode or "template"
+    if mode != "template":
+        return await _generate_free_image(db, c, mode, feedback)
+    template = piece_template(db, c)
     if template is None:
         raise ProviderError(f"Defina o template de {FORMATS[c.visual_format][0]} deste projeto em Layouts antes de gerar a imagem.")
     choice = image_choice(db, log=True, project_id=c.project_id)
@@ -538,11 +587,38 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
     set_piece_image(db, c, final, "image/png", choice.model, prompt)
 
 
+async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = "") -> None:
+    """Sem template: a imagem sai pronta do modelo, só das referências do projeto (reference) ou só de um prompt (prompt)."""
+    choice = image_choice(db, log=True, project_id=c.project_id)
+    project = db.get(GrowthProject, c.project_id)
+    name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
+    refs: list[tuple[bytes, str]] = []
+    if mode == "reference":
+        q = db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
+        rows = [db.get(LayoutAsset, c.ref_id)] if c.ref_id else q.order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all()
+        rows = [a for a in rows if a is not None and a.kind == "reference" and a.project_id == c.project_id]
+        if not rows:
+            raise ProviderError("Suba ao menos uma referência deste projeto em Layouts (ou escolha outro modo de imagem).")
+        refs = [(a.data, a.mime) for a in rows]
+        prompt = build_reference_prompt(name, brief, c, feedback)
+    else:
+        prompt = build_free_prompt(name, brief, c, feedback)
+    with calllog.context("image", c.project_id):
+        data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
+    if c.bg_id:  # sem template não há fundo separado: o fundo e o vídeo de antes não valem mais
+        old = db.get(LayoutAsset, c.bg_id)
+        if old is not None:
+            db.delete(old)
+        c.bg_id = None
+    drop_video(db, c)
+    set_piece_image(db, c, data, mime, choice.model, prompt)
+
+
 async def generate_piece_video(db, c: ContentItem) -> None:
     """Anima o template aprovado com o texto e o fundo da peça (sem IA, sem custo) e guarda o MP4."""
     if not (c.visual_format and c.bg_id):
         raise ProviderError("o vídeo usa o fundo gerado da peça: gere a imagem primeiro")
-    bg, template = db.get(LayoutAsset, c.bg_id), approved_template(db, c.project_id, c.visual_format)
+    bg, template = db.get(LayoutAsset, c.bg_id), piece_template(db, c)
     if bg is None or template is None:
         raise ProviderError("faltam o fundo ou o template aprovado do projeto para montar o vídeo")
     project = db.get(GrowthProject, c.project_id)
@@ -571,7 +647,12 @@ async def autogen_pending() -> int:
         for c in rows:
             if done >= AUTOGEN_PER_TICK:
                 break
-            if approved_template(db, c.project_id, c.visual_format) is None:
+            try:
+                if (c.image_mode or "template") == "template" and piece_template(db, c) is None:
+                    continue
+            except ProviderError as e:  # template escolhido sumiu: registra e não tenta de novo sozinho
+                c.image_error = str(e)[:500]
+                db.commit()
                 continue
             try:
                 image_choice(db, log=True, project_id=c.project_id)

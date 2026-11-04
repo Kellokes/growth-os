@@ -373,3 +373,51 @@ def test_plate_hybrid_keeps_art_and_only_edits_scenery(logged, monkeypatch):
     assert s3.get(dbmod.LayoutAsset, plate.id) is None
     for x in (s, s2, s3):
         x.close()
+
+
+def test_image_mode_reference_and_prompt_need_no_template(logged, monkeypatch):
+    make_projects("Zombie Party")
+    s = dbmod.new_session()
+    modelcfg.save(s, "image", "openrouter", "google/gemini-2.5-flash-image", "")
+    s.add(dbmod.LayoutAsset(project_id=pid("zombie-party"), kind="reference", status="", mime="image/png", data=PNG, note="logo"))
+    s.commit()
+    ref_id = s.query(dbmod.LayoutAsset).filter_by(kind="reference").one().id
+    s.close()
+    seen = {}
+
+    async def fake(model, prompt, refs, ratio):
+        seen.update(prompt=prompt, n=len(refs), ratio=ratio)
+        return PNG + b"9", "image/png"
+
+    monkeypatch.setattr(lay, "request_image", fake)
+    cid = new_piece(title="Festa", image_prompt="A neon zombie dancing")
+    assert logged.post(f"/api/content/{cid}/image", json={}).status_code == 422  # padrão (template) continua exigindo template
+
+    r = logged.patch(f"/api/content/{cid}", json={"image_mode": "prompt"})
+    assert r.status_code == 200 and r.json()["image_mode"] == "prompt"
+    r = logged.post(f"/api/content/{cid}/image", json={"feedback": "mais escuro"})
+    assert r.status_code == 200 and r.json()["image_url"]
+    assert seen["n"] == 0 and "A neon zombie dancing" in seen["prompt"] and "mais escuro" in seen["prompt"] and seen["ratio"] == "4:5"
+
+    cid2 = new_piece(image_mode="prompt")  # sem prompt do agente: o sistema propõe um a partir da mídia
+    assert logged.post(f"/api/content/{cid2}/image", json={}).status_code == 200
+    assert "foto da festa" in seen["prompt"]
+
+    r = logged.patch(f"/api/content/{cid}", json={"image_mode": "reference", "ref_id": ref_id})
+    assert r.status_code == 200 and r.json()["ref_id"] == ref_id
+    assert logged.post(f"/api/content/{cid}/image", json={}).status_code == 200
+    assert seen["n"] == 1 and "references" in seen["prompt"]
+    assert logged.patch(f"/api/content/{cid}", json={"image_mode": "x"}).status_code == 422
+    assert logged.patch(f"/api/content/{cid}", json={"ref_id": 99999}).status_code == 422
+
+    s = dbmod.new_session()  # peça em modo livre é gerada pelo agendador mesmo sem template aprovado
+    cid3 = new_piece(image_mode="reference")
+    s.close()
+    assert asyncio.run(lay.autogen_pending()) >= 1
+    s = dbmod.new_session()
+    assert s.get(dbmod.ContentItem, cid3).image_id
+    s.close()
+
+
+def test_agent_block_sets_mode_and_prompt():
+    assert cnt.norm_mode("Referência") == "reference" and cnt.norm_mode("prompt") == "prompt" and cnt.norm_mode("") == "template"

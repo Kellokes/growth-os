@@ -39,7 +39,7 @@ STILL_AT = 5.5  # segundo em que a imagem estática é capturada (texto já inte
 
 
 def build_composition(template: str, fmt: str, bg_value: str, title: str, text: str, brand: str = "",
-                      duration: float = DURATION) -> str:
+                      duration: float = DURATION, zoom: bool = True) -> str:
     """-> index.html. Texto sempre escapado; bg_value é um `url("assets/bg.png")` do projeto ou um gradiente."""
     w, h = CANVAS[fmt]
     values = {
@@ -52,6 +52,8 @@ def build_composition(template: str, fmt: str, bg_value: str, title: str, text: 
     body = _TOKEN.sub(lambda m: values[m.group(1)], body)
     styles = _TOKEN.sub(lambda m: values[m.group(1)], styles)
     d = f"{duration:g}"
+    # a imagem estática não faz zoom: no fim do vídeo o quadro está 5% ampliado e cortaria as bordas da arte
+    kb = f'tl.fromTo("#m-kb", {{ scale: 1 }}, {{ scale: 1.05, duration: {d}, ease: "none" }}, 0);\n' if zoom else ""
     doc = f"""<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -75,8 +77,7 @@ html, body {{ margin: 0; width: {w}px; height: {h}px; overflow: hidden; }}
 </div>
 <script>
 const tl = gsap.timeline({{ paused: true }});
-tl.fromTo("#m-kb", {{ scale: 1 }}, {{ scale: 1.05, duration: {d}, ease: "none" }}, 0);
-tl.fromTo(".m-title", {{ opacity: 0, y: 70 }}, {{ opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }}, 0.3);
+{kb}tl.fromTo(".m-title", {{ opacity: 0, y: 70 }}, {{ opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }}, 0.3);
 tl.fromTo(".m-text", {{ opacity: 0, y: 50 }}, {{ opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }}, 0.8);
 window.__timelines["main"] = tl;
 tl.seek(0);
@@ -87,13 +88,13 @@ tl.seek(0);
     return doc
 
 
-def _payload(template: str, fmt: str, bg: tuple[bytes, str] | None, title: str, text: str, brand: str) -> dict:
+def _payload(template: str, fmt: str, bg: tuple[bytes, str] | None, title: str, text: str, brand: str, zoom: bool = True) -> dict:
     if bg is None:
         value, binary = SAMPLE_BG, {}
     else:
         bg_file = f"{BG_PATH}.{_EXT.get(bg[1], 'png')}"
         value, binary = f'url("{bg_file}")', {bg_file: base64.b64encode(bg[0]).decode()}
-    return {"files": {"index.html": build_composition(template, fmt, value, title, text, brand)}, "binary": binary}
+    return {"files": {"index.html": build_composition(template, fmt, value, title, text, brand, zoom=zoom)}, "binary": binary}
 
 
 def _check(resp: httpx.Response, magic: tuple[int, bytes], limit: int) -> bytes:
@@ -116,7 +117,7 @@ def _unreachable(e: Exception) -> ProviderError:
 
 def render_still(template: str, fmt: str, bg: tuple[bytes, str] | None, title: str, text: str, brand: str = "") -> bytes:
     """PNG do template com o texto e o fundo da peça (mesma composição do vídeo, no quadro final). Síncrono."""
-    payload = {**_payload(template, fmt, bg, title, text, brand), "at": STILL_AT}
+    payload = {**_payload(template, fmt, bg, title, text, brand, zoom=False), "at": STILL_AT}
     with calllog.track("motion", "hyperframes", "piece_render", f"imagem {fmt} · template + texto de {len(title) + len(text)} caracteres") as call:
         try:
             resp = httpx.post(get_settings().motion_url.rstrip("/") + "/still", json=payload, timeout=REQUEST_TIMEOUT)

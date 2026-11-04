@@ -28,6 +28,7 @@ from .db import (
 )
 from .providers import ChatTurn, Provider, ProviderError, all_providers
 from . import approvals as appr
+from . import calllog
 from . import content
 from . import missions
 from . import modelcfg
@@ -399,7 +400,11 @@ def parse_tasks(text: str) -> list[dict]:
 
 async def plan_for_agent(db: DB, project: GrowthProject, agent: Agent, pa: ProjectAgent, plan: Plan, today: date) -> int:
     provider = pick_provider(pa, "agents_plan", db)
-    reply = await provider.complete([ChatTurn("user", planning_prompt(db, project, agent, pa, today))])
+    history = [ChatTurn("user", planning_prompt(db, project, agent, pa, today))]
+    with calllog.track(provider.id, provider.model, "agents_plan", f"plano do dia · {agent.name} · {len(history[0].content)} caracteres",
+                       project_id=project.id, actor=f"agente:{agent.slug}") as call:
+        reply = await provider.complete(history)
+        call.done(calllog.summarize_text(reply))
     tasks = parse_tasks(reply)
     for t in tasks:
         db.add(Task(plan_id=plan.id, project_id=project.id, agent_slug=agent.slug, title=t["title"],
@@ -784,9 +789,10 @@ async def execute_task(task_id: int) -> None:
         error = ""
         ticket = actions.issue_ticket(task)  # permite `gos-int` enquanto esta tarefa roda
         try:
-            async for ev in run_agent(db, conv.id, provider, f"agente:{agent.slug}", "agendador"):
-                if ev["type"] == "error":
-                    error = ev["message"]
+            with calllog.context("agents_run", project.id, f"agente:{agent.slug}"):
+                async for ev in run_agent(db, conv.id, provider, f"agente:{agent.slug}", "agendador"):
+                    if ev["type"] == "error":
+                        error = ev["message"]
         finally:
             actions.revoke_ticket(ticket)
         if error:

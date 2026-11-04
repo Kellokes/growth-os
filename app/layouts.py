@@ -70,10 +70,10 @@ def build_prompt(project_name: str, brief: str, fmt: str, feedback: str = "", no
         f"Create a brand layout template for social media: {name} ({ratio}, {use}) for the brand \"{project_name}\".",
         "This is a visual REFERENCE that will guide future posts, not a finished post: show the composition, "
         "color palette, typography style, graphic elements, margins and where the logo, headline and body text go.",
-        "TEXT RULE: the layout may contain EXACTLY two text elements: ONE short headline (use the words \"LOREM IPSUM DOLOR\") and ONE "
-        "short supporting line (use \"Lorem ipsum dolor sit amet\"). The logo, if the references have one, is a drawn emblem, not text. "
-        "NO other text anywhere: no small print, captions, paragraphs, buttons, labels, URLs, dates, numbers or fake words. "
-        "Leave every other area as clean artwork. Do not invent real claims, prices or people.",
+        "TEXT RULE: the image must contain NO text at all: no headline, no supporting line, no captions, labels, URLs, dates, "
+        "numbers, small print or fake words. Only the brand logo (the drawn emblem and its own wordmark, if the references have one) "
+        "and the graphic frame, borders, ornaments and scenery. Leave a clean, calm panel or empty area where a headline and a "
+        "supporting line will be written later, in the same place for every post. Do not invent real claims, prices or people.",
     ]
     if brief.strip():
         lines.append(f"Brand style brief from the owner: {brief.strip()[:3000]}")
@@ -245,8 +245,9 @@ def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> st
     lines = [
         f"Build ONE self-contained HTML document with a fixed canvas of {w}x{h} pixels for the brand \"{project_name}\" "
         f"({FORMATS[fmt][0]}). The attached layout image already has its artwork (logo, frame, ornaments, scenery) and I will "
-        "supply that artwork myself as the full-size background. Your job is ONLY the TEXT: place the headline and the supporting "
-        "line exactly where the layout shows them, with the same color, weight, size, alignment and letter case. Do NOT redraw the "
+        "supply that artwork myself as the full-size background. It contains NO text: it has a clean empty panel or area reserved "
+        "for the text. Your job is ONLY the TEXT: place the headline and the supporting line inside that reserved area, with a color, "
+        "weight, size and alignment that suit the artwork and stay readable on it. Do NOT redraw the "
         "logo, frame, borders, ornaments, dividers or any shape: they are in the background already.",
         "Rules:",
         f"- html and body: margin 0, width {w}px, height {h}px, overflow hidden. Only an inline <style> block; no <script>, "
@@ -356,35 +357,10 @@ def approved_template(db, project_id: int, fmt: str) -> LayoutAsset | None:
     return approved_asset(db, project_id, "template", fmt)
 
 
-def build_plate_prompt(fmt: str, feedback: str = "") -> str:
-    lines = [
-        f"Edit the FIRST attached image, a {FORMATS[fmt][0]} layout. Return the SAME image with only the LAYOUT TEXT removed: the "
-        "headline, the supporting line, captions, button labels, URLs, dates, numbers, small print and any fake or garbled words "
-        "written on the panels or background.",
-        "THE BRAND LOGO MUST STAY EXACTLY AS IT IS, pixel for pixel: the emblem AND every letter of its wordmark (the lettering "
-        "that is part of the logo is NOT text to remove, even if it is large or in the middle of the layout). Never erase, redraw, "
-        "restyle, move or resize the logo. The other attached images, if any, show the real brand logo/style: use them only to "
-        "recognize what is the logo.",
-        "Also keep unchanged: the frame, borders, ornaments, dividers, scenery, colors, lighting and composition. Where the layout "
-        "text was, leave the panel or background clean and calm so new text can be written there later. Keep exactly the same "
-        "proportions. Do not add any new text, letters or numbers. If something is part of the logo, keep it; if it is a headline "
-        "or sentence, remove it.",
-    ]
-    if feedback.strip():
-        lines.append(f"Adjustments requested by the owner: {feedback.strip()[:500]}")
-    return "\n".join(lines)
-
-
 async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> LayoutAsset:
-    """Layout aprovado -> arte sem texto (1 imagem) + HTML só com o texto (1 chamada). A prévia usa as duas."""
+    """Layout aprovado (já sem texto, pedido assim desde a geração) -> HTML só com o texto (1 chamada). A arte é o próprio layout."""
     choice = html_choice(db, log=True, project_id=layout.project_id)
-    img_choice = image_choice(db, log=True, project_id=layout.project_id)
-    logo_refs = (db.query(LayoutAsset).filter(LayoutAsset.project_id == layout.project_id, LayoutAsset.kind == "reference")
-                 .order_by(LayoutAsset.id).limit(3).all())  # referências do projeto: mostram o logo de verdade
-    with calllog.context("image", layout.project_id):
-        plate_data, plate_mime = await request_image(img_choice.model, build_plate_prompt(layout.format, feedback),
-                                                     [(layout.data, layout.mime)] + [(a.data, a.mime) for a in logo_refs],
-                                                     FORMATS[layout.format][1])
+    plate_data, plate_mime = layout.data, layout.mime
     project = db.get(GrowthProject, layout.project_id)
     name = project.name if project else ""
     prompt = build_template_prompt(name, layout.format, feedback)
@@ -400,7 +376,7 @@ async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> Layo
         preview = await asyncio.to_thread(motion.render_still, html, layout.format, (plate_data, plate_mime), "TÍTULO DO POST",
                                           "Frase de apoio do post, em uma ou duas linhas.", name)
     plate = LayoutAsset(project_id=layout.project_id, kind="plate", format=layout.format, status="proposed", mime=plate_mime,
-                        data=plate_data, model=img_choice.model, prompt=build_plate_prompt(layout.format, feedback))
+                        data=plate_data, model=layout.model, prompt=layout.prompt)
     db.add(plate)
     db.flush()
     t = LayoutAsset(project_id=layout.project_id, kind="template", format=layout.format, status="proposed", mime="image/png",

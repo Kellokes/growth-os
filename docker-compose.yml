@@ -59,6 +59,8 @@ services:
       args:
         # Versão que está rodando, para a IA comparar com a main (gos-self info).
         GROWTH_OS_COMMIT: ${GROWTH_OS_COMMIT:-}
+        # Semana do ano: renova os CLIs do Claude e do Codex (ver Dockerfile).
+        CLI_REFRESH: ${CLI_REFRESH:-}
     container_name: growth-os
     restart: unless-stopped
     env_file: .env

@@ -67,6 +67,17 @@
     <label>Mídia (o que a imagem deve mostrar)<textarea id="cf-media" rows="2" maxlength="4000" placeholder="Descrição do criativo, se tiver"></textarea></label>
     <div class="cf-image" id="cf-image-box">
       <label>Formato da imagem<select id="cf-format"><option value="">Sem imagem (só texto)</option><option value="story">Story · 9:16</option><option value="carrossel">Carrossel · 4:5</option><option value="reel">Reel · 9:16</option></select></label>
+      <div id="cf-modebox" hidden>
+        <label>Como gerar a imagem<select id="cf-mode">
+          <option value="template">Com template do projeto (fundo novo + texto no template)</option>
+          <option value="reference">Sem template: só uma referência já subida</option>
+          <option value="prompt">Sem template e sem referência: só um prompt</option>
+        </select></label>
+        <label id="cf-tpl-wrap">Template<select id="cf-tpl"></select></label>
+        <label id="cf-ref-wrap">Referência<select id="cf-ref"></select></label>
+        <label id="cf-iprompt-wrap"><span>Prompt da imagem</span><textarea id="cf-iprompt" rows="4" maxlength="4000" placeholder="Vazio = o sistema propõe um prompt a partir da mídia e do estilo do projeto"></textarea></label>
+        <small class="muted" id="cf-modehint"></small>
+      </div>
       <div class="two" id="cf-imgtext">
         <label>Título na imagem<input id="cf-imgtitle" maxlength="200" placeholder="Até 6 palavras"></label>
         <label>Frase de apoio na imagem<input id="cf-imgtext-in" maxlength="400" placeholder="Opcional"></label>

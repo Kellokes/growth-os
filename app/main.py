@@ -1600,6 +1600,10 @@ class ContentIn(BaseModel):
     img_text: str | None = Field(default=None, max_length=400)  # frase de apoio escrita NA imagem
     visual_format: str | None = Field(default=None, max_length=12)  # story | carrossel | reel | "" (sem imagem)
     scheduled_at: str | None = Field(default=None, max_length=20)  # "AAAA-MM-DDTHH:MM" local; "" limpa
+    image_mode: str | None = Field(default=None, max_length=10)  # template | reference | prompt
+    template_id: int | None = None  # modo template: qual template (0/vazio = o aprovado do projeto)
+    ref_id: int | None = None  # modo reference: qual referência (0/vazio = todas)
+    image_prompt: str | None = Field(default=None, max_length=4000)  # modo prompt
 
 
 class ContentDecideIn(BaseModel):
@@ -1664,7 +1668,7 @@ def create_content(body: ContentIn, request: Request, auth: Auth = Depends(curre
     if not (body.body or "").strip():
         raise HTTPException(422, "o texto é obrigatório")
     c = ContentItem(project_id=p.id, status="approved", decided_at=utcnow())
-    _apply_content(c, body)
+    _apply_content(c, body, db)
     db.add(c)
     db.commit()
     audit(db, auth.user.username, "content_create", f"#{c.id} {p.slug}/{c.channel}: {c.title or c.body[:60]}"[:500],
@@ -1672,8 +1676,23 @@ def create_content(body: ContentIn, request: Request, auth: Auth = Depends(curre
     return _content_json(db, c)
 
 
-def _apply_content(c: ContentItem, body: ContentIn) -> None:
+def _apply_content(c: ContentItem, body: ContentIn, db: DB | None = None) -> None:
     data = body.model_dump(exclude_unset=True)
+    if data.get("image_mode") is not None:
+        mode = body.image_mode.strip().lower()
+        if mode not in cnt.IMAGE_MODES:
+            raise HTTPException(422, "modo de imagem inválido (template, reference ou prompt)")
+        c.image_mode = mode
+    if data.get("image_prompt") is not None:
+        c.image_prompt = body.image_prompt.strip()
+    for field, kind in (("template_id", "template"), ("ref_id", "reference")):
+        if field in data:
+            val = data[field] or None
+            if val is not None and db is not None:
+                a = db.get(LayoutAsset, val)
+                if a is None or a.kind != kind or a.project_id != c.project_id:
+                    raise HTTPException(422, f"{'template' if kind == 'template' else 'referência'} não encontrado neste projeto")
+            setattr(c, field, val)
     if "channel" in data and body.channel is not None:
         c.channel = cnt.norm_channel(body.channel)
     for field in ("title", "body", "recipient", "purpose", "media", "img_title", "img_text"):
@@ -1706,7 +1725,7 @@ def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Dep
         raise HTTPException(409, "conteúdo enviado ou rejeitado não se edita; volte para aprovação antes")
     if body.project is not None:
         raise HTTPException(422, "não dá para mudar o projeto de um conteúdo")
-    _apply_content(c, body)
+    _apply_content(c, body, db)
     if c.status == "failed":
         c.status, c.note = "approved", ""
     db.commit()

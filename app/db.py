@@ -336,6 +336,11 @@ class ContentItem(Base):
     image_error: Mapped[str] = mapped_column(Text, default="")  # por que a imagem automática não saiu
     bg_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=background)
     video_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=video): MP4 animado da peça
+    # como a imagem sai: template (fundo + texto no template do projeto) | reference (só as referências subidas) | prompt (só um prompt)
+    image_mode: Mapped[str] = mapped_column(String(10), default="template")
+    template_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # modo template: layout_assets.id; vazio = o aprovado
+    ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # modo reference: uma referência só; vazio = todas
+    image_prompt: Mapped[str] = mapped_column(Text, default="")  # modo prompt: o prompt (proposto pelo agente, editável)
     img_title: Mapped[str] = mapped_column(String(200), default="")  # título curto que vai NA imagem
     img_text: Mapped[str] = mapped_column(String(400), default="")  # frase de apoio que vai NA imagem
     # pending (aguardando aprovação) | approved | sent | rejected | failed
@@ -491,6 +496,10 @@ _NEW_COLUMNS = {
         "image_error": "TEXT NOT NULL DEFAULT ''",
         "bg_id": "INTEGER NULL",
         "video_id": "INTEGER NULL",
+        "image_mode": "VARCHAR(10) NOT NULL DEFAULT 'template'",
+        "template_id": "INTEGER NULL",
+        "ref_id": "INTEGER NULL",
+        "image_prompt": "TEXT NOT NULL DEFAULT ''",
         "img_title": "VARCHAR(200) NOT NULL DEFAULT ''",
         "img_text": "VARCHAR(400) NOT NULL DEFAULT ''",
     },

@@ -39,6 +39,14 @@ _ALIASES = {"twitter": "x", "ig": "instagram", "insta": "instagram", "e-mail": "
 # Formato visual padrão por canal quando o agente não diz (vazio = o canal não exige imagem).
 DEFAULT_VISUAL = {"instagram": "carrossel", "facebook": "carrossel", "tiktok": "reel", "youtube": "reel"}
 VISUAL_FORMATS = ("story", "carrossel", "reel")
+IMAGE_MODES = ("template", "reference", "prompt")  # template = padrão de sempre
+_MODE_ALIASES = {"referencia": "reference", "referência": "reference", "ref": "reference", "livre": "prompt", "sem template": "prompt"}
+
+
+def norm_mode(raw) -> str:
+    m = str(raw or "").strip().lower()
+    m = _MODE_ALIASES.get(m, m)
+    return m if m in IMAGE_MODES else "template"
 _FORMAT_ALIASES = {"stories": "story", "carousel": "carrossel", "carrosel": "carrossel", "reels": "reel", "video": "reel"}
 GROUPS = {"social": "Redes sociais", "email": "E-mails", "mensagem": "Mensagens", "site": "Site", "outro": "Outros"}
 
@@ -109,11 +117,14 @@ ou uma lista), e ela vai para a Central de Conteúdo esperar a aprovação do ow
 {{"canal": "instagram", "titulo": "título ou assunto do e-mail", "texto": "o texto final, pronto para publicar",
  "para": "destinatário (e-mail) ou público", "objetivo": "parceria|contato|lançamento|...",
  "midia": "descrição da imagem/vídeo (o que deve aparecer nela)", "formato": "story|carrossel|reel (só para posts visuais)",
+ "modo_imagem": "template (padrão) | reference (só as referências do projeto) | prompt (só o prompt abaixo)",
+ "prompt_imagem": "prompt completo da imagem, em inglês, só se o modo for prompt ou reference",
  "titulo_imagem": "título curto (até 6 palavras) escrito NA imagem", "texto_imagem": "frase de apoio curta escrita NA imagem", "quando": "AAAA-MM-DD HH:MM (sugestão, hora de Brasília)"}}
 ```
 Canais: {channels}. Só "canal" e "texto" são obrigatórios.
 Posts visuais ganham a imagem pronta do sistema antes de você aprovar: o fundo é gerado a partir de "midia" (descreva só a
-cena, sem texto) e o texto da imagem ("titulo_imagem", "texto_imagem") entra no template fixo do projeto. Não gere nem peça arquivos."""
+cena, sem texto) e o texto da imagem ("titulo_imagem", "texto_imagem") entra no template fixo do projeto. Se a peça pedir uma imagem livre (sem o template), use "modo_imagem": "prompt" e
+descreva a imagem inteira em "prompt_imagem"; o owner pode trocar o modo e editar o prompt antes de aprovar. Não gere nem peça arquivos."""
 
 
 def _items(raw: str) -> list[dict]:
@@ -153,6 +164,8 @@ def ingest_blocks(db: DB, task: Task, text: str) -> list[ContentItem]:
                 media=str(it.get("midia") or it.get("mídia") or "").strip()[:4000],
                 img_title=str(it.get("titulo_imagem") or "").strip()[:200],
                 img_text=str(it.get("texto_imagem") or "").strip()[:400],
+                image_mode=norm_mode(it.get("modo_imagem")),
+                image_prompt=str(it.get("prompt_imagem") or "").strip()[:4000],
                 visual_format=norm_visual(it.get("formato") or it.get("format"), channel),
                 scheduled_at=parse_when(it.get("quando")),
                 status="pending",
@@ -171,6 +184,8 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         "channel": c.channel, "channel_name": name, "channel_icon": icon, "group": group,
         "title": c.title, "body": c.body, "recipient": c.recipient, "purpose": c.purpose, "media": c.media,
         "img_title": c.img_title, "img_text": c.img_text,
+        "image_mode": c.image_mode or "template", "template_id": c.template_id, "ref_id": c.ref_id,
+        "image_prompt": c.image_prompt,
         "visual_format": c.visual_format, "needs_image": needs_image(c), "image_error": c.image_error,
         "image_url": f"/api/layouts/assets/{c.image_id}" if c.image_id else "",
         "video_url": f"/api/layouts/assets/{c.video_id}" if c.video_id else "",

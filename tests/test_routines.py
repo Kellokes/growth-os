@@ -294,11 +294,13 @@ def test_motion_skills_are_in_the_library_and_stay_safe():
 
     by_key = {t[0]: t for t in routines.SKILL_TEMPLATES}
     assert len(by_key) == len(routines.SKILL_TEMPLATES)
-    motion = [by_key[k] for k in ("motion_roteiro", "motion_remotion", "motion_threejs", "motion_gsap")]
+    motion = [by_key[k] for k in ("motion_roteiro", "motion_hyperframes", "motion_threejs", "motion_gsap")]
     for _, name, desc, agents, instructions in motion:
         assert len(instructions) <= 6000 and len(desc) <= 300 and len(name) <= 80  # cabem no que a API grava
         assert "design" in agents.split(",")
-    for key in ("motion_remotion", "motion_threejs", "motion_gsap"):
+    for key in ("motion_hyperframes", "motion_threejs", "motion_gsap"):
         text = by_key[key][4]
         assert "SEGURANÇA" in text and "commit" in text  # fonte fixada e regra de segurança dentro da habilidade
-    assert "useFrame" in by_key["motion_threejs"][4]  # a regra que evita vídeo piscando
+    assert "hf-seek" in by_key["motion_threejs"][4]  # a regra que evita vídeo piscando
+    hf = by_key["motion_hyperframes"][4]
+    assert "motion_remotion" not in by_key and "NÃO use auth, cloud" in hf and "HYPERFRAMES_NO_TELEMETRY" in hf

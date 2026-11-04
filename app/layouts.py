@@ -70,7 +70,10 @@ def build_prompt(project_name: str, brief: str, fmt: str, feedback: str = "", no
         f"Create a brand layout template for social media: {name} ({ratio}, {use}) for the brand \"{project_name}\".",
         "This is a visual REFERENCE that will guide future posts, not a finished post: show the composition, "
         "color palette, typography style, graphic elements, margins and where the logo, headline and body text go.",
-        "Use placeholder text blocks or lorem-style text; do not invent real claims, prices or people.",
+        "TEXT RULE: the layout may contain EXACTLY two text elements: ONE short headline (use the words \"LOREM IPSUM DOLOR\") and ONE "
+        "short supporting line (use \"Lorem ipsum dolor sit amet\"). The logo, if the references have one, is a drawn emblem, not text. "
+        "NO other text anywhere: no small print, captions, paragraphs, buttons, labels, URLs, dates, numbers or fake words. "
+        "Leave every other area as clean artwork. Do not invent real claims, prices or people.",
     ]
     if brief.strip():
         lines.append(f"Brand style brief from the owner: {brief.strip()[:3000]}")
@@ -352,9 +355,9 @@ def approved_template(db, project_id: int, fmt: str) -> LayoutAsset | None:
 def build_plate_prompt(fmt: str, feedback: str = "") -> str:
     lines = [
         f"Edit the attached {FORMATS[fmt][0]} layout. Return the SAME image with ALL text removed: every headline, supporting line, "
-        "caption, number and letter. Do not remove or change the logo/emblem if it is a drawn symbol, the frame, borders, ornaments, "
+        "caption, button label, URL, date, number and letter, including small print and fake or garbled words. Do not remove or change the logo/emblem if it is a drawn symbol, the frame, borders, ornaments, "
         "dividers, scenery, colors, lighting or composition. Where text was, leave the panel or background clean and calm so new "
-        "text can be written there later. Keep exactly the same proportions. No new text, letters or watermarks.",
+        "text can be written there later. Keep exactly the same proportions. No new text, letters, numbers or watermarks: if unsure whether something is text, remove it.",
     ]
     if feedback.strip():
         lines.append(f"Adjustments requested by the owner: {feedback.strip()[:500]}")

@@ -30,6 +30,26 @@ _REDACT = [
 ]
 
 
+_current_call: contextvars.ContextVar["track | None"] = contextvars.ContextVar("calllog_call", default=None)
+
+
+def note_usage(usage: object) -> None:
+    """Soma o uso (`usage` da resposta do OpenRouter: tokens e custo em dólar) à chamada em andamento. Nunca levanta."""
+    call = _current_call.get()
+    if call is None or not isinstance(usage, dict):
+        return
+    try:
+        pt, ct, cost = usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("cost")
+        if isinstance(pt, (int, float)):
+            call.input_tokens = (call.input_tokens or 0) + int(pt)
+        if isinstance(ct, (int, float)):
+            call.output_tokens = (call.output_tokens or 0) + int(ct)
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            call.cost_usd = (call.cost_usd or 0.0) + float(cost)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def clean(text: object, limit: int = SNIPPET) -> str:
     """Trecho curto em uma linha, sem segredos nem dados pessoais óbvios."""
     s = " ".join(str(text or "").split())
@@ -93,12 +113,17 @@ class track:
         self.request, self.response = clean(request, 400), ""
         self.id: int | None = None
         self._t0 = 0.0
+        self.input_tokens: int | None = None
+        self.output_tokens: int | None = None
+        self.cost_usd: float | None = None
+        self._token = None
 
     def done(self, response: str = "") -> None:
         self.response = clean(response, 400)
 
     def __enter__(self):
         self._t0 = time.monotonic()
+        self._token = _current_call.set(self)
 
         def add(db):
             row = AiCall(activity=self.activity[:40], provider=self.provider[:32], model=self.model[:120],
@@ -113,6 +138,10 @@ class track:
 
     def __exit__(self, exc_type, exc, tb):
         ms = int((time.monotonic() - self._t0) * 1000)
+        try:
+            _current_call.reset(self._token)
+        except (ValueError, TypeError):  # fechado em outro contexto (ex.: gerador assíncrono)
+            _current_call.set(None)
         if exc_type is None:
             status, error = "ok", ""
         else:
@@ -125,6 +154,7 @@ class track:
                 return
             row.status, row.duration_ms, row.error = status, ms, error
             row.response_summary = self.response if status == "ok" else ""
+            row.input_tokens, row.output_tokens, row.cost_usd = self.input_tokens, self.output_tokens, self.cost_usd
             db.commit()
 
         _write(close)
@@ -166,4 +196,5 @@ def call_json(r: AiCall) -> dict:
         "id": r.id, "at": r.at.isoformat(), "activity": r.activity, "provider": r.provider, "model": r.model,
         "project_id": r.project_id, "actor": r.actor, "status": r.status, "duration_ms": r.duration_ms,
         "request": r.request_summary, "response": r.response_summary, "error": r.error,
+        "input_tokens": r.input_tokens, "output_tokens": r.output_tokens, "cost_usd": r.cost_usd,
     }

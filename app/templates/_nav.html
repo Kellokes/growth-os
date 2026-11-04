@@ -32,6 +32,7 @@
   <div class="side-foot">
     <a class="icon-btn{% if active == "projects" %} on{% endif %}" href="/projects" aria-label="Projetos" title="Projetos"{% if active == "projects" %} aria-current="page"{% endif %}>{{ ic("projects") }}</a>
     <a class="icon-btn{% if active == "models" %} on{% endif %}" href="/settings" aria-label="Modelos" title="Modelos: provider, modelo e raciocínio por atividade"{% if active == "models" %} aria-current="page"{% endif %}>{{ ic("sliders") }}</a>
+    <a class="icon-btn{% if active == "costs" %} on{% endif %}" href="/costs" aria-label="Custos" title="Custos das chamadas ao OpenRouter"{% if active == "costs" %} aria-current="page"{% endif %}>{{ ic("coin") }}</a>
     <a class="icon-btn{% if active == "config" %} on{% endif %}" href="/config" aria-label="Configurações" title="Configurações"{% if active == "config" %} aria-current="page"{% endif %}>{{ ic("gear") }}</a>
     <button class="icon-btn" id="show-audit" type="button" aria-label="Auditoria" title="Auditoria">{{ ic("audit") }}</button>
     <button class="icon-btn theme-btn" type="button" data-theme-toggle aria-label="Alternar tema" title="Alternar tema claro/escuro"><span class="i-sun">{{ ic("sun") }}</span><span class="i-moon">{{ ic("moon") }}</span></button>

@@ -162,6 +162,50 @@ def test_clear_errors_keeps_ok_and_running(logged):
     assert sorted(r.status for r in rows()) == ["ok", "running"]
 
 
+def test_usage_is_recorded_and_summed(logged):
+    with calllog.track("openrouter", "m/x", "image", "pedido") as call:
+        calllog.note_usage({"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.01})
+        calllog.note_usage({"prompt_tokens": 50, "completion_tokens": 5, "cost": 0.005})
+        calllog.note_usage("lixo")  # ignorado
+        call.done("ok")
+    calllog.note_usage({"cost": 1})  # fora de uma chamada: ignorado
+    (r,) = rows()
+    assert (r.input_tokens, r.output_tokens) == (150, 25) and abs(r.cost_usd - 0.015) < 1e-9
+
+
+def test_costs_summary_prefers_api_cost_then_estimates(logged):
+    from app import costs
+
+    models = [{"id": "m/text", "pricing": {"prompt": 1e-6, "completion": 2e-6}},
+              {"id": "m/img", "pricing": {"image": 0.04}}]
+    with calllog.track("openrouter", "m/text", "layout_html", "a"):
+        calllog.note_usage({"prompt_tokens": 1000, "completion_tokens": 500, "cost": 0.5})  # custo da API vence
+    with calllog.track("openrouter", "m/text", "threads", "b"):
+        calllog.note_usage({"prompt_tokens": 1000, "completion_tokens": 500})  # estimado: 0.001 + 0.001
+    with calllog.track("openrouter", "m/img", "image", "c"):
+        pass  # linha antiga sem uso: imagem × preço por imagem
+    with calllog.track("openrouter", "m/text", "threads", "d"):
+        pass  # sem uso nem preço de imagem: fora do total
+    with calllog.track("claude", "opus", "threads", "e"):
+        pass
+    s = costs.summarize(dbmod.new_session(), models)
+    assert abs(s["total"]["cost_usd"] - (0.5 + 0.002 + 0.04)) < 1e-9
+    assert s["total"]["calls"] == 4 and s["total"]["unpriced"] == 1 and s["subscription_calls"] == {"claude": 1}
+    assert s["sources"] == {"api": 1, "estimado": 2, "sem uso": 1}
+    assert {r["model"] for r in s["by_model"]} == {"m/text", "m/img"} and len(s["by_day"]) == 1
+
+
+def test_costs_endpoint_and_page(logged, monkeypatch):
+    async def fake():
+        return {"live": True, "models": [{"id": "m/text", "pricing": {"prompt": 1e-6, "completion": 2e-6}}]}
+
+    monkeypatch.setattr("app.main.modelcfg.openrouter_models", fake)
+    with calllog.track("openrouter", "m/text", "threads", "b"):
+        calllog.note_usage({"prompt_tokens": 10, "completion_tokens": 10, "cost": 0.25})
+    d = logged.get("/api/costs").json()
+    assert d["total"]["cost_usd"] == 0.25 and d["by_activity"][0]["label"] == "Threads"
+    assert logged.get("/costs").status_code == 200
+
 def test_after_id_hides_older_calls_without_deleting_them(logged):
     s = dbmod.new_session()
     s.add_all([dbmod.AiCall(activity="threads", provider="a", status="error", error="velho") for _ in range(7)])

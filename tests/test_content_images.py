@@ -273,7 +273,7 @@ def test_html_conversion_uses_configured_provider(logged, monkeypatch):
     make_projects("Zombie Party")
     approve_layout(logged, monkeypatch)
     s = dbmod.new_session()
-    modelcfg.save(s, "layout_html", "codex", "gpt-5.5", "high")
+    modelcfg.save(s, "layout_html", "codex", "gpt-6-sol", "high")
     assert lay.html_choice(s).provider == "codex"
     modelcfg.save(s, "layout_html", "", "", "")
     with pytest.raises(ProviderError, match="provider"):
@@ -294,13 +294,13 @@ def test_html_conversion_uses_configured_provider(logged, monkeypatch):
     monkeypatch.setattr(CodexCLIProvider, "available", lambda self: (True, ""))
     monkeypatch.setattr(lay, "request_html", boom)
     s = dbmod.new_session()
-    modelcfg.save(s, "layout_html", "codex", "gpt-5.5", "high")
+    modelcfg.save(s, "layout_html", "codex", "gpt-6-sol", "high")
     s.close()
     st = logged.get("/api/layouts?project=zombie-party").json()
     lid = st["layouts"][0]["id"]
     r = logged.post(f"/api/layouts/{lid}/template", json={"feedback": "mais escuro"})
     assert r.status_code == 200, r.text
-    assert seen["model"] == "gpt-5.5" and seen["reasoning"] == "high" and seen["image"] == PNG and r.json()["model"] == "gpt-5.5"
+    assert seen["model"] == "gpt-6-sol" and seen["reasoning"] == "high" and seen["image"] == PNG and r.json()["model"] == "gpt-6-sol"
 
 
 def test_codex_image_args(monkeypatch):
@@ -316,6 +316,6 @@ def test_codex_image_args(monkeypatch):
         return ""
 
     monkeypatch.setattr(codex_cli, "run_cli", fake_run)
-    p = codex_cli.CodexCLIProvider().configured("gpt-5.5", "low")
+    p = codex_cli.CodexCLIProvider().configured("gpt-6-sol", "low")
     assert asyncio.run(p.complete_with_image("faça", PNG, "image/png")) == "ok"
     assert got["img"] == PNG and got["stdin"] == "faça" and got["args"][-1] == "-" and "--model" in got["args"]

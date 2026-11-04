@@ -319,3 +319,20 @@ def test_codex_image_args(monkeypatch):
     p = codex_cli.CodexCLIProvider().configured("gpt-6-sol", "low")
     assert asyncio.run(p.complete_with_image("faça", PNG, "image/png")) == "ok"
     assert got["img"] == PNG and got["stdin"] == "faça" and got["args"][-1] == "-" and "--model" in got["args"]
+
+
+def test_sanitize_strips_harmless_boilerplate_but_blocks_real_risks():
+    page = ("<!DOCTYPE html>\n<html lang=\"pt-BR\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=1080\">"
+            "<title>Layout</title><!-- feito pelo modelo --><style>body{margin:0}</style></head><body>"
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>"
+            "<div style='background-image:{{bg}}'><h1>{{titulo}}</h1><p>{{texto}}</p>{{marca}}</div></body></html>")
+    out = lay.sanitize_template(page)
+    assert "<meta" not in out and "<title" not in out and "xmlns" not in out and "<!--" not in out and "<style>" in out
+    for bad in (page.replace("<style>", "<style>@import url(//evil.com/x.css);"),
+                page.replace("<title>", "<script>x()</script><title>"),
+                page.replace("<head>", "<head><link rel=stylesheet href=x.css>"),
+                page.replace("<svg", "<img src=\"https://evil.com/p.png\"><svg")):
+        with pytest.raises(ValueError):
+            lay.sanitize_template(bad)
+    with pytest.raises(ValueError, match="achei:"):
+        lay.sanitize_template(page.replace("<h1>", "<h1 onclick='x()'>"))

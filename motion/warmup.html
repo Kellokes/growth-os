@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080, height=1920">
+<script src="lib/gsap.min.js"></script>
+<style>
+html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; }
+.b{background:#222;color:#fff;width:100%;height:100%;font-size:40px}
+.m-title, .m-text { display: inline-block; max-width: 100%; }
+#m-frame, #m-kb { position: absolute; inset: 0; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="main" data-start="0" data-duration="1" data-width="1080" data-height="1920">
+<div id="m-frame" class="clip" data-start="0" data-duration="1" data-track-index="0">
+<div id="m-kb">
+<div class="b" style="background-image:linear-gradient(#111,#333)"><div style="font-family:'Inter',sans-serif;font-weight:700">Inter</div><div style="font-family:'Montserrat',sans-serif;font-weight:700">Montserrat</div><div style="font-family:'Outfit',sans-serif;font-weight:700">Outfit</div><div style="font-family:'Nunito',sans-serif;font-weight:700">Nunito</div><div style="font-family:'Oswald',sans-serif;font-weight:700">Oswald</div><div style="font-family:'League Gothic',sans-serif;font-weight:700">League Gothic</div><div style="font-family:'Archivo Black',sans-serif;font-weight:700">Archivo Black</div><div style="font-family:'Poppins',sans-serif;font-weight:700">Poppins</div><div style="font-family:'Roboto',sans-serif;font-weight:700">Roboto</div><div style="font-family:'Open Sans',sans-serif;font-weight:700">Open Sans</div><div style="font-family:'Lato',sans-serif;font-weight:700">Lato</div><div style="font-family:'Playfair Display',sans-serif;font-weight:700">Playfair Display</div><div style="font-family:'EB Garamond',sans-serif;font-weight:700">EB Garamond</div><div style="font-family:'Space Mono',sans-serif;font-weight:700">Space Mono</div><div style="font-family:'IBM Plex Mono',sans-serif;font-weight:700">IBM Plex Mono</div><div style="font-family:'JetBrains Mono',sans-serif;font-weight:700">JetBrains Mono</div><h1><span class="m-title">Aquecimento</span></h1><p><span class="m-text">Texto</span></p>Marca</div>
+</div>
+</div>
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+tl.fromTo("#m-kb", { scale: 1 }, { scale: 1.05, duration: 1, ease: "none" }, 0);
+tl.fromTo(".m-title", { opacity: 0, y: 70 }, { opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }, 0.3);
+tl.fromTo(".m-text", { opacity: 0, y: 50 }, { opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }, 0.8);
+window.__timelines["main"] = tl;
+tl.seek(0);
+</script>
+</body>
+</html>

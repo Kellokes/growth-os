@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
@@ -1832,12 +1833,35 @@ def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: 
     return _content_json(db, c)
 
 
+@app.post("/api/content/{cid}/video")
+async def content_generate_video(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Anima a peça (mesmo template, texto e fundo) num MP4. Não usa IA: só o serviço motion."""
+    c = _content_or_404(db, cid)
+    if c.status not in cnt.EDITABLE:
+        raise HTTPException(409, "só dá para gerar o vídeo de uma peça em aprovação ou aprovada")
+    try:
+        await lay.generate_piece_video(db, c)
+    except ProviderError as e:
+        raise HTTPException(422, str(e)) from e
+    audit(db, auth.user.username, "content_video", f"#{c.id} {c.visual_format}", client_ip(request))
+    return _content_json(db, c)
+
+
+@app.delete("/api/content/{cid}/video")
+def content_delete_video(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    c = _content_or_404(db, cid)
+    lay.drop_video(db, c)
+    db.commit()
+    audit(db, auth.user.username, "content_video_delete", f"#{c.id}", client_ip(request))
+    return _content_json(db, c)
+
+
 @app.delete("/api/content/{cid}")
 def delete_content(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     c = _content_or_404(db, cid)
     if c.status == "sent":
         raise HTTPException(409, "conteúdo enviado fica no histórico")
-    for aid in (c.image_id, c.bg_id):
+    for aid in (c.image_id, c.bg_id, c.video_id):
         if aid and (img := db.get(LayoutAsset, aid)) is not None:
             db.delete(img)
     db.delete(c)
@@ -1979,9 +2003,24 @@ def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Dep
 
 
 @app.get("/api/layouts/assets/{aid}")
-def layout_asset_file(aid: int, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+def layout_asset_file(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     a = _asset_or_404(db, aid)
-    return Response(a.data, media_type=a.mime, headers={"Cache-Control": "private, max-age=3600"})
+    headers = {"Cache-Control": "private, max-age=3600", "Accept-Ranges": "bytes"}
+    rng = request.headers.get("range", "")
+    if a.kind == "video" and rng:  # o <video> pede por pedaços (Range); sem isso o Safari não toca
+        m = re.fullmatch(r"bytes=(\d*)-(\d*)", rng.strip())
+        size = len(a.data)
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+            else:  # "-N": os N últimos bytes
+                start, end = max(size - int(m.group(2)), 0), size - 1
+            if start >= size or start > end:
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            return Response(a.data[start:end + 1], status_code=206, media_type=a.mime, headers=headers)
+    return Response(a.data, media_type=a.mime, headers=headers)
 
 
 @app.put("/api/layouts/brief")
@@ -2089,7 +2128,7 @@ def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth 
 @app.delete("/api/layouts/assets/{aid}")
 def layouts_delete(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     a = _asset_or_404(db, aid)
-    if a.kind in ("piece", "background"):
+    if a.kind in ("piece", "background", "video"):
         raise HTTPException(409, "a imagem de uma peça se troca na Central de Conteúdo")
     if a.kind in ("layout", "template") and a.status == "approved":
         raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo antes de apagar")

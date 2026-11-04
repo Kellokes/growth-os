@@ -314,6 +314,7 @@ class ContentItem(Base):
     image_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=piece)
     image_error: Mapped[str] = mapped_column(Text, default="")  # por que a imagem automática não saiu
     bg_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=background)
+    video_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=video): MP4 animado da peça
     img_title: Mapped[str] = mapped_column(String(200), default="")  # título curto que vai NA imagem
     img_text: Mapped[str] = mapped_column(String(400), default="")  # frase de apoio que vai NA imagem
     # pending (aguardando aprovação) | approved | sent | rejected | failed
@@ -335,6 +336,7 @@ class LayoutAsset(Base):
     kind=reference: imagem de referência do projeto (logo, posts que o owner gosta, paleta).
     kind=template: layout aprovado convertido em HTML (data = prévia PNG); só ele é usado nas peças.
     kind=background: fundo gerado para uma peça, sem texto (para refazer a imagem sem pagar de novo).
+    kind=video: MP4 animado da peça (mesmo template, texto e fundo; content_items.video_id aponta para ele).
     kind=piece: imagem de uma peça da Central de Conteúdo (content_items.image_id aponta para ela).
     kind=layout: proposta gerada; status proposed | approved | rejected | archived. Só um approved por projeto e formato.
     """
@@ -465,6 +467,7 @@ _NEW_COLUMNS = {
         "image_id": "INTEGER NULL",
         "image_error": "TEXT NOT NULL DEFAULT ''",
         "bg_id": "INTEGER NULL",
+        "video_id": "INTEGER NULL",
         "img_title": "VARCHAR(200) NOT NULL DEFAULT ''",
         "img_text": "VARCHAR(400) NOT NULL DEFAULT ''",
     },

@@ -11,10 +11,12 @@ import re
 
 import httpx
 
-from . import modelcfg
+from . import calllog, modelcfg
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
 from .providers.base import ProviderError
+
+summarize_bytes = calllog.summarize_bytes
 
 # formato -> (nome, proporção, para que serve)
 FORMATS: dict[str, tuple[str, str, str]] = {
@@ -121,6 +123,14 @@ def _is_modality_error(status: int, msg: str) -> bool:
 
 async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
     """Pede UMA imagem ao OpenRouter, com as referências junto."""
+    with calllog.track("openrouter", model, "image", f"imagem {ratio} · {len(refs[:MAX_REFS_SENT])} referência(s) · "
+                       f"prompt de {len(prompt)} caracteres") as call:
+        data, mime = await _request_image(model, prompt, refs, ratio)
+        call.done(summarize_bytes(mime, len(data)))
+        return data, mime
+
+
+async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
     key = _api_key()
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
@@ -143,11 +153,15 @@ async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], 
     raise ProviderError("o OpenRouter recusou o pedido de imagem")  # inalcançável: o laço sempre retorna ou levanta
 
 
-def image_choice(db) -> modelcfg.Choice:
+def image_choice(db, log: bool = False, project_id: int | None = None) -> modelcfg.Choice:
     """Modelo de imagem configurado em /settings. ProviderError com o que falta, em linguagem do owner."""
     c = modelcfg.resolve(db, "image")
     if c.provider != "openrouter" or not c.model:
-        raise ProviderError("Escolha o modelo de imagem do OpenRouter em Modelos (atividade \"Imagens\") antes de gerar.")
+        msg = "Escolha o modelo de imagem do OpenRouter em Modelos (atividade \"Imagens\") antes de gerar."
+        if log:  # só nas ações de gerar; as telas também chamam isto para mostrar o aviso e não devem encher o log
+            calllog.record_failure(c.provider, c.model, "image", f"{msg} (configurado: {c.provider or 'nenhum'}; imagem só roda no OpenRouter)",
+                                   "chamada não enviada", project_id)
+        raise ProviderError(msg)
     return c
 
 
@@ -234,6 +248,14 @@ def extract_html(text: str) -> str:
 
 async def request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str:
     """Pede ao modelo (com visão) o HTML do layout. Devolve o texto da resposta."""
+    with calllog.track("openrouter", model, "layout_html", f"layout {image[1]} {len(image[0]) / 1024:.0f} KB → HTML · "
+                       f"prompt de {len(prompt)} caracteres") as call:
+        text = await _request_html(model, prompt, image)
+        call.done(f"{len(text)} caracteres de HTML")
+        return text
+
+
+async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str:
     key = _api_key()
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
@@ -260,10 +282,15 @@ async def request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str
     return str(content or "")
 
 
-def html_choice(db) -> modelcfg.Choice:
+def html_choice(db, log: bool = False, project_id: int | None = None) -> modelcfg.Choice:
     c = modelcfg.resolve(db, "layout_html")
     if c.provider != "openrouter" or not c.model:
-        raise ProviderError("Escolha em Modelos um modelo do OpenRouter com visão para \"Layouts · converter em HTML\" antes de converter.")
+        msg = "Escolha em Modelos um modelo do OpenRouter com visão para \"Layouts · converter em HTML\" antes de converter."
+        if log:
+            calllog.record_failure(c.provider, c.model, "layout_html",
+                                   f"{msg} (configurado: {c.provider or 'nenhum'}; a conversão só roda no OpenRouter)",
+                                   "chamada não enviada", project_id)
+        raise ProviderError(msg)
     return c
 
 
@@ -282,19 +309,21 @@ def approved_template(db, project_id: int, fmt: str) -> LayoutAsset | None:
 
 async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> LayoutAsset:
     """Converte um layout aprovado em template HTML (uma chamada de IA) e guarda a prévia renderizada."""
-    choice = html_choice(db)
+    choice = html_choice(db, log=True, project_id=layout.project_id)
     project = db.get(GrowthProject, layout.project_id)
     name = project.name if project else ""
     prompt = build_template_prompt(name, layout.format, feedback)
-    text = await request_html(choice.model, prompt, (layout.data, layout.mime))
+    with calllog.context("layout_html", layout.project_id):
+        text = await request_html(choice.model, prompt, (layout.data, layout.mime))
     try:
         html = sanitize_template(extract_html(text))
     except ValueError as e:
         raise ProviderError(f"template recusado: {e}. Tente de novo.") from e
     from . import motion  # import tardio: motion importa este módulo
 
-    preview = await asyncio.to_thread(motion.render_still, html, layout.format, None, "TÍTULO DO POST",
-                                      "Frase de apoio do post, em uma ou duas linhas.", name)
+    with calllog.context("layout_html", layout.project_id):
+        preview = await asyncio.to_thread(motion.render_still, html, layout.format, None, "TÍTULO DO POST",
+                                          "Frase de apoio do post, em uma ou duas linhas.", name)
     t = LayoutAsset(project_id=layout.project_id, kind="template", format=layout.format, status="proposed", mime="image/png",
                     data=preview, html=html, note=feedback.strip(), prompt=prompt, model=choice.model)
     db.add(t)
@@ -388,15 +417,17 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
     template = approved_template(db, c.project_id, c.visual_format)
     if template is None:
         raise ProviderError(f"Defina o template de {FORMATS[c.visual_format][0]} deste projeto em Layouts antes de gerar a imagem.")
-    choice = image_choice(db)
+    choice = image_choice(db, log=True, project_id=c.project_id)
     project = db.get(GrowthProject, c.project_id)
     refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
                  .order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all())
     prompt = build_background_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
-    data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in refs_rows], FORMATS[c.visual_format][1])
+    with calllog.context("image", c.project_id):
+        data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in refs_rows], FORMATS[c.visual_format][1])
     bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
                      model=choice.model, prompt=prompt)
-    final = render_piece(db, c, bg, template)  # renderiza antes de guardar: se o renderizador cair, o fundo não fica órfão
+    with calllog.context("image", c.project_id):
+        final = render_piece(db, c, bg, template)  # renderiza antes de guardar: se o renderizador cair, o fundo não fica órfão
     _replace_asset(db, c, "bg_id", bg)
     drop_video(db, c)
     set_piece_image(db, c, final, "image/png", choice.model, prompt)
@@ -413,7 +444,8 @@ async def generate_piece_video(db, c: ContentItem) -> None:
     title, text = piece_texts(c)
     from . import motion
 
-    video = await motion.render_video(template.html, c.visual_format, (bg.data, bg.mime), title, text, project.name if project else "")
+    with calllog.context("video_render", c.project_id):
+        video = await motion.render_video(template.html, c.visual_format, (bg.data, bg.mime), title, text, project.name if project else "")
     _replace_asset(db, c, "video_id", LayoutAsset(project_id=c.project_id, kind="video", format=c.visual_format,
                                                    mime="video/mp4", data=video, model="hyperframes"))
     db.commit()
@@ -437,7 +469,7 @@ async def autogen_pending() -> int:
             if approved_template(db, c.project_id, c.visual_format) is None:
                 continue
             try:
-                image_choice(db)
+                image_choice(db, log=True, project_id=c.project_id)
                 await generate_piece_image(db, c)
             except ProviderError as e:
                 db.rollback()

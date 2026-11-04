@@ -96,6 +96,23 @@ class AuditLog(Base):
     ip: Mapped[str] = mapped_column(String(64), default="")
 
 
+class AiCall(Base):
+    """Log das chamadas em segundo plano (IA, imagem, renderização). Guarda só resumos já sem segredos (app/calllog.py)."""
+    __tablename__ = "ai_calls"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    activity: Mapped[str] = mapped_column(String(40), default="")  # chave de modelcfg.ACTIVITIES ou video_render...
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    actor: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(10), default="running")  # running | ok | error
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_summary: Mapped[str] = mapped_column(String(400), default="")
+    response_summary: Mapped[str] = mapped_column(String(400), default="")
+    error: Mapped[str] = mapped_column(String(600), default="")
+
+
 # ---------- etapa 3: agentes, KPIs e plano diário ----------
 
 class Agent(Base):

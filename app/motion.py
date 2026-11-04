@@ -10,6 +10,7 @@ import re
 
 import httpx
 
+from . import calllog
 from .config import get_settings
 from .layouts import CANVAS, _TOKEN
 from .providers.base import ProviderError
@@ -116,19 +117,25 @@ def _unreachable(e: Exception) -> ProviderError:
 def render_still(template: str, fmt: str, bg: tuple[bytes, str] | None, title: str, text: str, brand: str = "") -> bytes:
     """PNG do template com o texto e o fundo da peça (mesma composição do vídeo, no quadro final). Síncrono."""
     payload = {**_payload(template, fmt, bg, title, text, brand), "at": STILL_AT}
-    try:
-        resp = httpx.post(get_settings().motion_url.rstrip("/") + "/still", json=payload, timeout=REQUEST_TIMEOUT)
-    except httpx.HTTPError as e:
-        raise _unreachable(e) from e
-    return _check(resp, (0, b"\x89PNG"), MAX_IMAGE_BYTES)
+    with calllog.track("motion", "hyperframes", "piece_render", f"imagem {fmt} · template + texto de {len(title) + len(text)} caracteres") as call:
+        try:
+            resp = httpx.post(get_settings().motion_url.rstrip("/") + "/still", json=payload, timeout=REQUEST_TIMEOUT)
+        except httpx.HTTPError as e:
+            raise _unreachable(e) from e
+        png = _check(resp, (0, b"\x89PNG"), MAX_IMAGE_BYTES)
+        call.done(calllog.summarize_bytes("PNG", len(png)))
+        return png
 
 
 async def render_video(template: str, fmt: str, bg: tuple[bytes, str] | None, title: str, text: str, brand: str = "") -> bytes:
     """MP4 animado da peça. ProviderError com o motivo em linguagem do owner."""
     payload = {**_payload(template, fmt, bg, title, text, brand), "quality": "standard"}
-    try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.post(get_settings().motion_url.rstrip("/") + "/render", json=payload)
-    except httpx.HTTPError as e:
-        raise _unreachable(e) from e
-    return _check(resp, (4, b"ftyp"), MAX_VIDEO_BYTES)
+    with calllog.track("motion", "hyperframes", "video_render", f"vídeo {fmt} · {DURATION:g} s · texto de {len(title) + len(text)} caracteres") as call:
+        try:
+            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+                resp = await client.post(get_settings().motion_url.rstrip("/") + "/render", json=payload)
+        except httpx.HTTPError as e:
+            raise _unreachable(e) from e
+        mp4 = _check(resp, (4, b"ftyp"), MAX_VIDEO_BYTES)
+        call.done(calllog.summarize_bytes("MP4", len(mp4)))
+        return mp4

@@ -262,9 +262,26 @@ async def request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str
 
 def html_choice(db) -> modelcfg.Choice:
     c = modelcfg.resolve(db, "layout_html")
-    if c.provider != "openrouter" or not c.model:
+    if not c.provider:
+        raise ProviderError("Escolha em Modelos o provider de \"Layouts · converter em HTML\" (Codex, Claude ou um modelo com visão do OpenRouter).")
+    if c.provider == "openrouter" and not c.model:
         raise ProviderError("Escolha em Modelos um modelo do OpenRouter com visão para \"Layouts · converter em HTML\" antes de converter.")
     return c
+
+
+async def request_html_for(choice: modelcfg.Choice, prompt: str, image: tuple[bytes, str]) -> str:
+    """Pede o HTML ao provider configurado (OpenRouter, Codex ou Claude), sempre com a imagem do layout."""
+    if choice.provider == "openrouter":
+        return await request_html(choice.model, prompt, image)
+    from .providers import all_providers
+
+    provider = all_providers().get(choice.provider)
+    if provider is None:
+        raise ProviderError(f"provider desconhecido: {choice.provider}")
+    ok, why = provider.available()
+    if not ok:
+        raise ProviderError(why)
+    return await provider.configured(choice.model, choice.reasoning).complete_with_image(prompt, *image)
 
 
 def approved_asset(db, project_id: int, kind: str, fmt: str) -> LayoutAsset | None:
@@ -286,7 +303,7 @@ async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> Layo
     project = db.get(GrowthProject, layout.project_id)
     name = project.name if project else ""
     prompt = build_template_prompt(name, layout.format, feedback)
-    text = await request_html(choice.model, prompt, (layout.data, layout.mime))
+    text = await request_html_for(choice, prompt, (layout.data, layout.mime))
     try:
         html = sanitize_template(extract_html(text))
     except ValueError as e:

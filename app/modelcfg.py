@@ -63,7 +63,8 @@ CATALOG: dict[str, dict] = {
         ],
     },
     "codex": {
-        # Lista do próprio Codex CLI (`codex debug models`, só os visíveis e liberados na API).
+        # Lista do próprio Codex CLI (`codex debug models`). Os GPT-5.x saíram: o CLI marca todos com "upgrade" para o GPT-6
+        # e a conta ChatGPT recusa ("model is not supported when using Codex with a ChatGPT account").
         "kinds": [TEXT],
         "reasoning": [
             {"id": "low", "label": "Baixo"}, {"id": "medium", "label": "Médio"}, {"id": "high", "label": "Alto"},
@@ -75,10 +76,6 @@ CATALOG: dict[str, dict] = {
             {"id": "gpt-6.1-terra", "label": "GPT-6.1 Terra"},
             {"id": "gpt-6-sol", "label": "GPT-6 Sol"},
             {"id": "gpt-6-luna", "label": "GPT-6 Luna"},
-            {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"},
-            {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra"},
-            {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna"},
-            {"id": "gpt-5.5", "label": "GPT-5.5"},
         ],
     },
     "openrouter": {
@@ -106,6 +103,11 @@ class Choice:
     model: str = ""
     reasoning: str = ""
     source: str = ""  # explicit | activity key | "" (nada configurado)
+
+
+# Modelos que já estiveram na lista do Codex e a conta ChatGPT não aceita mais. Configurações antigas que ainda
+# apontam para eles voltam ao padrão da conta em vez de falhar toda vez.
+CODEX_RETIRED = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
 
 
 def check(provider: str, model: str, reasoning: str, kind: str = TEXT) -> str | None:
@@ -138,7 +140,10 @@ def resolve(db: DB, activity: str) -> Choice:
     for key in keys:
         r = rows.get(key)
         if r and r.provider:
-            return Choice(r.provider, r.model or "", r.reasoning or "", key)
+            model = r.model or ""
+            if r.provider == "codex" and model in CODEX_RETIRED:
+                model = ""
+            return Choice(r.provider, model, r.reasoning or "", key)
     return Choice()
 
 

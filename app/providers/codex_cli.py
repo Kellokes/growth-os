@@ -3,7 +3,29 @@ import tempfile
 from pathlib import Path
 
 from ..config import get_settings
-from .base import SYSTEM_PROMPT, ChatTurn, Provider, render_transcript, run_cli
+from .base import SYSTEM_PROMPT, ChatTurn, Provider, ProviderError, render_transcript, run_cli
+
+
+def explain_codex(model: str, raw: str) -> str | None:
+    """Troca o despejo do Codex CLI por uma frase clara quando o erro é de modelo."""
+    low = raw.lower()
+    name = model or "padrão"
+    if "not supported when using codex with a chatgpt account" in low:
+        return (f"O modelo \"{name}\" não é aceito pelo Codex com login ChatGPT. "
+                "Em Modelos, escolha outro (GPT-6 Astra, 6.1 Sol, 6.1 Terra, 6 Sol ou 6 Luna) ou deixe em branco para usar o padrão da conta.")
+    if "model metadata" in low and "not found" in low:
+        return f"O Codex não conhece o modelo \"{name}\". Escolha outro em Modelos ou deixe em branco para o padrão da conta."
+    return None
+
+
+async def run_codex(model: str, args: list[str], cwd: Path, timeout: int, stdin: str) -> str:
+    try:
+        return await run_cli(args, cwd, timeout, stdin=stdin)
+    except ProviderError as e:
+        msg = explain_codex(model, str(e))
+        if msg:
+            raise ProviderError(msg) from e
+        raise
 
 
 class CodexCLIProvider(Provider):
@@ -34,7 +56,7 @@ class CodexCLIProvider(Provider):
             if self.reasoning:
                 args += ["-c", f'model_reasoning_effort="{self.reasoning}"']
             args.append("-")
-            raw = await run_cli(args, Path(tmp), s.provider_timeout_seconds, stdin=prompt)
+            raw = await run_codex(self.model, args, Path(tmp), s.provider_timeout_seconds, prompt)
             if out_file.exists():
                 return out_file.read_text(errors="replace").strip()
             return raw.strip()
@@ -55,7 +77,7 @@ class CodexCLIProvider(Provider):
             if self.reasoning:
                 args += ["-c", f'model_reasoning_effort="{self.reasoning}"']
             args.append("-")
-            raw = await run_cli(args, Path(s.workspace_dir), s.provider_timeout_seconds, stdin=prompt)
+            raw = await run_codex(self.model, args, Path(s.workspace_dir), s.provider_timeout_seconds, prompt)
             if out_file.exists():
                 return out_file.read_text(errors="replace").strip()
             return raw.strip()

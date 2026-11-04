@@ -315,3 +315,17 @@ def test_openrouter_context_too_long_is_explained(openrouter):
     with pytest.raises(ProviderError, match="grande demais") as e:
         _ask()
     assert not e.value.retryable
+
+
+def test_codex_lists_only_gpt6_and_retired_fall_back():
+    ids = {m["id"] for m in modelcfg.CATALOG["codex"]["models"]}
+    assert ids and not (ids & modelcfg.CODEX_RETIRED)
+
+
+def test_codex_model_error_is_explained():
+    from app.providers.codex_cli import explain_codex
+
+    raw = "ERROR: The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."
+    msg = explain_codex("gpt-5.6-sol", raw)
+    assert "gpt-5.6-sol" in msg and "login ChatGPT" in msg and "ERROR" not in msg
+    assert explain_codex("x", "outra falha") is None

@@ -660,10 +660,22 @@ def ai_calls(limit: int = 100, status: str = "", activity: str = "", auth: Auth 
     names = {p.id: p.name for p in db.query(GrowthProject).filter(GrowthProject.id.in_({r.project_id for r in rows if r.project_id})).all()}
     running = db.query(AiCall).filter(AiCall.status == "running").count()
     failed = db.query(AiCall).filter(AiCall.status == "error", AiCall.at >= utcnow() - timedelta(hours=24)).count()
+    failed_total = db.query(AiCall).filter(AiCall.status == "error").count()
     labels = {a["key"]: a["label"] for a in modelcfg.ACTIVITIES} | calllog.ACTIVITY_LABELS
-    return {"running": running, "failed_24h": failed, "calls": [
+    return {"running": running, "failed_24h": failed, "failed_total": failed_total, "calls": [
         calllog.call_json(r) | {"project": names.get(r.project_id, ""), "activity_label": labels.get(r.activity, r.activity)}
         for r in rows]}
+
+
+@app.delete("/api/calls")
+def clear_ai_calls(request: Request, status: str = "error", auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Limpa do log as chamadas com erro (as em andamento e as que deram certo ficam)."""
+    if status != "error":
+        raise HTTPException(422, "só dá para limpar as chamadas com erro")
+    n = db.query(AiCall).filter(AiCall.status == "error").delete()
+    db.commit()
+    audit(db, auth.user.username, "calls_clear", f"{n} chamada(s) com erro apagadas do log", client_ip(request))
+    return {"deleted": n}
 
 
 # ---------- configurações: resetar dados ----------

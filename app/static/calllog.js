@@ -80,6 +80,13 @@
     root.classList.toggle("open", open);
     load(); schedule();
   };
+  $("#calllog-clear").onclick = async () => {
+    const n = last ? last.failed_total : 0;
+    if (!n) { alert("Não há erros no log."); return; }
+    if (!confirm(`Apagar ${n} chamada(s) com erro do log?`)) return;
+    try { await api("/api/calls?status=error", { method: "DELETE" }); } catch (e) { alert(e.message); return; }
+    openId = null; load();
+  };
   $("#calllog-filters").onclick = (e) => {
     const b = e.target.closest("[data-f]");
     if (!b) return;

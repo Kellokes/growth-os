@@ -145,9 +145,11 @@ async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]],
             "messages": [{"role": "user", "content": content}],
             "modalities": modalities,
             "image_config": {"aspect_ratio": ratio},
+            "usage": {"include": True},
         }
         status, payload = await _post_chat(key, body)
         if status == 200:
+            calllog.note_usage(payload.get("usage"))
             return extract_image(payload)
         _, msg = _error_detail(payload)
         if i + 1 < len(MODALITY_TRIES) and _is_modality_error(status, msg):
@@ -284,7 +286,8 @@ async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> st
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
     body = {"model": model, "messages": [{"role": "user", "content": [
-        {"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url(*image)}}]}]}
+        {"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url(*image)}}]}],
+            "usage": {"include": True}}
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             resp = await client.post(OPENROUTER_URL, json=body, headers={"Authorization": f"Bearer {key}"})
@@ -297,6 +300,7 @@ async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> st
     if resp.status_code != 200:
         _, msg = _error_detail(payload)
         raise _explain(resp.status_code, msg, model)
+    calllog.note_usage(payload.get("usage"))
     try:
         content = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):

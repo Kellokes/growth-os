@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Custos · Growth OS{% endblock %}
+{% block body %}
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
+  <main class="main">
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("coin") }}<span>Custos</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1>Custos do OpenRouter</h1>
+          <p class="lede muted">Quanto cada atividade, modelo e dia custou, em dólar. Vem do log de chamadas (mantido por 30 dias). Claude e Codex rodam pelo login do CLI e não entram no valor.</p></div>
+        <label class="muted">Período
+          <select id="costs-days"><option value="7">7 dias</option><option value="30" selected>30 dias</option><option value="90">90 dias</option></select></label>
+      </div>
+    </header>
+    <section class="page">
+      <div class="alerts" id="alerts"></div>
+      <article class="card" id="costs-total"><p class="muted">Carregando…</p></article>
+      <h3 class="section-title">Por atividade</h3>
+      <article class="card table-view"><div id="costs-activity"></div></article>
+      <h3 class="section-title">Por modelo</h3>
+      <article class="card table-view"><div id="costs-model"></div></article>
+      <h3 class="section-title">Por dia</h3>
+      <article class="card table-view"><div id="costs-day"></div></article>
+    </section>
+  </main>
+</div>
+{% include "_audit.html" %}
+<script src="/static/costs.js"></script>
+{% endblock %}

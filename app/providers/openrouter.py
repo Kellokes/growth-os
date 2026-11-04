@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 
+from .. import calllog
 from ..config import get_settings
 from .base import SYSTEM_PROMPT, ChatTurn, Provider, ProviderError
 
@@ -85,7 +86,7 @@ class OpenRouterProvider(Provider):
         model = self.model or s.openrouter_model
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += [{"role": t.role, "content": t.content} for t in history]
-        body: dict = {"model": model, "messages": messages}
+        body: dict = {"model": model, "messages": messages, "usage": {"include": True}}
         if self.reasoning == "none":
             body["reasoning"] = {"enabled": False}
         elif self.reasoning:
@@ -112,6 +113,7 @@ class OpenRouterProvider(Provider):
                 if status == 200 and code:  # erro no meio da geração vem com 200 e corpo de erro
                     status = code
                 if status == 200:
+                    calllog.note_usage((data or {}).get("usage"))
                     return self._content(data)
                 if status not in RETRYABLE:
                     break

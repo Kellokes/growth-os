@@ -111,6 +111,10 @@ class AiCall(Base):
     request_summary: Mapped[str] = mapped_column(String(400), default="")
     response_summary: Mapped[str] = mapped_column(String(400), default="")
     error: Mapped[str] = mapped_column(String(600), default="")
+    # Uso devolvido pelo OpenRouter (nulo = a chamada não informou, ex.: linhas antigas ou Claude/Codex pelo CLI).
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)  # custo em dólar que o próprio OpenRouter informou
 
 
 # ---------- etapa 3: agentes, KPIs e plano diário ----------
@@ -490,6 +494,7 @@ _NEW_COLUMNS = {
         "img_title": "VARCHAR(200) NOT NULL DEFAULT ''",
         "img_text": "VARCHAR(400) NOT NULL DEFAULT ''",
     },
+    "ai_calls": {"input_tokens": "INTEGER NULL", "output_tokens": "INTEGER NULL", "cost_usd": "FLOAT NULL"},
     "layout_assets": {"html": "TEXT NOT NULL DEFAULT ''", "plate_id": "INTEGER NULL"},
 }
 

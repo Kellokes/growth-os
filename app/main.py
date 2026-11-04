@@ -23,7 +23,7 @@ from .db import (
 )
 from .executor import classify
 from . import actions as acts
-from . import calllog
+from . import calllog, costs
 from . import approvals as appr
 from . import content as cnt
 from . import growth
@@ -288,6 +288,11 @@ def projects_page(request: Request, db: DB = Depends(get_db)):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: DB = Depends(get_db)):
     return _page(request, db, "settings.html", "models")
+
+
+@app.get("/costs", response_class=HTMLResponse)
+def costs_page(request: Request, db: DB = Depends(get_db)):
+    return _page(request, db, "costs.html", "costs")
 
 
 @app.get("/config", response_class=HTMLResponse)
@@ -665,6 +670,13 @@ def ai_calls(limit: int = 100, status: str = "", activity: str = "", auth: Auth 
     return {"running": running, "failed_24h": failed, "failed_total": failed_total, "calls": [
         calllog.call_json(r) | {"project": names.get(r.project_id, ""), "activity_label": labels.get(r.activity, r.activity)}
         for r in rows]}
+
+
+@app.get("/api/costs")
+async def api_costs(days: int = 30, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Custo das chamadas ao OpenRouter por atividade, modelo e dia (dólar), a partir do log de chamadas."""
+    models = (await modelcfg.openrouter_models())["models"]
+    return costs.summarize(db, models, max(1, min(days, 90)))
 
 
 @app.delete("/api/calls")

@@ -252,6 +252,12 @@ def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> st
         "for the text. Your job is ONLY the TEXT: place the headline and the supporting line inside that reserved area, with a color, "
         "weight, size and alignment that suit the artwork and stay readable on it. Do NOT redraw the "
         "logo, frame, borders, ornaments, dividers or any shape: they are in the background already.",
+        "TEXT PLACEMENT (most important for a professional result): find the EMPTY text panel in the layout, the area with no photo, "
+        "scenery, face, logo or ornament, and put BOTH the headline and the supporting line fully INSIDE it. Never place text over a "
+        "photograph, a person, a card, the logo or the frame. Use absolutely positioned box exactly over that panel, with inner "
+        "padding of at least 6% of its width, text centered vertically, a clear gap between headline and supporting line, line-height "
+        "1.15 to 1.3, headline 60 to 84px bold, supporting line 32 to 40px regular, light text on dark panels (dark text on light ones) "
+        "with strong contrast. Long text must wrap inside the box, never touch its edges and never leave the panel.",
         "Rules:",
         f"- html and body: margin 0, width {w}px, height {h}px, overflow hidden. Only an inline <style> block; no <script>, "
         "no <link>, no <meta>, no <iframe>, no comments, no xmlns, no `//` or `http` anywhere, "
@@ -430,6 +436,9 @@ def build_scenery_prompt(project_name: str, brief: str, c: ContentItem, feedback
         f"Edit the attached artwork of the brand \"{project_name}\" ({name}). KEEP EXACTLY as they are: the logo/emblem, the frame, "
         "borders, ornaments, dividers, the panel or area reserved for text, the composition and the colors of those elements. "
         f"CHANGE ONLY the photographic scenery/background to fit this subject: {(c.media.strip() or c.title or c.body)[:600]}.",
+        "Put the new photo ONLY in the photo window(s) of the artwork. The panel reserved for text must stay EXACTLY as it is in the "
+        "attached artwork: empty, plain and dark, with no photo, people, objects, texture or scenery inside it. Do not extend the "
+        "photo into the text panel.",
         "ABSOLUTELY NO text, letters or numbers anywhere; keep the text area clean.",
         f"Brand style brief: {brief.strip()[:1000]}" if brief.strip() else "",
         f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",

@@ -652,22 +652,24 @@ def audit_log(auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
 
 
 @app.get("/api/calls")
-def ai_calls(limit: int = 100, status: str = "", activity: str = "", auth: Auth = Depends(current_auth),
+def ai_calls(limit: int = 100, status: str = "", activity: str = "", after_id: int = 0, auth: Auth = Depends(current_auth),
              db: DB = Depends(get_db)):
     """Log das chamadas em segundo plano (IA, imagem, renderização), da mais nova para a mais antiga."""
     calllog.sweep()
-    q = db.query(AiCall)
+    base = db.query(AiCall).filter(AiCall.id > max(after_id, 0))  # after_id: o "limpar a tela" do rodapé (nada é apagado)
+    q = base
     if status in ("running", "ok", "error"):
         q = q.filter(AiCall.status == status)
     if activity:
         q = q.filter(AiCall.activity == activity)
     rows = q.order_by(AiCall.id.desc()).limit(max(1, min(limit, 300))).all()
     names = {p.id: p.name for p in db.query(GrowthProject).filter(GrowthProject.id.in_({r.project_id for r in rows if r.project_id})).all()}
-    running = db.query(AiCall).filter(AiCall.status == "running").count()
-    failed = db.query(AiCall).filter(AiCall.status == "error", AiCall.at >= utcnow() - timedelta(hours=24)).count()
-    failed_total = db.query(AiCall).filter(AiCall.status == "error").count()
+    running = base.filter(AiCall.status == "running").count()
+    failed = base.filter(AiCall.status == "error", AiCall.at >= utcnow() - timedelta(hours=24)).count()
+    failed_total = base.filter(AiCall.status == "error").count()
+    latest_id = db.query(func.max(AiCall.id)).scalar() or 0
     labels = {a["key"]: a["label"] for a in modelcfg.ACTIVITIES} | calllog.ACTIVITY_LABELS
-    return {"running": running, "failed_24h": failed, "failed_total": failed_total, "calls": [
+    return {"running": running, "failed_24h": failed, "failed_total": failed_total, "latest_id": latest_id, "calls": [
         calllog.call_json(r) | {"project": names.get(r.project_id, ""), "activity_label": labels.get(r.activity, r.activity)}
         for r in rows]}
 

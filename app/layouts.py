@@ -358,10 +358,17 @@ def approved_template(db, project_id: int, fmt: str) -> LayoutAsset | None:
 
 def build_plate_prompt(fmt: str, feedback: str = "") -> str:
     lines = [
-        f"Edit the attached {FORMATS[fmt][0]} layout. Return the SAME image with ALL text removed: every headline, supporting line, "
-        "caption, button label, URL, date, number and letter, including small print and fake or garbled words. Do not remove or change the logo/emblem if it is a drawn symbol, the frame, borders, ornaments, "
-        "dividers, scenery, colors, lighting or composition. Where text was, leave the panel or background clean and calm so new "
-        "text can be written there later. Keep exactly the same proportions. No new text, letters, numbers or watermarks: if unsure whether something is text, remove it.",
+        f"Edit the FIRST attached image, a {FORMATS[fmt][0]} layout. Return the SAME image with only the LAYOUT TEXT removed: the "
+        "headline, the supporting line, captions, button labels, URLs, dates, numbers, small print and any fake or garbled words "
+        "written on the panels or background.",
+        "THE BRAND LOGO MUST STAY EXACTLY AS IT IS, pixel for pixel: the emblem AND every letter of its wordmark (the lettering "
+        "that is part of the logo is NOT text to remove, even if it is large or in the middle of the layout). Never erase, redraw, "
+        "restyle, move or resize the logo. The other attached images, if any, show the real brand logo/style: use them only to "
+        "recognize what is the logo.",
+        "Also keep unchanged: the frame, borders, ornaments, dividers, scenery, colors, lighting and composition. Where the layout "
+        "text was, leave the panel or background clean and calm so new text can be written there later. Keep exactly the same "
+        "proportions. Do not add any new text, letters or numbers. If something is part of the logo, keep it; if it is a headline "
+        "or sentence, remove it.",
     ]
     if feedback.strip():
         lines.append(f"Adjustments requested by the owner: {feedback.strip()[:500]}")
@@ -372,9 +379,12 @@ async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> Layo
     """Layout aprovado -> arte sem texto (1 imagem) + HTML só com o texto (1 chamada). A prévia usa as duas."""
     choice = html_choice(db, log=True, project_id=layout.project_id)
     img_choice = image_choice(db, log=True, project_id=layout.project_id)
+    logo_refs = (db.query(LayoutAsset).filter(LayoutAsset.project_id == layout.project_id, LayoutAsset.kind == "reference")
+                 .order_by(LayoutAsset.id).limit(3).all())  # referências do projeto: mostram o logo de verdade
     with calllog.context("image", layout.project_id):
         plate_data, plate_mime = await request_image(img_choice.model, build_plate_prompt(layout.format, feedback),
-                                                     [(layout.data, layout.mime)], FORMATS[layout.format][1])
+                                                     [(layout.data, layout.mime)] + [(a.data, a.mime) for a in logo_refs],
+                                                     FORMATS[layout.format][1])
     project = db.get(GrowthProject, layout.project_id)
     name = project.name if project else ""
     prompt = build_template_prompt(name, layout.format, feedback)

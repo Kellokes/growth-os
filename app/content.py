@@ -173,6 +173,8 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         "img_title": c.img_title, "img_text": c.img_text,
         "visual_format": c.visual_format, "needs_image": needs_image(c), "image_error": c.image_error,
         "image_url": f"/api/layouts/assets/{c.image_id}" if c.image_id else "",
+        "video_url": f"/api/layouts/assets/{c.video_id}" if c.video_id else "",
+        "can_video": bool(c.bg_id and c.visual_format),
         "status": c.status, "stage": stage(c, now), "link": c.link, "note": c.note,
         "scheduled_at": c.scheduled_at.isoformat(timespec="minutes") if c.scheduled_at else None,
         "sent_at": c.sent_at.isoformat() if c.sent_at else None,

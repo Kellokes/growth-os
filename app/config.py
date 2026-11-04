@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     codex_bin: str = "codex"
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
-    # Gotenberg (Chromium isolado) que transforma o template HTML do layout em imagem.
-    renderer_url: str = "http://renderer:3000"
+    # Serviço de vídeo (HyperFrames + Chromium + ffmpeg, rede interna sem internet) que anima o template da peça em MP4.
+    motion_url: str = "http://motion:3000"
 
     # Etapa 2: gateway do Docker (único com o socket) e Caddyfile montado só para leitura.
     gateway_url: str = "http://docker-gateway:2375"

@@ -5,14 +5,13 @@ Infra para qualquer projeto: nada aqui sabe de Zombie Party, A Ilha ou Take One.
 modelo de imagem configurado em /settings (atividade "image", só OpenRouter) e cada geração é um clique do
 owner: nunca roda sozinha nem em laço.
 """
+import asyncio
 import base64
-import html as htmllib
 import re
 
 import httpx
 
 from . import modelcfg
-from .config import get_settings
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
 from .providers.base import ProviderError
@@ -167,8 +166,28 @@ CANVAS = {"story": (1080, 1920), "carrossel": (1080, 1350), "reel": (1080, 1920)
 REQUIRED_TOKENS = ("{{bg}}", "{{titulo}}", "{{texto}}")
 _TOKEN = re.compile(r"\{\{(bg|titulo|texto|marca)\}\}")
 _FORBIDDEN = re.compile(r"<\s*(script|iframe|object|embed|link|meta|base|form)\b|\bon\w+\s*=|javascript:|@import|https?:|//\w", re.I)
-SAMPLE_BG = "linear-gradient(135deg, #1f2937, #4b5563)"
 MAX_HTML = 60_000
+
+
+# Fontes que o renderizador de vídeo traz embutidas: qualquer outra cai em fonte genérica e o texto sai diferente do previsto.
+BUNDLED_FONTS = ("Inter", "Montserrat", "Outfit", "Nunito", "Oswald", "League Gothic", "Archivo Black", "Poppins", "Roboto",
+                 "Open Sans", "Lato", "Playfair Display", "EB Garamond", "Space Mono", "IBM Plex Mono", "JetBrains Mono")
+DEFAULT_FONT = "Montserrat"
+_FONT_DECL = re.compile(r"font-family\s*:\s*([^;}\"']*(?:\"[^\"]*\"|'[^']*')?[^;}]*)", re.I)
+
+
+def normalize_fonts(html: str) -> str:
+    """Todo font-family cujo primeiro nome não é embutido vira Montserrat: mesma tipografia na imagem e no vídeo."""
+    ok = {f.lower() for f in BUNDLED_FONTS}
+
+    def fix(m: re.Match) -> str:
+        value = m.group(1).strip()
+        first = value.split(",")[0].strip().strip("\"'").lower()
+        if first in ok or first.startswith("var("):
+            return m.group(0)
+        return f"font-family: '{DEFAULT_FONT}', sans-serif"
+
+    return _FONT_DECL.sub(fix, html)
 
 
 def sanitize_template(html: str) -> str:
@@ -181,34 +200,7 @@ def sanitize_template(html: str) -> str:
     missing = [t for t in REQUIRED_TOKENS if t not in html]
     if missing:
         raise ValueError("faltam no template: " + ", ".join(missing))
-    return html
-
-
-def fill_template(html: str, bg: str, title: str, text: str, brand: str = "") -> str:
-    """Troca os espaços numa passada só (o texto do post nunca vira outro espaço). Texto sempre escapado."""
-    values = {"bg": bg, "titulo": htmllib.escape(title), "texto": htmllib.escape(text), "marca": htmllib.escape(brand)}
-    return _TOKEN.sub(lambda m: values[m.group(1)], html)
-
-
-def bg_css(data: bytes, mime: str) -> str:
-    return f'url("{data_url(data, mime)}")'
-
-
-def render_png(html: str, fmt: str) -> bytes:
-    """HTML -> PNG no Chromium isolado (Gotenberg). Sem internet e sem JavaScript lá dentro."""
-    w, h = CANVAS[fmt]
-    try:
-        resp = httpx.post(
-            get_settings().renderer_url.rstrip("/") + "/forms/chromium/screenshot/html",
-            files={"files": ("index.html", html.encode(), "text/html")},
-            data={"width": str(w), "height": str(h), "format": "png", "waitDelay": "300ms"},
-            timeout=90.0,
-        )
-    except httpx.HTTPError as e:
-        raise ProviderError(f"o renderizador de imagens não respondeu ({type(e).__name__}); confira se o container renderer está de pé") from e
-    if resp.status_code != 200 or detect_mime(resp.content) != "image/png":
-        raise ProviderError(f"o renderizador falhou ({resp.status_code})")
-    return resp.content
+    return normalize_fonts(html)
 
 
 def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> str:
@@ -224,6 +216,7 @@ def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> st
         "background-position: center;  (the placeholder {{bg}} is replaced by the real image).",
         "- Placeholders (exact text, used once each): {{titulo}} for the headline, {{texto}} for the supporting line, "
         "{{marca}} for the brand name/logo text. Style them so long text wraps and never overflows (word-wrap, max sizes).",
+        "- Fonts: use ONLY these families, first in the font-family list: " + ", ".join(BUNDLED_FONTS[:13]) + ". Any other family is replaced.",
         "- Draw any decorative shapes with CSS only. Do not put any other text on the page.",
         "Answer with the HTML document only, inside a ```html code block.",
     ]
@@ -298,7 +291,10 @@ async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> Layo
         html = sanitize_template(extract_html(text))
     except ValueError as e:
         raise ProviderError(f"template recusado: {e}. Tente de novo.") from e
-    preview = render_png(fill_template(html, SAMPLE_BG, "TÍTULO DO POST", "Frase de apoio do post, em uma ou duas linhas.", name), layout.format)
+    from . import motion  # import tardio: motion importa este módulo
+
+    preview = await asyncio.to_thread(motion.render_still, html, layout.format, None, "TÍTULO DO POST",
+                                      "Frase de apoio do post, em uma ou duas linhas.", name)
     t = LayoutAsset(project_id=layout.project_id, kind="template", format=layout.format, status="proposed", mime="image/png",
                     data=preview, html=html, note=feedback.strip(), prompt=prompt, model=choice.model)
     db.add(t)
@@ -351,11 +347,21 @@ def set_piece_image(db, c: ContentItem, data: bytes, mime: str, model: str = "",
     db.commit()
 
 
+def drop_video(db, c: ContentItem) -> None:
+    """O vídeo guarda o texto e o fundo de quando foi feito: se algum mudou, ele sai (o owner gera de novo)."""
+    if c.video_id:
+        old = db.get(LayoutAsset, c.video_id)
+        if old is not None:
+            db.delete(old)
+        c.video_id = None
+
+
 def render_piece(db, c: ContentItem, bg: LayoutAsset, template: LayoutAsset) -> bytes:
     project = db.get(GrowthProject, c.project_id)
     title, text = piece_texts(c)
-    return render_png(fill_template(template.html, bg_css(bg.data, bg.mime), title, text, project.name if project else ""),
-                      c.visual_format)
+    from . import motion
+
+    return motion.render_still(template.html, c.visual_format, (bg.data, bg.mime), title, text, project.name if project else "")
 
 
 def rerender_piece(db, c: ContentItem) -> None:
@@ -367,6 +373,8 @@ def rerender_piece(db, c: ContentItem) -> None:
         return
     try:
         set_piece_image(db, c, render_piece(db, c, bg, template), "image/png", "template")
+        drop_video(db, c)
+        db.commit()
     except ProviderError as e:
         db.rollback()
         c.image_error = str(e)[:500]
@@ -390,7 +398,25 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
                      model=choice.model, prompt=prompt)
     final = render_piece(db, c, bg, template)  # renderiza antes de guardar: se o renderizador cair, o fundo não fica órfão
     _replace_asset(db, c, "bg_id", bg)
+    drop_video(db, c)
     set_piece_image(db, c, final, "image/png", choice.model, prompt)
+
+
+async def generate_piece_video(db, c: ContentItem) -> None:
+    """Anima o template aprovado com o texto e o fundo da peça (sem IA, sem custo) e guarda o MP4."""
+    if not (c.visual_format and c.bg_id):
+        raise ProviderError("o vídeo usa o fundo gerado da peça: gere a imagem primeiro")
+    bg, template = db.get(LayoutAsset, c.bg_id), approved_template(db, c.project_id, c.visual_format)
+    if bg is None or template is None:
+        raise ProviderError("faltam o fundo ou o template aprovado do projeto para montar o vídeo")
+    project = db.get(GrowthProject, c.project_id)
+    title, text = piece_texts(c)
+    from . import motion
+
+    video = await motion.render_video(template.html, c.visual_format, (bg.data, bg.mime), title, text, project.name if project else "")
+    _replace_asset(db, c, "video_id", LayoutAsset(project_id=c.project_id, kind="video", format=c.visual_format,
+                                                   mime="video/mp4", data=video, model="hyperframes"))
+    db.commit()
 
 
 async def autogen_pending() -> int:

@@ -1,10 +1,13 @@
 import asyncio
 import base64
 
+import pytest
+
 from app import content as cnt
 from app import db as dbmod
 from app import layouts as lay
 from app import modelcfg
+from app import motion
 from app.providers.base import ProviderError
 
 from .test_growth import make_projects, pid  # noqa: F401 - fixtures
@@ -37,13 +40,13 @@ def approve_layout(logged, monkeypatch, fmt="carrossel"):
     async def fake_html(model, prompt, image):
         return "```html\n" + TEMPLATE + "\n```"
 
-    def fake_render(html, f):
-        RENDERS.append(html)
+    def fake_render(html, f, bg, title, text, brand=""):
+        RENDERS.append(motion.build_composition(html, f, "BG" if bg else "SAMPLE", title, text, brand))
         return PNG + b"R"
 
     monkeypatch.setattr(lay, "request_image", fake)
     monkeypatch.setattr(lay, "request_html", fake_html)
-    monkeypatch.setattr(lay, "render_png", fake_render)
+    monkeypatch.setattr(motion, "render_still", fake_render)
     RENDERS.clear()
     s = dbmod.new_session()
     modelcfg.save(s, "image", "openrouter", "google/gemini-2.5-flash-image", "")
@@ -106,7 +109,7 @@ def test_generate_needs_approved_template_then_fills_it(logged, monkeypatch):
     assert r.status_code == 200 and r.json()["image_url"] and r.json()["image_error"] == ""
     assert seen["ratio"] == "4:5" and "NO text" in seen["prompt"] and "foto da festa" in seen["prompt"] and "mais verde" in seen["prompt"]
     html = RENDERS[-1]
-    assert "<h1>Festa de Halloween</h1>" in html and "<p>Sábado, 20h</p>" in html and 'url("data:image/png;base64,' in html
+    assert '<h1><span class="m-title">Festa de Halloween</span></h1>' in html and 'class="m-text">Sábado, 20h</span>' in html and "BG" in html
     first = r.json()["image_url"]
     again = logged.post(f"/api/content/{cid}/image", json={}).json()["image_url"]
     assert again != first and logged.get(first).status_code == 404  # a versão anterior é apagada
@@ -164,7 +167,7 @@ def test_template_sanitize_and_fill():
         except ValueError:
             continue
         raise AssertionError(bad)
-    out = lay.fill_template(TEMPLATE, "none", "A {{texto}} B", "<i>x</i>", "Marca & Cia")
+    out = motion.build_composition(TEMPLATE, "story", "none", "A {{texto}} B", "<i>x</i>", "Marca & Cia")
     assert "A {{texto}} B" in out and "&lt;i&gt;x&lt;/i&gt;" in out and "Marca &amp; Cia" in out  # uma passada só
 
 
@@ -190,24 +193,76 @@ def test_template_flow_requires_approved_layout_and_model(logged, monkeypatch):
     assert logged.delete(f"/api/layouts/assets/{tid}").status_code == 409  # template oficial não se apaga
 
 
-def test_render_png_talks_to_gotenberg(monkeypatch):
+def test_motion_service_calls(monkeypatch):
     sent = {}
 
     class Resp:
         status_code, content = 200, PNG
 
-    def fake_post(url, files, data, timeout):
-        sent.update(url=url, name=files["files"][0], data=data)
+        def json(self):
+            return {"error": "boom"}
+
+    def fake_post(url, json, timeout):
+        sent.update(url=url, json=json)
         return Resp()
 
-    monkeypatch.setattr(lay.httpx, "post", fake_post)
-    assert lay.render_png("<html/>", "story") == PNG
-    assert sent["url"].endswith("/forms/chromium/screenshot/html") and sent["name"] == "index.html"
-    assert (sent["data"]["width"], sent["data"]["height"], sent["data"]["format"]) == ("1080", "1920", "png")
+    monkeypatch.setattr(motion.httpx, "post", fake_post)
+    assert motion.render_still(TEMPLATE, "story", (PNG, "image/png"), "T", "x", "M") == PNG
+    assert sent["url"].endswith("/still") and sent["json"]["at"] == motion.STILL_AT
+    assert "assets/bg.png" in sent["json"]["binary"] and 'url("assets/bg.png")' in sent["json"]["files"]["index.html"]
+    motion.render_still(TEMPLATE, "story", None, "T", "x")
+    assert sent["json"]["binary"] == {} and "linear-gradient" in sent["json"]["files"]["index.html"]
     Resp.status_code = 500
-    try:
-        lay.render_png("<html/>", "story")
-    except ProviderError:
-        pass
-    else:
-        raise AssertionError("500 deveria virar ProviderError")
+    with pytest.raises(ProviderError, match="boom"):
+        motion.render_still(TEMPLATE, "story", None, "T", "x")
+    Resp.status_code, Resp.content = 200, b"nao-e-png"
+    with pytest.raises(ProviderError):
+        motion.render_still(TEMPLATE, "story", None, "T", "x")
+
+
+def test_build_composition_contract():
+    doc = motion.build_composition(TEMPLATE, "reel", "BG", "<i>t</i>", "x", "Marca", duration=6)
+    assert 'data-composition-id="main"' in doc and 'data-width="1080" data-height="1920"' in doc and 'class="clip"' in doc
+    assert 'window.__timelines["main"]' in doc and "lib/gsap.min.js" in doc and "&lt;i&gt;t&lt;/i&gt;" in doc
+    assert "{{" not in doc and "<script src=\"http" not in doc
+
+
+def test_normalize_fonts():
+    out = lay.normalize_fonts("a{font-family: Impact, sans-serif} b{font-family:'Poppins', Arial} c{font-family: var(--f)}")
+    assert "Impact" not in out and "'Montserrat'" in out and "'Poppins'" in out and "var(--f)" in out
+
+
+def test_piece_video_flow(logged, monkeypatch):
+    make_projects("Zombie Party")
+    approve_layout(logged, monkeypatch)
+    cid = new_piece(title="Festa")
+    calls = []
+
+    async def fake_video(html, f, bg, title, text, brand=""):
+        calls.append((f, title))
+        return b"\x00\x00\x00\x18ftypmp42" + b"v" * 40
+
+    monkeypatch.setattr(motion, "render_video", fake_video)
+    r = logged.post(f"/api/content/{cid}/video")
+    assert r.status_code == 422 and "fundo" in r.json()["detail"]  # sem imagem gerada ainda
+    assert logged.post(f"/api/content/{cid}/image", json={}).status_code == 200
+    item = logged.post(f"/api/content/{cid}/video").json()
+    assert item["video_url"] and item["can_video"] and calls[0][0] == "carrossel"
+    full = logged.get(item["video_url"])
+    assert full.status_code == 200 and full.headers["accept-ranges"] == "bytes"
+    part = logged.get(item["video_url"], headers={"Range": "bytes=4-7"})
+    assert part.status_code == 206 and part.content == b"ftyp" and part.headers["content-range"] == f"bytes 4-7/{len(full.content)}"
+    tail = logged.get(item["video_url"], headers={"Range": "bytes=-3"})
+    assert tail.status_code == 206 and tail.content == full.content[-3:]
+    assert logged.get(item["video_url"], headers={"Range": "bytes=9999-"}).status_code == 416
+    assert logged.delete(item["video_url"]).status_code == 409  # só pela peça
+    # mudar o texto da imagem invalida o vídeo
+    r = logged.patch(f"/api/content/{cid}", json={"img_title": "Outro"}).json()
+    assert r["video_url"] == "" and logged.get(item["video_url"]).status_code == 404
+    again = logged.post(f"/api/content/{cid}/video").json()["video_url"]
+    assert logged.delete(f"/api/content/{cid}/video").json()["video_url"] == "" and logged.get(again).status_code == 404
+    logged.post(f"/api/content/{cid}/video")
+    assert logged.delete(f"/api/content/{cid}").status_code == 200
+    s = dbmod.new_session()
+    assert s.query(dbmod.LayoutAsset).filter(dbmod.LayoutAsset.kind.in_(("piece", "background", "video"))).count() == 0
+    s.close()

@@ -171,7 +171,11 @@
       ${it?.image_error ? `<div class="alert">${esc(it.image_error)}</div>` : ""}
       ${can && it.visual_format ? `<div class="row"><button class="btn small" type="button" data-img="gen">${it.image_url ? "Gerar outra versão" : "Gerar imagem"}</button>
         <button class="btn small ghost" type="button" data-img="up">Subir minha imagem</button></div>
-        <small class="muted">Gera só o fundo (cobra uma imagem do OpenRouter) e monta o texto no template aprovado do projeto.</small>` : ""}`;
+        <small class="muted">Gera só o fundo (cobra uma imagem do OpenRouter) e monta o texto no template aprovado do projeto.</small>` : ""}
+      ${it?.video_url ? `<video class="cimg big" src="${esc(it.video_url)}" controls playsinline preload="metadata"></video>` : ""}
+      ${can && it.can_video ? `<div class="row"><button class="btn small" type="button" data-vid="gen">${it.video_url ? "Gerar o vídeo de novo" : "Gerar vídeo (6 s)"}</button>
+        ${it.video_url ? '<button class="btn small ghost" type="button" data-vid="del">Apagar vídeo</button>' : ""}</div>
+        <small class="muted">Anima o mesmo template com o texto e o fundo desta peça. Sem custo de IA; leva alguns segundos. Se você mudar o texto da imagem, o vídeo sai e precisa ser gerado de novo.</small>` : ""}`;
   }
   $("#cf-format").onchange = () => { $("#cf-imgtext").hidden = !$("#cf-format").value; renderImage(); };
   $("#cf-image").addEventListener("click", async (ev) => {
@@ -179,6 +183,14 @@
     if (b.dataset.img === "up") return $("#cf-image-file").click();
     b.disabled = true; b.textContent = "Gerando… (até 1 min)";
     try { current = await api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) }); }
+    catch (e) { alert(e.message); }
+    await loadPieces(); renderImage(); renderActions();
+  });
+  $("#cf-image").addEventListener("click", async (ev) => {
+    const b = ev.target.closest("[data-vid]"); if (!b || !current) return;
+    if (b.dataset.vid === "del" && !confirm("Apagar o vídeo desta peça?")) return;
+    b.disabled = true; if (b.dataset.vid === "gen") b.textContent = "Renderizando… (até 2 min)";
+    try { current = await api(`/api/content/${current.id}/video`, { method: b.dataset.vid === "del" ? "DELETE" : "POST" }); }
     catch (e) { alert(e.message); }
     await loadPieces(); renderImage(); renderActions();
   });

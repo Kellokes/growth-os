@@ -44,7 +44,7 @@
     const rows = (state.templates || []).filter((t) => t.format === f.key);
     const hm = state.html_model || {};
     return `<h4 class="lay-sub">Layout + texto em HTML ${hm.problem && !rows.length ? `<small class="muted">· ${esc(hm.problem)}</small>` : ""}</h4>
-      <p class="muted">É o que vale nos posts: o desenho fica fixo e só o texto e o fundo mudam. Aprove um por formato.</p>
+      <p class="muted">É o que vale nos posts: o desenho fica fixo e só o texto e o fundo mudam. O que aparece abaixo é só a prévia (uma imagem) do HTML guardado, com texto de exemplo; o HTML em si é usado ao gerar cada peça. Aprove um por formato.</p>
       <div class="lay-grid">${rows.length ? rows.map((t) => `
         <figure class="lay-thumb ratio-${f.ratio.replace(":", "x")} ${t.status === "approved" ? "official" : ""}">
           <img src="${esc(t.url)}" alt="template ${esc(f.name)}" loading="lazy">

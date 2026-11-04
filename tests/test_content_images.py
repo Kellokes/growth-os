@@ -422,3 +422,11 @@ def test_image_mode_reference_and_prompt_need_no_template(logged, monkeypatch):
 
 def test_agent_block_sets_mode_and_prompt():
     assert cnt.norm_mode("Referência") == "reference" and cnt.norm_mode("prompt") == "prompt" and cnt.norm_mode("") == "template"
+
+
+def test_still_has_no_zoom_but_video_does():
+    from app import motion
+
+    still = motion.build_composition("<style>.a{}</style><div>{{titulo}}</div>", "story", "none", "t", "x", zoom=False)
+    video = motion.build_composition("<style>.a{}</style><div>{{titulo}}</div>", "story", "none", "t", "x")
+    assert "scale: 1.05" not in still and "scale: 1.05" in video

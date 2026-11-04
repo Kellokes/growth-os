@@ -352,7 +352,7 @@ def test_plate_hybrid_keeps_art_and_only_edits_scenery(logged, monkeypatch):
     layout = s.query(dbmod.LayoutAsset).filter_by(kind="layout").first()
     import asyncio as aio
     t = aio.run(lay.generate_template(s, layout, "mais limpo"))
-    assert "ALL text removed" in prompts[0][0] and "mais limpo" in prompts[0][0] and prompts[0][2] == layout.data
+    assert "THE BRAND LOGO MUST STAY EXACTLY" in prompts[0][0] and "wordmark" in prompts[0][0] and "mais limpo" in prompts[0][0] and prompts[0][2] == layout.data
     plate = s.get(dbmod.LayoutAsset, t.plate_id)
     assert plate.kind == "plate" and plate.data == PNG + b"\x01"
     assert "ONLY the TEXT" in t.prompt and "{{marca}}" in t.prompt  # modelo só desenha texto

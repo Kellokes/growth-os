@@ -46,6 +46,11 @@ def code() -> str:
 
     step = _offset["n"]
     _offset["n"] = step + 1 if step < 1 else -1
+    # Perto da virada da janela de 30s o código sai de uma janela e é conferido na seguinte (2 de distância, fora da
+    # tolerância): espera a virada passar, senão o login falha de vez em quando sem motivo.
+    now = time.time()
+    if 30 - now % 30 < 1.0:
+        time.sleep(30 - now % 30 + 0.05)
     return pyotp.TOTP(TOTP_SECRET).at(time.time() + 30 * step)
 
 

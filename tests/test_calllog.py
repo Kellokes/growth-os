@@ -147,3 +147,16 @@ def test_stale_running_rows_are_closed_on_startup(logged):
 
 def test_calls_endpoint_needs_login(client):
     assert client.get("/api/calls").status_code in (401, 303, 307)
+
+
+def test_clear_errors_keeps_ok_and_running(logged):
+    s = dbmod.new_session()
+    s.add_all([dbmod.AiCall(activity="threads", provider="a", status="error", error="x"),
+               dbmod.AiCall(activity="threads", provider="a", status="ok"),
+               dbmod.AiCall(activity="threads", provider="a", status="running")])
+    s.commit()
+    s.close()
+    assert logged.get("/api/calls").json()["failed_total"] == 1
+    assert logged.delete("/api/calls?status=ok").status_code == 422
+    assert logged.delete("/api/calls?status=error").json() == {"deleted": 1}
+    assert sorted(r.status for r in rows()) == ["ok", "running"]

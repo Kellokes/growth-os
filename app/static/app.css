@@ -1184,11 +1184,11 @@ dialog.wide-ish { max-width: 680px; }
    RODAPÉ: LOG DAS CHAMADAS EM SEGUNDO PLANO
    ===================================================================== */
 body { padding-bottom: var(--foot-h); }
-.calllog { position: fixed; inset: auto 0 0 0; z-index: 30; background: var(--panel-solid); border-top: 1px solid var(--line); }
+.calllog { position: fixed; inset: auto 0 0 0; z-index: 30; max-width: 100vw; overflow-x: clip; background: var(--panel-solid); border-top: 1px solid var(--line); }
 .calllog-bar {
   display: flex; align-items: center; gap: 10px; width: 100%; height: var(--foot-h); padding: 0 clamp(12px, 2vw, 24px);
   border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left;
-  padding-bottom: env(safe-area-inset-bottom); box-sizing: content-box;
+  box-sizing: border-box; height: calc(var(--foot-h) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom);
 }
 .calllog-bar strong { font-weight: 600; white-space: nowrap; }
 .calllog-sum, .calllog-last { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -1199,15 +1199,17 @@ body { padding-bottom: var(--foot-h); }
 .calllog-dot.run { background: #d9a400; animation: calllog-pulse 1.2s ease-in-out infinite; }
 .calllog-dot.err { background: #d64545; }
 @keyframes calllog-pulse { 50% { opacity: .35; } }
-.calllog-panel { max-height: min(55vh, 460px); overflow: auto; border-top: 1px solid var(--line); padding: 10px clamp(12px, 2vw, 24px) 14px; }
+.calllog-panel { max-height: min(55vh, 460px); overflow-y: auto; overflow-x: hidden; border-top: 1px solid var(--line); padding: 10px clamp(12px, 2vw, 24px) 14px; }
+.calllog-filters .calllog-clear { margin-left: auto; }
 .calllog-filters { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
 .calllog-filters .btn.on { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
 .calllog-row { border-bottom: 1px solid var(--line); font-size: 12.5px; }
 .calllog-head {
   display: grid; grid-template-columns: 96px minmax(120px, 1.2fr) minmax(140px, 1.6fr) minmax(0, 1fr) 128px 70px; gap: 10px;
-  align-items: center; width: 100%; padding: 8px 4px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  align-items: center; width: 100%; min-width: 0; box-sizing: border-box; padding: 8px 4px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
 }
-.calllog-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calllog-row { min-width: 0; }
+.calllog-head > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .calllog-st { font-weight: 600; }
 .calllog-st.ok { color: #2f8f4e; }
 .calllog-st.error { color: #d64545; }

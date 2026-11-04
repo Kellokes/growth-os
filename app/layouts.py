@@ -204,13 +204,31 @@ def normalize_fonts(html: str) -> str:
     return _FONT_DECL.sub(fix, html)
 
 
+_HARMLESS = (
+    re.compile(r"<!--.*?-->", re.S),  # comentários
+    re.compile(r"<!doctype[^>]*>", re.I),
+    re.compile(r"<meta\b[^>]*>", re.I),  # charset/viewport: a composição põe os próprios
+    re.compile(r"<title\b[^>]*>.*?</title>", re.I | re.S),
+    re.compile(r"\s(?:xmlns(?::\w+)?|xml:space)\s*=\s*(?:\"[^\"]*\"|'[^']*')", re.I),  # namespace do SVG: só um nome, não carrega nada
+)
+
+
+def strip_harmless(html: str) -> str:
+    """Tira o que os modelos põem por hábito e não é risco: doctype, meta, título, comentários e xmlns."""
+    for rx in _HARMLESS:
+        html = rx.sub("", html)
+    return html.strip()
+
+
 def sanitize_template(html: str) -> str:
     """O HTML veio de uma IA: nada de script, nem de recurso externo. Exige os espaços do título, texto e fundo."""
-    html = (html or "").strip()
+    html = strip_harmless((html or "").strip())
     if not html or len(html) > MAX_HTML:
         raise ValueError("o template veio vazio ou grande demais")
-    if _FORBIDDEN.search(html):
-        raise ValueError("o template tem script, link externo ou recurso proibido")
+    m = _FORBIDDEN.search(html)
+    if m:
+        seen = html[m.start():m.start() + 40].replace("\n", " ")
+        raise ValueError(f"o template tem script, link externo ou recurso proibido (achei: {seen})")
     missing = [t for t in REQUIRED_TOKENS if t not in html]
     if missing:
         raise ValueError("faltam no template: " + ", ".join(missing))
@@ -225,6 +243,7 @@ def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> st
         "colors, typography feel, shapes, margins and where each text goes.",
         "Rules:",
         f"- html and body: margin 0, width {w}px, height {h}px, overflow hidden. Only an inline <style> block; no <script>, "
+        "no <link>, no <meta>, no <iframe>, no comments, no xmlns, no `//` or `http` anywhere, "
         "no external URLs, no web fonts (use system font stacks such as Impact, 'Arial Black', Arial, sans-serif).",
         "- The full-size background element must use exactly: background-image: {{bg}}; background-size: cover; "
         "background-position: center;  (the placeholder {{bg}} is replaced by the real image).",

@@ -2167,7 +2167,10 @@ def layouts_delete(aid: int, request: Request, auth: Auth = Depends(current_auth
         raise HTTPException(409, "a imagem de uma peça se troca na Central de Conteúdo")
     if a.kind in ("layout", "template") and a.status == "approved":
         raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo antes de apagar")
-    db.delete(a)
+    if a.kind == "template":
+        lay.delete_template(db, a)
+    else:
+        db.delete(a)
     db.commit()
     audit(db, auth.user.username, "layout_delete", f"#{aid}", client_ip(request))
     return {"ok": True}

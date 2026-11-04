@@ -100,3 +100,45 @@ def test_extract_image():
         except ProviderError:
             continue
         raise AssertionError(bad)
+
+
+def test_request_image_retries_image_only_models(monkeypatch):
+    """Seedream/FLUX só geram imagem: o OpenRouter responde 404 a ["image","text"], e a segunda tentativa usa ["image"]."""
+    import asyncio
+
+    tried = []
+    ok = {"choices": [{"message": {"images": [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + B64}}]}}]}
+    err = {"error": {"code": 404, "message": "No endpoints found that support the requested output modalities: image, text"}}
+
+    async def fake_post(key, body):
+        tried.append(body["modalities"])
+        return (200, ok) if body["modalities"] == ["image"] else (404, err)
+
+    monkeypatch.setattr(lay, "_post_chat", fake_post)
+    monkeypatch.setattr(lay, "_api_key", lambda: "k")
+    assert asyncio.run(lay.request_image("bytedance-seed/seedream-4.5", "p", [], "9:16")) == (PNG, "image/png")
+    assert tried == [["image", "text"], ["image"]]
+
+    tried.clear()  # modelo que aceita os dois: uma chamada só
+    monkeypatch.setattr(lay, "_post_chat", lambda key, body: _ok(tried, body, ok))
+    assert asyncio.run(lay.request_image("google/gemini-2.5-flash-image", "p", [], "9:16")) == (PNG, "image/png")
+    assert tried == [["image", "text"]]
+
+    async def always_404(key, body):  # erro que não é de modalidade não é repetido
+        tried.append(1)
+        return 404, {"error": {"code": 404, "message": "No such model"}}
+
+    tried.clear()
+    monkeypatch.setattr(lay, "_post_chat", always_404)
+    try:
+        asyncio.run(lay.request_image("x/y", "p", [], "9:16"))
+    except ProviderError as e:
+        assert "404" in str(e)
+    else:
+        raise AssertionError("deveria falhar")
+    assert tried == [1]
+
+
+async def _ok(tried, body, ok):
+    tried.append(body["modalities"])
+    return 200, ok

@@ -284,14 +284,35 @@ async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> st
 
 def html_choice(db, log: bool = False, project_id: int | None = None) -> modelcfg.Choice:
     c = modelcfg.resolve(db, "layout_html")
-    if c.provider != "openrouter" or not c.model:
+    msg = ""
+    if not c.provider:
+        msg = "Escolha em Modelos o provider de \"Layouts · converter em HTML\" (Codex, Claude ou um modelo com visão do OpenRouter)."
+    elif c.provider == "openrouter" and not c.model:
         msg = "Escolha em Modelos um modelo do OpenRouter com visão para \"Layouts · converter em HTML\" antes de converter."
-        if log:
-            calllog.record_failure(c.provider, c.model, "layout_html",
-                                   f"{msg} (configurado: {c.provider or 'nenhum'}; a conversão só roda no OpenRouter)",
-                                   "chamada não enviada", project_id)
+    if msg:
+        if log:  # só nas ações de converter; as telas também chamam isto para mostrar o aviso e não devem encher o log
+            calllog.record_failure(c.provider, c.model, "layout_html", msg, "chamada não enviada", project_id)
         raise ProviderError(msg)
     return c
+
+
+async def request_html_for(choice: modelcfg.Choice, prompt: str, image: tuple[bytes, str]) -> str:
+    """Pede o HTML ao provider configurado (OpenRouter, Codex ou Claude), sempre com a imagem do layout."""
+    if choice.provider == "openrouter":
+        return await request_html(choice.model, prompt, image)
+    from .providers import all_providers
+
+    provider = all_providers().get(choice.provider)
+    if provider is None:
+        raise ProviderError(f"provider desconhecido: {choice.provider}")
+    ok, why = provider.available()
+    if not ok:
+        raise ProviderError(why)
+    with calllog.track(choice.provider, choice.model, "layout_html", f"layout {image[1]} {len(image[0]) / 1024:.0f} KB → HTML · "
+                       f"prompt de {len(prompt)} caracteres") as call:
+        text = await provider.configured(choice.model, choice.reasoning).complete_with_image(prompt, *image)
+        call.done(f"{len(text)} caracteres de HTML")
+        return text
 
 
 def approved_asset(db, project_id: int, kind: str, fmt: str) -> LayoutAsset | None:
@@ -314,7 +335,7 @@ async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> Layo
     name = project.name if project else ""
     prompt = build_template_prompt(name, layout.format, feedback)
     with calllog.context("layout_html", layout.project_id):
-        text = await request_html(choice.model, prompt, (layout.data, layout.mime))
+        text = await request_html_for(choice, prompt, (layout.data, layout.mime))
     try:
         html = sanitize_template(extract_html(text))
     except ValueError as e:

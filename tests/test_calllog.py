@@ -97,7 +97,7 @@ def test_chat_failure_is_logged_with_the_error(logged, monkeypatch):
 def test_misconfigured_image_model_is_logged_not_silent(logged):
     make_projects("Zombie Party")
     s = dbmod.new_session()
-    modelcfg.save(s, "layout_html", "codex", "gpt-5-codex", "")
+    modelcfg.save(s, "layout_html", "openrouter", "", "")
     s.close()
     # só abrir a tela não grava nada
     logged.get("/api/layouts?project=zombie-party")
@@ -112,8 +112,8 @@ def test_misconfigured_image_model_is_logged_not_silent(logged):
     r = logged.post(f"/api/layouts/{lid}/template", json={})
     assert r.status_code == 422
     (c,) = rows()
-    assert (c.activity, c.provider, c.status) == ("layout_html", "codex", "error")
-    assert "só roda no OpenRouter" in c.error and c.project_id == pid("zombie-party")
+    assert (c.activity, c.provider, c.status) == ("layout_html", "openrouter", "error")
+    assert "modelo do OpenRouter" in c.error and c.project_id == pid("zombie-party")
 
 
 def test_request_image_and_html_are_tracked(logged, monkeypatch):

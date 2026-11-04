@@ -138,3 +138,7 @@ class Provider:
 
     async def complete(self, history: list[ChatTurn]) -> str:
         raise NotImplementedError
+
+    async def complete_with_image(self, prompt: str, image: bytes, mime: str) -> str:
+        """Prompt com UMA imagem de entrada. Só os providers que enxergam imagem implementam."""
+        raise ProviderError(f"{self.label} não lê imagem pelo Growth OS; escolha Codex, Claude ou um modelo com visão do OpenRouter")

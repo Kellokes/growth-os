@@ -33,7 +33,7 @@ ACTIVITIES: list[dict] = [
     {"key": "agents_run", "label": "Agentes · execução", "kind": TEXT,
      "help": "Quando um agente executa uma tarefa aprovada."},
     {"key": "layout_html", "label": "Layouts · converter em HTML", "kind": TEXT,
-     "help": "Transforma o layout aprovado em template HTML. Use um modelo do OpenRouter que aceite imagem de entrada."},
+     "help": "Transforma o layout aprovado em template HTML. Aceita Codex, Claude ou um modelo do OpenRouter que aceite imagem de entrada."},
     {"key": "image", "label": "Imagens", "kind": IMAGE,
      "help": "Geração de imagens (posts, criativos). Precisa de um modelo que gere imagem."},
     {"key": "video", "label": "Vídeos", "kind": VIDEO,

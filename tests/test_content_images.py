@@ -266,3 +266,56 @@ def test_piece_video_flow(logged, monkeypatch):
     s = dbmod.new_session()
     assert s.query(dbmod.LayoutAsset).filter(dbmod.LayoutAsset.kind.in_(("piece", "background", "video"))).count() == 0
     s.close()
+
+
+def test_html_conversion_uses_configured_provider(logged, monkeypatch):
+    """Codex (ou Claude) configurado em "Layouts · converter em HTML" é usado; antes só o OpenRouter passava."""
+    make_projects("Zombie Party")
+    approve_layout(logged, monkeypatch)
+    s = dbmod.new_session()
+    modelcfg.save(s, "layout_html", "codex", "gpt-5.5", "high")
+    assert lay.html_choice(s).provider == "codex"
+    modelcfg.save(s, "layout_html", "", "", "")
+    with pytest.raises(ProviderError, match="provider"):
+        lay.html_choice(s)
+    s.close()
+
+    seen = {}
+    from app.providers.codex_cli import CodexCLIProvider
+
+    async def fake_cli(self, prompt, image, mime):
+        seen.update(model=self.model, reasoning=self.reasoning, image=image, mime=mime)
+        return "```html\n" + TEMPLATE + "\n```"
+
+    async def boom(*a, **k):
+        raise AssertionError("não deveria chamar o OpenRouter")
+
+    monkeypatch.setattr(CodexCLIProvider, "complete_with_image", fake_cli)
+    monkeypatch.setattr(CodexCLIProvider, "available", lambda self: (True, ""))
+    monkeypatch.setattr(lay, "request_html", boom)
+    s = dbmod.new_session()
+    modelcfg.save(s, "layout_html", "codex", "gpt-5.5", "high")
+    s.close()
+    st = logged.get("/api/layouts?project=zombie-party").json()
+    lid = st["layouts"][0]["id"]
+    r = logged.post(f"/api/layouts/{lid}/template", json={"feedback": "mais escuro"})
+    assert r.status_code == 200, r.text
+    assert seen["model"] == "gpt-5.5" and seen["reasoning"] == "high" and seen["image"] == PNG and r.json()["model"] == "gpt-5.5"
+
+
+def test_codex_image_args(monkeypatch):
+    from pathlib import Path
+
+    from app.providers import codex_cli
+
+    got = {}
+
+    async def fake_run(args, cwd, timeout, stdin=None):
+        got.update(args=args, stdin=stdin, img=Path(args[[a.startswith("--image=") for a in args].index(True)].split("=", 1)[1]).read_bytes())
+        Path(args[args.index("--output-last-message") + 1]).write_text("ok")
+        return ""
+
+    monkeypatch.setattr(codex_cli, "run_cli", fake_run)
+    p = codex_cli.CodexCLIProvider().configured("gpt-5.5", "low")
+    assert asyncio.run(p.complete_with_image("faça", PNG, "image/png")) == "ok"
+    assert got["img"] == PNG and got["stdin"] == "faça" and got["args"][-1] == "-" and "--model" in got["args"]

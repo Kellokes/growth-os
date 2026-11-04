@@ -20,6 +20,25 @@ class CodexCLIProvider(Provider):
             return False, "Codex CLI não instalado"
         return True, ""
 
+    async def complete_with_image(self, prompt: str, image: bytes, mime: str) -> str:
+        """Codex enxerga a imagem anexada (--image). A imagem vai num arquivo temporário, apagado ao final."""
+        s = get_settings()
+        with tempfile.TemporaryDirectory() as tmp:
+            img = Path(tmp) / ("layout." + ("jpg" if "jpeg" in mime else mime.split("/")[-1] or "png"))
+            img.write_bytes(image)
+            out_file = Path(tmp) / "last.txt"
+            args = [s.codex_bin, "exec", "--sandbox", "read-only", "--skip-git-repo-check",
+                    "--output-last-message", str(out_file), f"--image={img}"]
+            if self.model:
+                args += ["--model", self.model]
+            if self.reasoning:
+                args += ["-c", f'model_reasoning_effort="{self.reasoning}"']
+            args.append("-")
+            raw = await run_cli(args, Path(tmp), s.provider_timeout_seconds, stdin=prompt)
+            if out_file.exists():
+                return out_file.read_text(errors="replace").strip()
+            return raw.strip()
+
     async def complete(self, history: list[ChatTurn]) -> str:
         s = get_settings()
         prompt = f"{SYSTEM_PROMPT}\n\n{render_transcript(history)}"

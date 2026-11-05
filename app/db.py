@@ -352,6 +352,7 @@ class ContentItem(Base):
     media_url: Mapped[str] = mapped_column(String(1000), default="")  # link coletado na internet (arquivo direto)
     media_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=media): foto ou vídeo da peça
     media_job: Mapped[str] = mapped_column(String(120), default="")  # vídeo em geração no OpenRouter (id do job)
+    asset_ids: Mapped[str] = mapped_column(Text, default="")  # ativos escolhidos para a arte (JSON de ids); vazio = automático
     # pending (aguardando aprovação) | approved | sent | rejected | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)  # hora local do owner
@@ -394,6 +395,11 @@ class LayoutAsset(Base):
     name: Mapped[str] = mapped_column(String(80), default="")  # layout/template: nome que o owner dá ("Capa escura")
     role: Mapped[str] = mapped_column(String(12), default="")  # carrossel: capa | pagina | cta; story/reel: vazio
     is_default: Mapped[int] = mapped_column(Integer, default=0)  # template: 1 = o padrão do projeto naquele formato e papel
+    # kind=reference = ativo do projeto (ver app/assets.py): logo, artefato, carta, personagem, vídeo do site...
+    category: Mapped[str] = mapped_column(String(20), default="")
+    use_when: Mapped[str] = mapped_column(Text, default="")  # "quando falar do jogo, use isto"
+    always: Mapped[int] = mapped_column(Integer, default=0)  # 1 = vai em toda arte (ex.: a logo)
+    url: Mapped[str] = mapped_column(String(1000), default="")  # ativo que é um link (vídeo do site); data fica vazio
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
@@ -522,12 +528,15 @@ _NEW_COLUMNS = {
         "media_url": "VARCHAR(1000) NOT NULL DEFAULT ''",
         "media_id": "INTEGER NULL",
         "media_job": "VARCHAR(120) NOT NULL DEFAULT ''",
+        "asset_ids": "TEXT NOT NULL DEFAULT ''",
     },
     "ai_calls": {"input_tokens": "INTEGER NULL", "output_tokens": "INTEGER NULL", "cost_usd": "FLOAT NULL"},
     "layout_assets": {
         "html": "TEXT NOT NULL DEFAULT ''", "plate_id": "INTEGER NULL",
         "name": "VARCHAR(80) NOT NULL DEFAULT ''", "role": "VARCHAR(12) NOT NULL DEFAULT ''",
         "is_default": "INTEGER NOT NULL DEFAULT 0",
+        "category": "VARCHAR(20) NOT NULL DEFAULT ''", "use_when": "TEXT NOT NULL DEFAULT ''",
+        "always": "INTEGER NOT NULL DEFAULT 0", "url": "VARCHAR(1000) NOT NULL DEFAULT ''",
     },
 }
 

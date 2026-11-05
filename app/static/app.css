@@ -1284,3 +1284,18 @@ body { padding-bottom: var(--foot-h); }
 .cf-step select, .cf-step input, .cf-tpls label { min-width: 0; max-width: 100%; }
 .cf-tpls { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
 @media (max-width: 560px) { .lay-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Ativos do projeto */
+.as-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); }
+.as-card { margin: 0; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; align-content: start; }
+.as-card img { width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--panel); border-radius: 10px; display: block; }
+.as-card .as-vid { aspect-ratio: 16 / 9; display: grid; place-items: center; background: var(--panel); border-radius: 10px; font-size: 28px; }
+.as-card b { font-size: 13.5px; }
+.as-card small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.as-card .row { flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
+label.check { display: flex; align-items: center; gap: 8px; }
+label.check input { width: auto; }
+.cf-src button.auto { border-style: dashed; }
+label.check { flex-direction: row; justify-content: flex-start; text-align: left; grid-template-columns: none; }
+#as-kind { justify-self: start; }
+#as-body .lay-card .row { justify-content: flex-start; }
+@media (max-width: 560px) { .as-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

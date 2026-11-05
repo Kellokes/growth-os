@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session as DB
 
 from .config import get_settings
+from .assets import resolve_names
 from .db import ContentItem, Task, utcnow
 
 MAX_CONTENT_PER_TASK = 10
@@ -121,6 +122,7 @@ ou uma lista), e ela vai para a Central de Conteúdo esperar a aprovação do ow
  "prompt_imagem": "prompt completo da imagem, em inglês, só se o modo for prompt ou reference",
  "titulo_imagem": "título curto (até 6 palavras) escrito NA imagem", "texto_imagem": "frase de apoio curta escrita NA imagem",
  "paginas": [{{"titulo": "...", "texto": "..."}}], "cta": {{"titulo": "chamada final", "texto": "..."}},
+ "ativos": ["nome exato de um ativo do projeto (logo, carta, objeto) que deve aparecer na arte"],
  "fonte_midia": "gerar_imagem (padrão) | link | nenhuma", "link_midia": "https://... (arquivo direto de foto ou vídeo, se fonte_midia for link)",
  "quando": "AAAA-MM-DD HH:MM (sugestão, hora de Brasília)"}}
 ```
@@ -190,6 +192,7 @@ def ingest_blocks(db: DB, task: Task, text: str) -> list[ContentItem]:
                 slides=block_slides(it),
                 media_source=_media_source(it),
                 media_url=_media_link(it),
+                asset_ids=resolve_names(db, task.project_id, it.get("ativos")),
                 visual_format=norm_visual(it.get("formato") or it.get("format"), channel),
                 scheduled_at=parse_when(it.get("quando")),
                 status="pending",
@@ -219,12 +222,21 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         "media_source": c.media_source or "gerar_imagem", "media_url": c.media_url,
         "media_file_url": f"/api/layouts/assets/{c.media_id}" if c.media_id else "",
         "media_generating": bool(c.media_job),
+        "asset_ids": _json_list(c.asset_ids),
         "status": c.status, "stage": stage(c, now), "link": c.link, "note": c.note,
         "scheduled_at": c.scheduled_at.isoformat(timespec="minutes") if c.scheduled_at else None,
         "sent_at": c.sent_at.isoformat() if c.sent_at else None,
         "created_at": c.created_at.isoformat(),
         "decided_at": c.decided_at.isoformat() if c.decided_at else None,
     }
+
+
+def _json_list(raw: str) -> list:
+    try:
+        v = json.loads(raw or "")
+    except ValueError:
+        return []
+    return v if isinstance(v, list) else []
 
 
 def _json_obj(raw: str) -> dict:

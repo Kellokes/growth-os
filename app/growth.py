@@ -675,8 +675,14 @@ def conversation_text(db: DB, cid: int) -> str:
 
 # ---------- execução das tarefas aprovadas ----------
 
+def asset_catalog(db: DB, project_id: int) -> str:
+    from .assets import catalog  # import tardio: o módulo de ativos importa o banco
+
+    return catalog(db, project_id)
+
+
 def task_brief(project: GrowthProject, agent: Agent, pa: ProjectAgent | None, task: Task, team: str = "",
-               tools: str = "") -> str:
+               tools: str = "", assets: str = "") -> str:
     return f"""Você está agindo como o agente **{agent.name}** ({agent.area}) do projeto **{project.name}**.
 Missão: {mission(agent, pa)}
 
@@ -698,6 +704,7 @@ nunca na main. Se descobrir números reais de KPIs deste projeto, informe num bl
 ```
 
 {content.guide()}
+{assets}
 
 Ao terminar, responda sem blocos bash com um resumo curto do resultado e o próximo passo recomendado."""
 
@@ -784,7 +791,7 @@ async def execute_task(task_id: int) -> None:
             guide = collaboration_guide(db, project, agent.slug)
             tools = routines.toolbox(db, project, agent.slug, task)
             db.add(Message(conversation_id=conv.id, role="user",
-                           content=task_brief(project, agent, pa, task, guide, tools)))
+                           content=task_brief(project, agent, pa, task, guide, tools, asset_catalog(db, project.id))))
         db.commit()
         error = ""
         ticket = actions.issue_ticket(task)  # permite `gos-int` enquanto esta tarefa roda

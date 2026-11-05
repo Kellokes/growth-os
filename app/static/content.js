@@ -1,7 +1,7 @@
 // Central de conteúdo: peças (posts, e-mails...), agenda e saídas dos agentes, por projeto (ou todos).
 (() => {
   const { $, esc, api, icon, initProjects } = window.GOS;
-  const TABS = ["pecas", "agenda", "saidas"];
+  const TABS = ["pecas", "agenda", "saidas", "ativos"];
   const STAGES = [
     ["pending", "Aguardando você", "aprovar ou rejeitar"],
     ["scheduled", "Agendadas", "aprovadas, com data"],
@@ -17,7 +17,7 @@
   let items = []; let stageF = "pending"; let groupF = "";
   let aDays = 7; let oDays = 14; let outAgent = ""; let outputs = [];
   let current = null; let sw = null;
-  const loaded = { agenda: false, saidas: false };
+  const loaded = { agenda: false, saidas: false, ativos: false };
 
   const pinfo = (slug) => projects.find((p) => p.slug === slug) || { name: slug, icon: "◆" };
   const aname = (slug) => slug ? (agents[slug] ? `${agents[slug].icon} ${agents[slug].name}` : slug) : "✋ você";
@@ -49,6 +49,7 @@
     if (location.hash.slice(1) !== name) history.replaceState(null, "", `#${name}`);
     if (name === "agenda" && !loaded.agenda) loadAgenda();
     if (name === "saidas" && !loaded.saidas) loadOutputs();
+    if (name === "ativos" && !loaded.ativos) loadAssets();
   }
   const activeTab = () => { const h = location.hash.slice(1); return TABS.includes(h) ? h : TABS[0]; };
   window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
@@ -195,6 +196,7 @@
     $("#cf-cta-title").value = cta ? cta.title : ""; $("#cf-cta-text").value = cta ? cta.text : "";
     $("#cf-imgtitle").value = it?.img_title || ""; $("#cf-imgtext-in").value = it?.img_text || "";
     $("#cf-url").value = it?.media_url || "";
+    assetSel = [...(it?.asset_ids || [])];
     tplSel = it?.visual_format === "carrossel" ? { ...(it?.template_ids || {}) } : { "": it?.template_id || 0 };
     delete $("#cf-ref").dataset.sel;
   }
@@ -249,6 +251,7 @@
     $("#cf-carousel").hidden = !carousel;
     $("#cf-imgtitle-label").textContent = carousel ? "Capa · título" : "Título na imagem";
     if (carousel) drawPages();
+    renderPieceAssets();
   }
   const ro = () => !!current && ["sent", "rejected"].includes(current.status);
   $("#cf-tpls").addEventListener("change", (ev) => { const s = ev.target.closest("[data-trole]"); if (s) tplSel[s.dataset.trole] = Number(s.value) || 0; });
@@ -259,7 +262,7 @@
   function modeBody() {
     const fmt = $("#cf-format").value;
     const b = { image_mode: $("#cf-mode").value, ref_id: Number($("#cf-ref").value) || 0, image_prompt: $("#cf-iprompt").value,
-      media_source: src, media_url: $("#cf-url").value.trim() };
+      media_source: src, media_url: $("#cf-url").value.trim(), asset_ids: assetSel };
     if (fmt === "carrossel") {
       b.template_ids = Object.fromEntries(ROLES.map(([r]) => [r, tplSel[r] || 0]).filter(([, v]) => v));
       if (!pages.length && !current?.slides?.some((s) => s.role === "pagina") && !$("#cf-cta-title").value && !$("#cf-cta-text").value) { /* nada a salvar */ } else b.slides = slidesBody();
@@ -273,6 +276,7 @@
     const diff = Object.fromEntries(Object.entries(body).filter(([k, v]) => {
       if (k === "slides") return !same(v.map((x) => [x.role, x.title, x.text]), (current.slides || []).map((x) => [x.role, x.title, x.text]));
       if (k === "template_ids") return !same(v, current.template_ids || {});
+      if (k === "asset_ids") return !same(v, current.asset_ids || []);
       return (v || "") !== (current[k] || "");
     }));
     if (Object.keys(diff).length) current = await api(`/api/content/${current.id}`, { method: "PATCH", body: JSON.stringify(diff) });
@@ -346,6 +350,118 @@
     refresh();
   };
 
+  // ---------- ativos do projeto (biblioteca usada nas artes) ----------
+  let assets = []; let assetCats = []; let asKind = "img"; let asFilter = ""; let asEdit = 0;
+  const assetCache = {};
+  async function projectAssets(slug, fresh = false) {
+    if (!slug || slug === "all") return [];
+    if (fresh || !assetCache[slug]) {
+      try { const r = await api(`/api/assets?project=${encodeURIComponent(slug)}`); assetCache[slug] = r.assets; assetCats = r.categories; }
+      catch (e) { return []; }
+    }
+    return assetCache[slug];
+  }
+  async function loadAssets() {
+    const single = project && project !== "all";
+    $("#as-pick").hidden = single; $("#as-body").hidden = !single;
+    if (!single) return;
+    assets = await projectAssets(project, true);
+    loaded.ativos = true;
+    renderAssets();
+  }
+  function renderAssets() {
+    $("#as-cat").innerHTML = assetCats.filter((c) => c.key !== "video").map((c) => `<option value="${esc(c.key)}">${esc(c.name)}</option>`).join("");
+    document.querySelectorAll("#as-kind [data-ak]").forEach((b) => b.classList.toggle("on", b.dataset.ak === asKind));
+    const link = asKind === "link";
+    $("#as-cat-wrap").hidden = link; $("#as-link-wrap").hidden = !link; $("#as-always-wrap").hidden = link;
+    $("#as-file-btn").hidden = link; $("#as-add-link").hidden = !link;
+    const counts = {};
+    for (const a of assets) counts[a.category] = (counts[a.category] || 0) + 1;
+    if (asFilter && !counts[asFilter]) asFilter = "";
+    const chips = [["", "Todos", assets.length], ...assetCats.filter((c) => counts[c.key]).map((c) => [c.key, c.name, counts[c.key]])];
+    $("#as-filter").innerHTML = chips.length > 2 ? chips.map(([k, l, n]) => `<button type="button" class="fchip ${k === asFilter ? "active" : ""}" data-afilter="${esc(k)}">${esc(l)} <span>${n}</span></button>`).join("") : "";
+    const list = assets.filter((a) => !asFilter || a.category === asFilter);
+    $("#as-list").innerHTML = list.map((a) => a.id === asEdit ? `
+      <div class="as-card" data-aid="${a.id}">
+        <label>Nome<input data-ae="name" maxlength="80" value="${esc(a.name)}"></label>
+        ${a.is_link ? `<label>Link<input data-ae="link" maxlength="1000" value="${esc(a.link)}"></label>`
+          : `<label>Tipo<select data-ae="category">${assetCats.filter((c) => c.key !== "video").map((c) => `<option value="${esc(c.key)}" ${c.key === a.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>`}
+        <label>O que é<textarea data-ae="note" rows="2" maxlength="500">${esc(a.note)}</textarea></label>
+        <label>Quando usar<textarea data-ae="use_when" rows="2" maxlength="500">${esc(a.use_when)}</textarea></label>
+        ${a.is_link ? "" : `<label class="check"><input type="checkbox" data-ae="always" ${a.always ? "checked" : ""}> Vai em toda arte</label>`}
+        <div class="row"><button class="btn small primary" type="button" data-asave="${a.id}">Salvar</button><button class="btn small ghost" type="button" data-acancel="1">Cancelar</button></div>
+      </div>` : `
+      <figure class="as-card" data-aid="${a.id}">
+        ${a.is_link ? `<a class="as-vid" href="${esc(a.link)}" target="_blank" rel="noopener noreferrer" title="abrir o vídeo">▶</a>` : `<img src="${esc(a.url)}" alt="${esc(a.name)}" loading="lazy">`}
+        <b>${esc(a.name || "sem nome")}</b>
+        <small>${esc(a.category_name)}${a.always ? " · vai em toda arte" : ""}</small>
+        ${a.note ? `<small>${esc(a.note)}</small>` : ""}
+        ${a.use_when ? `<small><b>Quando usar:</b> ${esc(a.use_when)}</small>` : ""}
+        <div class="row"><button class="btn small ghost" type="button" data-aedit="${a.id}">Editar</button><button class="btn small danger" type="button" data-adel="${a.id}">Apagar</button></div>
+      </figure>`).join("") || `<div class="empty-card card tile-empty"><h2>Nenhum ativo ainda</h2><p class="muted">Suba a logo, as cartas, os objetos e os links de vídeo do projeto.</p></div>`;
+  }
+  $("#as-kind").addEventListener("click", (ev) => { const b = ev.target.closest("[data-ak]"); if (b) { asKind = b.dataset.ak; renderAssets(); } });
+  $("#as-filter").addEventListener("click", (ev) => { const b = ev.target.closest("[data-afilter]"); if (b) { asFilter = b.dataset.afilter; renderAssets(); } });
+  const assetForm = () => ({ project, name: $("#as-name").value, category: $("#as-cat").value, note: $("#as-note").value,
+    use_when: $("#as-when").value, always: $("#as-always").checked });
+  const clearAssetForm = () => { ["#as-name", "#as-note", "#as-when", "#as-link"].forEach((s) => { $(s).value = ""; }); $("#as-always").checked = false; };
+  $("#as-file").onchange = async (ev) => {
+    const files = [...ev.target.files]; ev.target.value = ""; const msg = $("#as-msg");
+    for (const f of files) {
+      msg.textContent = `Enviando ${f.name}…`;
+      const body = { ...assetForm(), data: await readFile(f) };
+      if (!body.name || files.length > 1) body.name = f.name.replace(/\.[^.]+$/, "");
+      try { await api("/api/assets", { method: "POST", body: JSON.stringify(body) }); } catch (e) { alert(`${f.name}: ${e.message}`); }
+    }
+    msg.textContent = files.length ? "Salvo." : ""; clearAssetForm(); loadAssets();
+  };
+  $("#as-add-link").onclick = async () => {
+    try { await api("/api/assets", { method: "POST", body: JSON.stringify({ ...assetForm(), category: "video", always: false, link: $("#as-link").value }) }); $("#as-msg").textContent = "Salvo."; clearAssetForm(); }
+    catch (e) { alert(e.message); }
+    loadAssets();
+  };
+  $("#as-list").addEventListener("click", async (ev) => {
+    const b = ev.target.closest("button"); if (!b) return;
+    if (b.dataset.aedit) { asEdit = Number(b.dataset.aedit); return renderAssets(); }
+    if (b.dataset.acancel) { asEdit = 0; return renderAssets(); }
+    if (b.dataset.adel) {
+      if (!confirm("Apagar este ativo? As peças que o usavam passam a usar o automático.")) return;
+      try { await api(`/api/layouts/assets/${b.dataset.adel}`, { method: "DELETE" }); } catch (e) { alert(e.message); }
+      return loadAssets();
+    }
+    if (b.dataset.asave) {
+      const card = b.closest("[data-aid]"); const body = {};
+      card.querySelectorAll("[data-ae]").forEach((el) => { body[el.dataset.ae] = el.type === "checkbox" ? el.checked : el.value; });
+      try { await api(`/api/assets/${b.dataset.asave}`, { method: "PATCH", body: JSON.stringify(body) }); asEdit = 0; } catch (e) { alert(e.message); }
+      loadAssets();
+    }
+  });
+
+  // ativos na arte de uma peça: escolhidos, ou automático ("toda arte" + os que combinam com o assunto)
+  let assetSel = [];
+  async function renderPieceAssets() {
+    const slug = current ? current.project : $("#cf-project").value;
+    const list = await projectAssets(slug);
+    const imgs = list.filter((a) => !a.is_link); const vids = list.filter((a) => a.is_link);
+    $("#cf-assets-step").hidden = $("#cf-visual").hidden || (!imgs.length && !vids.length);
+    $("#cf-assets").innerHTML = imgs.map((a) => {
+      const on = assetSel.includes(a.id); const auto = !assetSel.length && a.always;
+      return `<button type="button" data-asset="${a.id}" class="${on ? "on" : ""} ${auto ? "auto" : ""}" aria-pressed="${on}" ${ro() ? "disabled" : ""} title="${esc(a.note)}">${esc(a.name || `#${a.id}`)}</button>`;
+    }).join("");
+    $("#cf-assets-hint").textContent = !imgs.length ? "Este projeto ainda não tem ativos de imagem (aba Ativos)."
+      : assetSel.length ? `${assetSel.length} escolhido(s): vão como referência junto do prompt (até 5).`
+        : "Nenhum escolhido: vão os marcados \"toda arte\" (tracejados) e os que combinam com o assunto da peça. Toque para escolher.";
+    $("#cf-vidlib").innerHTML = `<option value="">Colar um link abaixo</option>` + vids.map((v) => `<option value="${esc(v.link)}" ${v.link === $("#cf-url").value ? "selected" : ""}>${esc(v.name || v.link)}</option>`).join("");
+    $("#cf-vid-wrap").hidden = src !== "link" || !vids.length;
+  }
+  $("#cf-assets").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-asset]"); if (!b) return;
+    const id = Number(b.dataset.asset);
+    assetSel = assetSel.includes(id) ? assetSel.filter((x) => x !== id) : assetSel.length >= 5 ? assetSel : [...assetSel, id];
+    renderPieceAssets();
+  });
+  $("#cf-vidlib").addEventListener("change", () => { if ($("#cf-vidlib").value) $("#cf-url").value = $("#cf-vidlib").value; });
+
   function renderActions() {
     const it = current; const b = [];
     if (!it) b.push('<button class="btn ghost" type="button" data-cf="cancel">Cancelar</button>', '<button class="btn primary" type="submit">Salvar (já aprovada)</button>');
@@ -362,7 +478,7 @@
   const formBody = () => ({ channel: $("#cf-channel").value, title: $("#cf-head").value, recipient: $("#cf-to").value,
     purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, visual_format: $("#cf-format").value, ...modeBody(), img_title: $("#cf-imgtitle").value, img_text: $("#cf-imgtext-in").value, scheduled_at: $("#cf-when").value });
   // Os campos do formulário têm o mesmo nome que os do JSON da peça.
-  const norm = (k, v) => (k === "slides" ? (v || []).map((x) => [x.role, x.title, x.text]) : v || (k === "template_ids" ? {} : ""));
+  const norm = (k, v) => (k === "slides" ? (v || []).map((x) => [x.role, x.title, x.text]) : v || (k === "template_ids" ? {} : k === "asset_ids" ? [] : ""));
   const changed = () => { const f = formBody(); return Object.keys(f).some((k) => !same(norm(k, f[k]), norm(k, current[k]))); };
 
   async function save() {
@@ -530,6 +646,7 @@
       loadPieces();
       if (activeTab() === "agenda") loadAgenda();
       if (activeTab() === "saidas") loadOutputs();
+      loaded.ativos = false; if (activeTab() === "ativos") loadAssets();
     }, { allowAll: true });
   })();
 })();

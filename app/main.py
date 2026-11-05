@@ -30,6 +30,7 @@ from . import content as cnt
 from . import growth
 from . import layouts as lay
 from . import media as med
+from . import assets as ast
 from . import missions
 from . import modelcfg
 from . import routines
@@ -1610,6 +1611,7 @@ class ContentIn(BaseModel):
     slides: list[dict] | None = Field(default=None, max_length=12)  # carrossel: páginas do meio + CTA
     media_source: str | None = Field(default=None, max_length=12)  # gerar_imagem | gerar_video | upload | link | nenhuma
     media_url: str | None = Field(default=None, max_length=1000)  # link coletado na internet
+    asset_ids: list[int] | None = Field(default=None, max_length=12)  # ativos do projeto na arte; [] = automático
 
 
 class ContentDecideIn(BaseModel):
@@ -1709,6 +1711,12 @@ def _apply_content(c: ContentItem, body: ContentIn, db: DB | None = None) -> Non
         strip = lambda xs: [(x["role"], x["title"], x["text"]) for x in xs]  # noqa: E731
         if strip(new) != strip(old):
             lay.set_slides(db, c, new)
+    if data.get("asset_ids") is not None:
+        ok = {a.id for a in ast.project_assets(db, c.project_id)} if db is not None else set()
+        ids = [i for i in dict.fromkeys(body.asset_ids) if i in ok][:ast.MAX_SENT]
+        if len(ids) != len(set(body.asset_ids)) and db is not None:
+            raise HTTPException(422, "ativo não encontrado neste projeto (ou mais de 5)")
+        c.asset_ids = json.dumps(ids) if ids else ""
     if data.get("media_source") is not None:
         src = body.media_source.strip().lower()
         if src not in med.SOURCES:
@@ -2126,6 +2134,87 @@ def agent_outputs(project: str = "all", days: int = 14, agent: str = "",
     return {"outputs": out, "days": days}
 
 
+# ---------- ativos do projeto (logo, artefatos, cartas, vídeos do site) que entram nas artes ----------
+
+class AssetIn(BaseModel):
+    project: str = Field(max_length=48)
+    data: str = Field(default="", max_length=6_000_000)  # imagem (base64); ou
+    link: str = Field(default="", max_length=1000)  # link de vídeo (https)
+    name: str = Field(default="", max_length=80)
+    category: str = Field(default="outro", max_length=20)
+    note: str = Field(default="", max_length=500)  # o que é
+    use_when: str = Field(default="", max_length=500)  # quando usar
+    always: bool = False
+
+
+class AssetEditIn(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    category: str | None = Field(default=None, max_length=20)
+    note: str | None = Field(default=None, max_length=500)
+    use_when: str | None = Field(default=None, max_length=500)
+    always: bool | None = None
+    link: str | None = Field(default=None, max_length=1000)
+
+
+@app.get("/api/assets")
+def assets_list(project: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, project)
+    return {"project": p.slug, "categories": [{"key": k, "name": v} for k, v in ast.CATEGORIES.items()],
+            "assets": [ast.asset_json(a) for a in ast.project_assets(db, p.id)], "limit": ast.MAX_ASSETS}
+
+
+@app.post("/api/assets")
+def assets_add(body: AssetIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, body.project)
+    if len(ast.project_assets(db, p.id)) >= ast.MAX_ASSETS:
+        raise HTTPException(422, f"no máximo {ast.MAX_ASSETS} ativos por projeto: apague algum")
+    if bool(body.data) == bool(body.link.strip()):
+        raise HTTPException(422, "mande uma imagem ou um link de vídeo")
+    if body.link.strip():
+        try:
+            url = med.check_url(body.link)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        data, mime = b"", ast.LINK_MIME
+    else:
+        url = ""
+        try:
+            data, mime = lay.decode_image(body.data)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+    a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, url=url, name=body.name.strip(),
+                    category=ast.norm_category(body.category, bool(url)), note=body.note.strip(),
+                    use_when=body.use_when.strip(), always=int(body.always and not url))
+    db.add(a)
+    db.commit()
+    audit(db, auth.user.username, "asset_add", f"{p.slug} #{a.id} {a.category} {a.name}"[:500], client_ip(request))
+    return ast.asset_json(a)
+
+
+@app.patch("/api/assets/{aid}")
+def assets_edit(aid: int, body: AssetEditIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    a = _asset_or_404(db, aid)
+    if a.kind != "reference":
+        raise HTTPException(409, "isto não é um ativo do projeto")
+    link = ast.is_link(a)
+    for field in ("name", "note", "use_when"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(a, field, val.strip())
+    if body.category is not None:
+        a.category = ast.norm_category(body.category, link)
+    if body.always is not None:
+        a.always = int(body.always and not link)
+    if body.link is not None and link:
+        try:
+            a.url = med.check_url(body.link)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+    db.commit()
+    audit(db, auth.user.username, "asset_edit", f"#{a.id} {a.name}"[:500], client_ip(request))
+    return ast.asset_json(a)
+
+
 # ---------- estúdio de layouts por projeto (referências + layouts gerados) ----------
 
 class BriefIn(BaseModel):
@@ -2183,7 +2272,7 @@ def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Dep
                      "roles": [{"key": r, "name": lay.role_label(k, r)} for r in lay.roles_for(k)]}
                     for k, v in lay.FORMATS.items()],
         "positions": list(lay.TEXT_POSITIONS),
-        "references": [lay.asset_json(a) for a in rows if a.kind == "reference"],
+        "references": [{**lay.asset_json(a), **ast.asset_json(a)} for a in rows if a.kind == "reference" and not ast.is_link(a)],
         "layouts": [lay.asset_json(a) for a in rows if a.kind == "layout"],
         "templates": [lay.asset_json(a) for a in rows if a.kind == "template"],
         "html_model": _html_model(db),
@@ -2232,7 +2321,7 @@ def layouts_add_reference(body: ReferenceIn, request: Request, auth: Auth = Depe
         data, mime = lay.decode_image(body.data)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, note=body.note.strip())
+    a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, note=body.note.strip(), category="estilo")
     db.add(a)
     db.commit()
     audit(db, auth.user.username, "layout_reference_add", f"{p.slug} #{a.id}", client_ip(request))
@@ -2250,8 +2339,7 @@ async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depe
         choice = lay.image_choice(db, log=True, project_id=p.id)
     except ProviderError as e:
         raise HTTPException(422, str(e)) from e
-    refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == p.id, LayoutAsset.kind == "reference")
-                 .order_by(LayoutAsset.id).all())
+    refs_rows = lay.style_refs(db, p.id)[:lay.MAX_REFS_SENT]  # logo, paleta e o que for "sempre": não as cartas e objetos
     refs = [(a.data, a.mime) for a in refs_rows]
     role = lay.norm_role(body.format, body.role)
     prompt = lay.build_prompt(p.name, p.style_brief or "", body.format, body.feedback, [a.note for a in refs_rows], role)

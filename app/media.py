@@ -186,10 +186,11 @@ def video_choice(db, log: bool = False, project_id: int | None = None) -> modelc
     return c
 
 
-def video_prompt(project_name: str, brief: str, c: ContentItem) -> str:
+def video_prompt(project_name: str, brief: str, c: ContentItem, assets: str = "") -> str:
     subject = (c.image_prompt.strip() or c.media.strip() or c.title or c.body)[:1200]
     lines = [f"Short vertical social media video clip for the brand \"{project_name}\". {subject}",
              f"Style: {brief.strip()[:600]}" if brief.strip() else "",
+             f"Brand objects that may appear (describe them faithfully): {assets[:800]}" if assets else "",
              "No text, captions, letters, subtitles, logos or watermarks in the video: text is added later on top."]
     return "\n".join(x for x in lines if x)
 
@@ -257,7 +258,10 @@ async def poll_video(job: str) -> tuple[str, bytes | None, str]:
 async def start_video(db, c: ContentItem) -> None:
     choice = video_choice(db, log=True, project_id=c.project_id)
     project = db.get(GrowthProject, c.project_id)
-    prompt = video_prompt(project.name if project else "", (project.style_brief if project else "") or "", c)
+    from .assets import for_piece, text_lines
+
+    prompt = video_prompt(project.name if project else "", (project.style_brief if project else "") or "", c,
+                          text_lines(for_piece(db, c)))
     with calllog.context("video", c.project_id):
         c.media_job = await submit_video(choice.model, prompt, VIDEO_RATIO.get(c.visual_format, "9:16"))
     c.image_error = ""

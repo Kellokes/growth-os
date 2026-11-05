@@ -12,6 +12,7 @@ import re
 
 import httpx
 
+from . import assets as ast
 from . import calllog, modelcfg
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
@@ -52,7 +53,7 @@ def role_label(fmt: str, role: str) -> str:
     return ROLES[role][0] if fmt == "carrossel" and role in ROLES else FORMATS.get(fmt, ("",))[0]
 
 
-MAX_REFERENCES = 8
+MAX_REFERENCES = 60  # ativos por projeto (a biblioteca em Conteúdo › Ativos); por geração vão no máximo MAX_REFS_SENT
 MAX_IMAGE_BYTES = 4_000_000
 MAX_PER_REQUEST = 4  # layouts por clique em "Gerar": limita o custo da API
 MAX_REFS_SENT = 6  # referências que vão junto de cada geração
@@ -600,6 +601,17 @@ def build_free_prompt(project_name: str, brief: str, c: ContentItem, feedback: s
     return "\n".join(x for x in lines if x)
 
 
+def _with_assets(prompt: str, assets: list, first_index: int) -> str:
+    lines = ast.prompt_lines(assets, first_index)
+    return f"{prompt}\n{lines}" if lines else prompt
+
+
+def style_refs(db, project_id: int) -> list[LayoutAsset]:
+    """Referências de estilo do projeto (logo, paleta, as antigas sem categoria e as marcadas "sempre"), para gerar artes."""
+    rows = ast.project_assets(db, project_id)
+    return [a for a in rows if not ast.is_link(a) and (a.always or (a.category or "") in ("", "logo", "estilo"))]
+
+
 def build_merge_prompt(project_name: str, c: ContentItem, feedback: str = "") -> str:
     """Foto do owner (upload ou link) encaixada na arte do layout, quando o template não tem a janela {{midia}}."""
     name, ratio, _ = FORMATS[c.visual_format]
@@ -860,14 +872,14 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
     plate = _plate(db, template)
     if src == "gerar_imagem":
         choice = image_choice(db, log=True, project_id=c.project_id)
+        picked = ast.for_piece(db, c)
         if plate is not None:  # arte aprovada sem texto: o modelo só troca o cenário e mantém logo e moldura
-            prompt = build_scenery_prompt(name, brief, c, feedback)
-            refs = [(plate.data, plate.mime)]
-        else:  # template antigo, sem arte: fundo novo como antes
-            refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
-                         .order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all())
-            prompt = build_background_prompt(name, brief, c, feedback)
-            refs = [(a.data, a.mime) for a in refs_rows]
+            prompt = _with_assets(build_scenery_prompt(name, brief, c, feedback), picked, 2)
+            refs = [(plate.data, plate.mime)] + [(a.data, a.mime) for a in picked]
+        else:  # template antigo, sem arte: fundo novo a partir dos ativos da peça (ou do estilo do projeto)
+            rows = picked or style_refs(db, c.project_id)
+            prompt = _with_assets(build_background_prompt(name, brief, c, feedback), picked, 1)
+            refs = [(a.data, a.mime) for a in rows[:MAX_REFS_SENT]]
         with calllog.context("image", c.project_id):
             data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
         bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
@@ -900,10 +912,11 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
             and not has_alpha(plate.data, plate.mime)):
         # o layout não tem janela para a foto: a IA encaixa a foto na arte (1 imagem paga), mantendo logo e moldura
         choice = image_choice(db, log=True, project_id=c.project_id)
-        prompt = build_merge_prompt(name, c, feedback)
+        picked = ast.for_piece(db, c, MAX_REFS_SENT - 2)
+        prompt = _with_assets(build_merge_prompt(name, c, feedback), picked, 3)
         with calllog.context("image", c.project_id):
-            data, mime = await request_image(choice.model, prompt, [(plate.data, plate.mime), (m.data, m.mime)],
-                                             FORMATS[c.visual_format][1])
+            data, mime = await request_image(choice.model, prompt, [(plate.data, plate.mime), (m.data, m.mime)]
+                                             + [(a.data, a.mime) for a in picked], FORMATS[c.visual_format][1])
         bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
                          model=choice.model, prompt=prompt)
         with calllog.context("image", c.project_id):
@@ -923,15 +936,21 @@ async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = ""
     name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
     refs: list[tuple[bytes, str]] = []
     if mode == "reference":
-        q = db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
-        rows = [db.get(LayoutAsset, c.ref_id)] if c.ref_id else q.order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all()
-        rows = [a for a in rows if a is not None and a.kind == "reference" and a.project_id == c.project_id]
+        if c.ref_id:
+            rows = [db.get(LayoutAsset, c.ref_id)]
+        else:  # os ativos da peça e o estilo do projeto (logo, paleta)
+            rows = ast.for_piece(db, c, MAX_REFS_SENT)
+            rows += [a for a in style_refs(db, c.project_id) if a not in rows]
+        rows = [a for a in rows if a is not None and a.kind == "reference" and a.project_id == c.project_id
+                and not ast.is_link(a)][:MAX_REFS_SENT]
         if not rows:
-            raise ProviderError("Suba ao menos uma referência deste projeto em Layouts (ou escolha outro modo de imagem).")
+            raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
         refs = [(a.data, a.mime) for a in rows]
-        prompt = build_reference_prompt(name, brief, c, feedback)
+        prompt = _with_assets(build_reference_prompt(name, brief, c, feedback), rows, 1)
     else:
-        prompt = build_free_prompt(name, brief, c, feedback)
+        picked = ast.for_piece(db, c) if ast.chosen_ids(c) else []  # modo prompt: só os ativos que o owner escolheu
+        refs = [(a.data, a.mime) for a in picked]
+        prompt = _with_assets(build_free_prompt(name, brief, c, feedback), picked, 1)
     with calllog.context("image", c.project_id):
         data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
     drop_bg(db, c)  # sem template não há fundo separado: o fundo e o vídeo de antes não valem mais

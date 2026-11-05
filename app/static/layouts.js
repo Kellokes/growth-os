@@ -27,9 +27,8 @@
     if (!state) return;
     if (!state.formats.some((f) => f.key === fmt)) fmt = state.formats[0].key;
     $("#lay-brief").value = state.brief;
-    $("#lay-ref-max").textContent = state.limits.references;
     $("#lay-model").textContent = state.image_model || "nenhum";
-    $("#lay-style-sum").textContent = `${state.brief ? "briefing salvo" : "sem briefing"} · ${state.references.length} referência(s)`;
+    $("#lay-style-sum").textContent = `${state.brief ? "briefing salvo" : "sem briefing"} · ${state.references.length} ativo(s) de imagem`;
     const warn = $("#lay-problem");
     warn.hidden = !state.problem; warn.textContent = state.problem || "";
     $("#lay-generate").disabled = busy || !!state.problem;
@@ -40,11 +39,9 @@
     $("#lay-hint").textContent = HINT[fmt] || "";
     $("#lay-tpl-title").textContent = `Templates · ${partName()}`;
     $("#lay-add-title").textContent = `Adicionar template · ${partName()}`;
-    $("#lay-refs").innerHTML = state.references.length ? state.references.map((a) => `
-      <figure class="lay-thumb"><img src="${esc(a.url)}" alt="${esc(a.note || "referência")}" loading="lazy">
-        <figcaption>${esc(a.note) || "<span class='muted'>sem legenda</span>"}</figcaption>
-        <button class="btn small danger" type="button" data-del="${a.id}">Apagar</button></figure>`).join("")
-      : `<div class="muted">Nenhuma referência ainda.</div>`;
+    const style = state.references.filter((a) => a.always || ["logo", "estilo"].includes(a.category));
+    $("#lay-ref-n").textContent = style.length;
+    $("#lay-refs").innerHTML = style.slice(0, 6).map((a) => `<figure class="lay-thumb"><img src="${esc(a.url)}" alt="${esc(a.name || a.note || "referência")}" loading="lazy"><figcaption>${esc(a.name || a.note)}</figcaption></figure>`).join("");
     drawTemplates(); drawArts();
   }
 
@@ -121,17 +118,6 @@
     await api("/api/layouts/brief", { method: "PUT", body: JSON.stringify({ project, brief: $("#lay-brief").value }) });
     $("#lay-brief-msg").textContent = "Salvo.";
   });
-
-  $("#lay-file").onchange = async (ev) => {
-    const msg = $("#lay-ref-msg");
-    for (const f of ev.target.files) {
-      msg.textContent = `Enviando ${f.name}…`;
-      try {
-        await api("/api/layouts/references", { method: "POST", body: JSON.stringify({ project, data: await fileToB64(f), note: f.name.replace(/\.[^.]+$/, "") }) });
-      } catch (e) { alert(`${f.name}: ${e.message}`); }
-    }
-    ev.target.value = ""; msg.textContent = ""; await load();
-  };
 
   $("#up-file").onchange = async (ev) => {
     const f = ev.target.files[0]; ev.target.value = ""; if (!f) return;

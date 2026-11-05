@@ -84,9 +84,9 @@ def test_generate_approve_and_replace(logged, monkeypatch):
     assert logged.post(f"/api/layouts/{a}/decide", json={"approve": True}).json()["status"] == "approved"
     assert logged.post(f"/api/layouts/{b}/decide", json={"approve": True}).json()["status"] == "approved"
     layouts = {x["id"]: x["status"] for x in logged.get("/api/layouts?project=zombie-party").json()["layouts"]}
-    assert layouts == {b: "approved"}  # o anterior foi arquivado: só um oficial por formato
-    assert logged.delete(f"/api/layouts/assets/{b}").status_code == 409
-    assert logged.post(f"/api/layouts/{b}/decide", json={"approve": False}).status_code == 409
+    assert layouts == {a: "approved", b: "approved"}  # vários layouts aprovados por formato (cada um pode virar template)
+    assert logged.post(f"/api/layouts/{b}/decide", json={"approve": False}).json()["status"] == "rejected"
+    assert logged.delete(f"/api/layouts/assets/{b}").status_code == 200
     actions = [r["action"] for r in logged.get("/api/audit").json()]
     assert "layout_generate" in actions and "layout_approve" in actions
 

@@ -954,6 +954,12 @@ async def scheduler_loop() -> None:
             await layouts.autogen_pending()
         except Exception:  # noqa: BLE001
             log.exception("imagens das peças")
+        try:
+            from . import media  # vídeos gerados pela IA: busca os que ficaram prontos
+
+            await media.poll_pending_videos()
+        except Exception:  # noqa: BLE001
+            log.exception("vídeos das peças")
         await asyncio.sleep(60)
 
 

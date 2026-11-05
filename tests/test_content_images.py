@@ -40,8 +40,9 @@ def approve_layout(logged, monkeypatch, fmt="carrossel"):
     async def fake_html(model, prompt, image):
         return "```html\n" + TEMPLATE + "\n```"
 
-    def fake_render(html, f, bg, title, text, brand=""):
-        RENDERS.append(motion.build_composition(html, f, "BG" if bg else "SAMPLE", title, text, brand))
+    def fake_render(html, f, bg, title, text, brand="", media=None):
+        tag = ("assets/media.x", media[1]) if media else None
+        RENDERS.append(motion.build_composition(html, f, "BG" if bg else "SAMPLE", title, text, brand, media=tag))
         return PNG + b"R"
 
     monkeypatch.setattr(lay, "request_image", fake)
@@ -108,7 +109,7 @@ def test_generate_needs_approved_template_then_fills_it(logged, monkeypatch):
     r = logged.post(f"/api/content/{cid}/image", json={"feedback": "mais verde"})
     assert r.status_code == 200 and r.json()["image_url"] and r.json()["image_error"] == ""
     assert seen["ratio"] == "4:5" and "NO text" in seen["prompt"] and "foto da festa" in seen["prompt"] and "mais verde" in seen["prompt"]
-    html = RENDERS[-1]
+    html = RENDERS[0]  # a capa; no carrossel, as páginas e o CTA vêm depois
     assert '<h1><span class="m-title">Festa de Halloween</span></h1>' in html and 'class="m-text">Sábado, 20h</span>' in html and "BG" in html
     first = r.json()["image_url"]
     again = logged.post(f"/api/content/{cid}/image", json={}).json()["image_url"]
@@ -120,7 +121,7 @@ def test_generate_needs_approved_template_then_fills_it(logged, monkeypatch):
     seen.clear()
     r = logged.patch(f"/api/content/{cid}", json={"img_title": "NOVO <b>TÍTULO</b>"})
     assert r.status_code == 200 and not seen and r.json()["image_url"] != again
-    assert "NOVO &lt;b&gt;TÍTULO&lt;/b&gt;" in RENDERS[-1]  # texto sempre escapado
+    assert any("NOVO &lt;b&gt;TÍTULO&lt;/b&gt;" in h for h in RENDERS)  # texto sempre escapado
     assert logged.delete(f"/api/content/{cid}").status_code == 200
     s = dbmod.new_session()
     assert s.query(dbmod.LayoutAsset).filter(dbmod.LayoutAsset.kind.in_(("piece", "background"))).count() == 0
@@ -190,7 +191,7 @@ def test_template_flow_requires_approved_layout_and_model(logged, monkeypatch):
     r = logged.post(f"/api/layouts/{proposed}/template", json={})
     assert r.status_code == 422 and "recusado" in r.json()["detail"]
     tid = logged.get("/api/layouts?project=zombie-party").json()["templates"][0]["id"]
-    assert logged.delete(f"/api/layouts/assets/{tid}").status_code == 409  # template oficial não se apaga
+    assert logged.delete(f"/api/layouts/assets/{tid}").status_code == 200  # o único template pode sair (as peças esperam outro)
 
 
 def test_motion_service_calls(monkeypatch):
@@ -238,13 +239,13 @@ def test_piece_video_flow(logged, monkeypatch):
     cid = new_piece(title="Festa")
     calls = []
 
-    async def fake_video(html, f, bg, title, text, brand=""):
+    async def fake_video(html, f, bg, title, text, brand="", media=None):
         calls.append((f, title))
         return b"\x00\x00\x00\x18ftypmp42" + b"v" * 40
 
     monkeypatch.setattr(motion, "render_video", fake_video)
     r = logged.post(f"/api/content/{cid}/video")
-    assert r.status_code == 422 and "fundo" in r.json()["detail"]  # sem imagem gerada ainda
+    assert r.status_code == 422 and "imagem" in r.json()["detail"]  # sem imagem gerada ainda
     assert logged.post(f"/api/content/{cid}/image", json={}).status_code == 200
     item = logged.post(f"/api/content/{cid}/video").json()
     assert item["video_url"] and item["can_video"] and calls[0][0] == "carrossel"

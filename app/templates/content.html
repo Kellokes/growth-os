@@ -66,24 +66,45 @@
     <label>Texto<textarea id="cf-body" rows="9" required maxlength="20000"></textarea></label>
     <label>Mídia (o que a imagem deve mostrar)<textarea id="cf-media" rows="2" maxlength="4000" placeholder="Descrição do criativo, se tiver"></textarea></label>
     <div class="cf-image" id="cf-image-box">
-      <label>Formato da imagem<select id="cf-format"><option value="">Sem imagem (só texto)</option><option value="story">Story · 9:16</option><option value="carrossel">Carrossel · 4:5</option><option value="reel">Reel · 9:16</option></select></label>
-      <div id="cf-modebox" hidden>
-        <label>Como gerar a imagem<select id="cf-mode">
-          <option value="template">Com template do projeto (fundo novo + texto no template)</option>
-          <option value="reference">Sem template: só uma referência já subida</option>
-          <option value="prompt">Sem template e sem referência: só um prompt</option>
-        </select></label>
-        <label id="cf-tpl-wrap">Template<select id="cf-tpl"></select></label>
-        <label id="cf-ref-wrap">Referência<select id="cf-ref"></select></label>
-        <label id="cf-iprompt-wrap"><span>Prompt da imagem</span><textarea id="cf-iprompt" rows="4" maxlength="4000" placeholder="Vazio = o sistema propõe um prompt a partir da mídia e do estilo do projeto"></textarea></label>
-        <small class="muted" id="cf-modehint"></small>
-      </div>
-      <div class="two" id="cf-imgtext">
-        <label>Título na imagem<input id="cf-imgtitle" maxlength="200" placeholder="Até 6 palavras"></label>
-        <label>Frase de apoio na imagem<input id="cf-imgtext-in" maxlength="400" placeholder="Opcional"></label>
+      <label>Formato da imagem<select id="cf-format"><option value="">Sem imagem (só texto)</option><option value="story">Story · 9:16</option><option value="carrossel">Carrossel · 4:5 (capa, páginas e CTA)</option><option value="reel">Reel · 9:16</option></select></label>
+      <div id="cf-visual" class="cf-image" hidden>
+        <div class="cf-step">
+          <b>1. Layout</b>
+          <label>Base<select id="cf-mode">
+            <option value="template">Layout do projeto (recomendado)</option>
+            <option value="reference">Sem layout: imagem livre a partir das referências</option>
+            <option value="prompt">Sem layout: imagem livre só do prompt</option>
+          </select></label>
+          <div class="cf-tpls" id="cf-tpls"></div>
+          <label id="cf-ref-wrap">Referência<select id="cf-ref"></select></label>
+          <label id="cf-iprompt-wrap"><span>Prompt da imagem</span><textarea id="cf-iprompt" rows="4" maxlength="4000" placeholder="Vazio = o sistema propõe um prompt a partir da mídia e do estilo do projeto"></textarea></label>
+          <small class="muted" id="cf-modehint"></small>
+        </div>
+        <div class="cf-step" id="cf-src-step">
+          <b>2. Foto ou vídeo que entra no layout</b>
+          <div class="cf-src" id="cf-src" role="group" aria-label="De onde vem a mídia"></div>
+          <label id="cf-url-wrap">Link do arquivo (https, direto para a foto ou o vídeo)<input id="cf-url" type="url" maxlength="1000" placeholder="https://…/foto.jpg ou …/video.mp4"></label>
+          <small class="muted" id="cf-srchint"></small>
+        </div>
+        <div class="cf-step" id="cf-imgtext">
+          <b>3. Texto no layout</b>
+          <div class="two">
+            <label><span id="cf-imgtitle-label">Título na imagem</span><input id="cf-imgtitle" maxlength="200" placeholder="Até 6 palavras"></label>
+            <label>Frase de apoio<input id="cf-imgtext-in" maxlength="400" placeholder="Opcional"></label>
+          </div>
+          <div id="cf-carousel" hidden>
+            <div id="cf-pages"></div>
+            <button class="btn small ghost" type="button" id="cf-add-page">{{ ic("plus") }} Adicionar página</button>
+            <div class="two">
+              <label>CTA final · título<input id="cf-cta-title" maxlength="120" placeholder="Ex.: Salve e compartilhe"></label>
+              <label>CTA final · frase<input id="cf-cta-text" maxlength="300" placeholder="Opcional"></label>
+            </div>
+          </div>
+        </div>
       </div>
       <div id="cf-image" aria-live="polite"></div>
       <input id="cf-image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <input id="cf-media-file" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime" hidden>
     </div>
     <label>Quando sai<input id="cf-when" type="datetime-local"><small class="muted">Vazio = sai quando você publicar. Hora de Brasília.</small></label>
     <div class="sent-box" id="cf-sent-box" hidden>

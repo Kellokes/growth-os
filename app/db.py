@@ -343,6 +343,15 @@ class ContentItem(Base):
     image_prompt: Mapped[str] = mapped_column(Text, default="")  # modo prompt: o prompt (proposto pelo agente, editável)
     img_title: Mapped[str] = mapped_column(String(200), default="")  # título curto que vai NA imagem
     img_text: Mapped[str] = mapped_column(String(400), default="")  # frase de apoio que vai NA imagem
+    # carrossel: {"capa": id, "pagina": id, "cta": id} (layout_assets.id de templates); vazio = o padrão de cada papel
+    template_ids: Mapped[str] = mapped_column(Text, default="")
+    # carrossel: [{"role": "pagina", "title": "", "text": "", "image_id": 12}, ...] páginas do meio + CTA final (a capa usa img_title/img_text)
+    slides: Mapped[str] = mapped_column(Text, default="")
+    # de onde vem a mídia que entra no layout: gerar_imagem | gerar_video | upload | link | nenhuma
+    media_source: Mapped[str] = mapped_column(String(12), default="gerar_imagem")
+    media_url: Mapped[str] = mapped_column(String(1000), default="")  # link coletado na internet (arquivo direto)
+    media_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=media): foto ou vídeo da peça
+    media_job: Mapped[str] = mapped_column(String(120), default="")  # vídeo em geração no OpenRouter (id do job)
     # pending (aguardando aprovação) | approved | sent | rejected | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)  # hora local do owner
@@ -365,7 +374,9 @@ class LayoutAsset(Base):
     kind=plate: a arte do layout aprovado SEM texto (logo, moldura, cenário); é o fundo de partida de todas as peças do formato.
     kind=video: MP4 animado da peça (mesmo template, texto e fundo; content_items.video_id aponta para ele).
     kind=piece: imagem de uma peça da Central de Conteúdo (content_items.image_id aponta para ela).
-    kind=layout: proposta gerada; status proposed | approved | rejected | archived. Só um approved por projeto e formato.
+    kind=layout: proposta gerada (ou imagem que o owner subiu); status proposed | approved | rejected | archived.
+    kind=media: foto ou vídeo que entra no layout de uma peça (upload, link da internet ou vídeo gerado).
+    Templates: vários aprovados por projeto, formato e papel (capa/páginas/CTA no carrossel); um deles é o padrão (is_default).
     """
     __tablename__ = "layout_assets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -379,7 +390,10 @@ class LayoutAsset(Base):
     prompt: Mapped[str] = mapped_column(Text, default="")
     model: Mapped[str] = mapped_column(String(120), default="")
     plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # kind=template: layout_assets.id da arte sem texto (kind=plate)
-    html: Mapped[str] = mapped_column(Text, default="")  # kind=template: o HTML com {{bg}}, {{titulo}}, {{texto}}, {{marca}}
+    html: Mapped[str] = mapped_column(Text, default="")  # kind=template: o HTML com {{bg}}, {{titulo}}, {{texto}}, {{marca}}, {{midia}}
+    name: Mapped[str] = mapped_column(String(80), default="")  # layout/template: nome que o owner dá ("Capa escura")
+    role: Mapped[str] = mapped_column(String(12), default="")  # carrossel: capa | pagina | cta; story/reel: vazio
+    is_default: Mapped[int] = mapped_column(Integer, default=0)  # template: 1 = o padrão do projeto naquele formato e papel
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
@@ -502,9 +516,19 @@ _NEW_COLUMNS = {
         "image_prompt": "TEXT NOT NULL DEFAULT ''",
         "img_title": "VARCHAR(200) NOT NULL DEFAULT ''",
         "img_text": "VARCHAR(400) NOT NULL DEFAULT ''",
+        "template_ids": "TEXT NOT NULL DEFAULT ''",
+        "slides": "TEXT NOT NULL DEFAULT ''",
+        "media_source": "VARCHAR(12) NOT NULL DEFAULT 'gerar_imagem'",
+        "media_url": "VARCHAR(1000) NOT NULL DEFAULT ''",
+        "media_id": "INTEGER NULL",
+        "media_job": "VARCHAR(120) NOT NULL DEFAULT ''",
     },
     "ai_calls": {"input_tokens": "INTEGER NULL", "output_tokens": "INTEGER NULL", "cost_usd": "FLOAT NULL"},
-    "layout_assets": {"html": "TEXT NOT NULL DEFAULT ''", "plate_id": "INTEGER NULL"},
+    "layout_assets": {
+        "html": "TEXT NOT NULL DEFAULT ''", "plate_id": "INTEGER NULL",
+        "name": "VARCHAR(80) NOT NULL DEFAULT ''", "role": "VARCHAR(12) NOT NULL DEFAULT ''",
+        "is_default": "INTEGER NOT NULL DEFAULT 0",
+    },
 }
 
 

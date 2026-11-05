@@ -140,7 +140,7 @@ def reset_data(db: DB, confirm: str, actor: str, ip: str = "") -> dict[str, int]
         for model, _label in CLEAR:
             deleted[model.__tablename__] = db.query(model).delete(synchronize_session=False)
         # Imagens e fundos das peças apagadas ficariam órfãos; layouts, templates e referências são configuração e ficam.
-        db.query(LayoutAsset).filter(LayoutAsset.kind.in_(("piece", "background", "video"))).delete(synchronize_session=False)
+        db.query(LayoutAsset).filter(LayoutAsset.kind.in_(("piece", "background", "video", "media"))).delete(synchronize_session=False)
         detail = ", ".join(f"{t}={n}" for t, n in deleted.items())
         db.add(AuditLog(actor=actor, action="data_reset", detail=detail[:4000], ip=ip))
         db.commit()

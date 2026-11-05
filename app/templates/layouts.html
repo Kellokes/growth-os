@@ -8,39 +8,71 @@
     <header class="page-head">
       <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Layouts</span></div>
       <div class="head-row">
-        <div class="title-stack"><h1 id="page-title">Layouts</h1><p class="lede muted">O visual de cada projeto: você sobe referências e um briefing, a IA propõe layouts de story, carrossel e reel, e o que você aprova vira a base das imagens dos posts.</p></div>
+        <div class="title-stack"><h1 id="page-title">Layouts</h1><p class="lede muted">O visual de cada projeto: você sobe referências e um briefing, sobe ou gera artes de story, carrossel e reel, e cada arte vira um template. Tenha quantos templates quiser e escolha qual usar em cada post.</p></div>
       </div>
     </header>
     {% include "_project_switch.html" %}
     <section class="page" id="lay-page">
       <div class="lay-warn" id="lay-problem" hidden></div>
 
-      <div class="card lay-card">
-        <h3>1. Briefing de estilo</h3>
-        <p class="muted">Cores, clima, tipografia, o que evitar. Vale só para este projeto.</p>
-        <textarea id="lay-brief" rows="4" maxlength="3000" placeholder="Ex.: sombrio e divertido, preto e verde ácido, fontes grossas, sem emojis"></textarea>
-        <div class="row"><button class="btn" type="button" id="lay-brief-save">{{ ic("check") }} Salvar briefing</button><span class="muted" id="lay-brief-msg"></span></div>
-      </div>
-
-      <div class="card lay-card">
-        <h3>2. Referências</h3>
-        <p class="muted">Logo, posts de que você gosta, paleta, fotos. Até <span id="lay-ref-max">8</span> imagens PNG, JPEG ou WebP (4 MB cada). Elas vão junto de cada geração.</p>
-        <div class="lay-grid" id="lay-refs"></div>
-        <div class="row"><label class="btn" for="lay-file">{{ ic("plus") }} Adicionar referência</label><input id="lay-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><span class="muted" id="lay-ref-msg"></span></div>
-      </div>
-
-      <div class="card lay-card">
-        <h3>3. Gerar layouts</h3>
-        <p class="muted">Modelo de imagem: <b id="lay-model">—</b> (troque em <a href="/settings">Modelos</a>). Os layouts saem já sem texto, só com logo e molduras; o texto entra depois, em HTML. Cada clique gera de 1 a 4 imagens e cobra do seu OpenRouter.</p>
-        <div class="two">
-          <label>Formato<select id="lay-format"></select></label>
-          <label>Quantas<select id="lay-count"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+      <details class="card lay-card lay-style" id="lay-style">
+        <summary><h3>Estilo do projeto</h3><span class="muted" id="lay-style-sum">briefing e referências</span></summary>
+        <div class="lay-cols">
+          <div class="lay-col">
+            <h4>Briefing</h4>
+            <p class="muted">Cores, clima, tipografia, o que evitar. Vale só para este projeto.</p>
+            <textarea id="lay-brief" rows="4" maxlength="3000" placeholder="Ex.: sombrio e divertido, preto e verde ácido, fontes grossas, sem emojis"></textarea>
+            <div class="row"><button class="btn" type="button" id="lay-brief-save">{{ ic("check") }} Salvar briefing</button><span class="muted" id="lay-brief-msg"></span></div>
+          </div>
+          <div class="lay-col">
+            <h4>Referências</h4>
+            <p class="muted">Logo, posts de que você gosta, paleta. Até <span id="lay-ref-max">8</span> imagens (4 MB cada). Vão junto quando a IA gera artes.</p>
+            <div class="lay-grid small" id="lay-refs"></div>
+            <div class="row"><label class="btn" for="lay-file">{{ ic("plus") }} Adicionar referência</label><input id="lay-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><span class="muted" id="lay-ref-msg"></span></div>
+          </div>
         </div>
-        <label>Ajustes desta rodada (opcional)<input id="lay-feedback" maxlength="1000" placeholder="Ex.: mais respiro nas margens, logo no canto superior"></label>
-        <div class="row"><button class="btn primary" type="button" id="lay-generate">{{ ic("wand") }} Gerar layouts</button><span class="muted" id="lay-gen-msg" aria-live="polite"></span></div>
+      </details>
+
+      <div class="lay-bar">
+        <div class="seg" id="lay-fmt" role="tablist" aria-label="Formato"></div>
+        <div class="seg" id="lay-role" role="tablist" aria-label="Parte do carrossel" hidden></div>
+      </div>
+      <p class="muted lay-hint" id="lay-hint"></p>
+
+      <div class="card lay-card">
+        <div class="lay-head"><h3 id="lay-tpl-title">Templates</h3><small class="muted">O <b>padrão</b> entra sozinho nas peças; os outros você escolhe em cada peça, na Central de Conteúdo.</small></div>
+        <div class="lay-grid" id="lay-templates"></div>
       </div>
 
-      <div id="lay-formats"></div>
+      <div class="card lay-card">
+        <h3 id="lay-add-title">Adicionar template</h3>
+        <div class="lay-cols">
+          <div class="lay-col lay-box">
+            <h4>{{ ic("plus") }} Subir minha arte</h4>
+            <p class="muted">Uma imagem sem texto (PNG, JPEG ou WebP, até 4 MB). PNG com área transparente deixa a foto ou o vídeo do post aparecer por trás.</p>
+            <label>Nome<input id="up-name" maxlength="80" placeholder="Ex.: Capa escura"></label>
+            <label>Onde vai o texto<select id="up-text">
+              <option value="embaixo">Embaixo, com sombra (sem IA)</option><option value="meio">No meio (sem IA)</option><option value="topo">Em cima (sem IA)</option>
+              <option value="ia">A IA lê a arte e posiciona (1 chamada)</option></select></label>
+            <div class="row"><label class="btn primary" for="up-file">{{ ic("plus") }} Escolher arte</label><input id="up-file" type="file" accept="image/png,image/jpeg,image/webp" hidden><span class="muted" id="up-msg" aria-live="polite"></span></div>
+          </div>
+          <div class="lay-col lay-box">
+            <h4>{{ ic("wand") }} Gerar com IA</h4>
+            <p class="muted">Modelo: <b id="lay-model">—</b> (<a href="/settings">Modelos</a>). Sai a arte sem texto; aprove a que gostar e transforme em template abaixo. Cada imagem cobra do seu OpenRouter.</p>
+            <div class="two">
+              <label>Quantas<select id="lay-count"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+              <label>Nome (opcional)<input id="lay-name" maxlength="80"></label>
+            </div>
+            <label>Ajustes desta rodada (opcional)<input id="lay-feedback" maxlength="1000" placeholder="Ex.: mais respiro nas margens, logo no canto superior"></label>
+            <div class="row"><button class="btn" type="button" id="lay-generate">{{ ic("wand") }} Gerar artes</button><span class="muted" id="lay-gen-msg" aria-live="polite"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card lay-card">
+        <div class="lay-head"><h3>Artes</h3><small class="muted">Geradas pela IA ou que você subiu. Aprove e transforme em template: com a IA posicionando o texto, ou com o texto padrão (sem custo).</small></div>
+        <div class="lay-grid" id="lay-arts"></div>
+      </div>
     </section>
   </main>
 </div>

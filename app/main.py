@@ -2139,7 +2139,8 @@ def agent_outputs(project: str = "all", days: int = 14, agent: str = "",
 class AssetIn(BaseModel):
     project: str = Field(max_length=48)
     data: str = Field(default="", max_length=6_000_000)  # imagem (base64); ou
-    link: str = Field(default="", max_length=1000)  # link de vídeo (https)
+    link: str = Field(default="", max_length=1000)  # link de vídeo (https); ou
+    text: str = Field(default="", max_length=4000)  # texto (briefing, regra da marca, frase fixa)
     name: str = Field(default="", max_length=80)
     category: str = Field(default="outro", max_length=20)
     note: str = Field(default="", max_length=500)  # o que é
@@ -2154,6 +2155,7 @@ class AssetEditIn(BaseModel):
     use_when: str | None = Field(default=None, max_length=500)
     always: bool | None = None
     link: str | None = Field(default=None, max_length=1000)
+    text: str | None = Field(default=None, max_length=4000)
 
 
 @app.get("/api/assets")
@@ -2168,9 +2170,13 @@ def assets_add(body: AssetIn, request: Request, auth: Auth = Depends(current_aut
     p = _project_or_404(db, body.project)
     if len(ast.project_assets(db, p.id)) >= ast.MAX_ASSETS:
         raise HTTPException(422, f"no máximo {ast.MAX_ASSETS} ativos por projeto: apague algum")
-    if bool(body.data) == bool(body.link.strip()):
-        raise HTTPException(422, "mande uma imagem ou um link de vídeo")
-    if body.link.strip():
+    if sum(map(bool, (body.data, body.link.strip(), body.text.strip()))) != 1:
+        raise HTTPException(422, "mande uma imagem, um link de vídeo ou um texto")
+    if body.text.strip():
+        if not body.name.strip():
+            raise HTTPException(422, "dê um nome ao texto (é o nome que você cita com @)")
+        url, data, mime = "", body.text.strip().encode(), ast.TEXT_MIME
+    elif body.link.strip():
         try:
             url = med.check_url(body.link)
         except ValueError as e:
@@ -2183,8 +2189,8 @@ def assets_add(body: AssetIn, request: Request, auth: Auth = Depends(current_aut
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
     a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, url=url, name=body.name.strip(),
-                    category=ast.norm_category(body.category, bool(url)), note=body.note.strip(),
-                    use_when=body.use_when.strip(), always=int(body.always and not url))
+                    category=ast.norm_category(body.category, bool(url), mime == ast.TEXT_MIME), note=body.note.strip(),
+                    use_when=body.use_when.strip(), always=0 if url or mime == ast.TEXT_MIME else int(body.always))
     db.add(a)
     db.commit()
     audit(db, auth.user.username, "asset_add", f"{p.slug} #{a.id} {a.category} {a.name}"[:500], client_ip(request))
@@ -2196,16 +2202,20 @@ def assets_edit(aid: int, body: AssetEditIn, request: Request, auth: Auth = Depe
     a = _asset_or_404(db, aid)
     if a.kind != "reference":
         raise HTTPException(409, "isto não é um ativo do projeto")
-    link = ast.is_link(a)
+    link = ast.is_link(a) or ast.is_text(a)
+    if body.text is not None and ast.is_text(a):
+        if not body.text.strip():
+            raise HTTPException(422, "o texto não pode ficar vazio")
+        a.data = body.text.strip().encode()
     for field in ("name", "note", "use_when"):
         val = getattr(body, field)
         if val is not None:
             setattr(a, field, val.strip())
     if body.category is not None:
-        a.category = ast.norm_category(body.category, link)
+        a.category = ast.norm_category(body.category, ast.is_link(a), ast.is_text(a))
     if body.always is not None:
         a.always = int(body.always and not link)
-    if body.link is not None and link:
+    if body.link is not None and ast.is_link(a):
         try:
             a.url = med.check_url(body.link)
         except ValueError as e:
@@ -2272,7 +2282,7 @@ def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Dep
                      "roles": [{"key": r, "name": lay.role_label(k, r)} for r in lay.roles_for(k)]}
                     for k, v in lay.FORMATS.items()],
         "positions": list(lay.TEXT_POSITIONS),
-        "references": [{**lay.asset_json(a), **ast.asset_json(a)} for a in rows if a.kind == "reference" and not ast.is_link(a)],
+        "references": [{**lay.asset_json(a), **ast.asset_json(a)} for a in rows if a.kind == "reference" and ast.is_image(a)],
         "layouts": [lay.asset_json(a) for a in rows if a.kind == "layout"],
         "templates": [lay.asset_json(a) for a in rows if a.kind == "template"],
         "html_model": _html_model(db),

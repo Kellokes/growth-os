@@ -24,24 +24,41 @@ CATEGORIES: dict[str, str] = {
     "produto": "Produto",
     "estilo": "Estilo / paleta",
     "video": "Vídeo (link)",
+    "texto": "Texto",
     "outro": "Outro",
 }
 MAX_ASSETS = 60  # por projeto
 MAX_SENT = 5  # ativos que vão junto de cada imagem (além da arte do layout)
 LINK_MIME = "text/uri-list"
+TEXT_MIME = "text/plain"  # ativo de texto: briefing, regra da marca, frase fixa... (o conteúdo fica em data)
+MAX_TEXT = 4000
 _STOP = {"para", "com", "sobre", "quando", "falar", "usar", "use", "isso", "este", "esta", "como", "mais", "jogo", "post",
          "posts", "sempre", "qualquer", "deve", "pode", "the", "and", "with", "from", "that", "this"}
 
 
-def norm_category(raw, is_link: bool = False) -> str:
+def norm_category(raw, is_link: bool = False, is_text: bool = False) -> str:
     c = str(raw or "").strip().lower()
     if is_link:
         return "video"
-    return c if c in CATEGORIES and c != "video" else "outro"
+    if is_text:
+        return "texto"
+    return c if c in CATEGORIES and c not in ("video", "texto") else "outro"
 
 
 def is_link(a: LayoutAsset) -> bool:
     return a.mime == LINK_MIME or bool(a.url)
+
+
+def is_text(a: LayoutAsset) -> bool:
+    return a.mime == TEXT_MIME
+
+
+def is_image(a: LayoutAsset) -> bool:
+    return not is_link(a) and not is_text(a)
+
+
+def text_of(a: LayoutAsset) -> str:
+    return bytes(a.data or b"").decode("utf-8", "replace").strip()
 
 
 def label(a: LayoutAsset) -> str:
@@ -50,11 +67,13 @@ def label(a: LayoutAsset) -> str:
 
 def asset_json(a: LayoutAsset) -> dict:
     link = is_link(a)
+    txt = is_text(a)
     return {
-        "id": a.id, "name": a.name or "", "category": a.category or ("video" if link else "estilo"),
-        "category_name": CATEGORIES.get(a.category or ("video" if link else "estilo"), "Outro"),
+        "id": a.id, "name": a.name or "", "category": a.category or ("video" if link else "texto" if txt else "estilo"),
+        "category_name": CATEGORIES.get(a.category or ("video" if link else "texto" if txt else "estilo"), "Outro"),
         "note": a.note or "", "use_when": a.use_when or "", "always": bool(a.always),
-        "link": a.url if link else "", "url": "" if link else f"/api/layouts/assets/{a.id}", "is_link": link,
+        "link": a.url if link else "", "url": "" if link or txt else f"/api/layouts/assets/{a.id}", "is_link": link, "is_text": txt,
+        "text": text_of(a) if txt else "",
         "created_at": a.created_at.isoformat(),
     }
 
@@ -120,7 +139,7 @@ def mentioned(db, c: ContentItem) -> list[LayoutAsset]:
     """Ativos de imagem citados com @ no prompt da peça, sem repetir, na ordem em que aparecem (máx. MAX_SENT)."""
     out: list[LayoutAsset] = []
     for _, _, a in find_mentions(db, c.project_id, c.image_prompt or ""):
-        if not is_link(a) and a not in out:
+        if is_image(a) and a not in out:
             out.append(a)
     return out[:MAX_SENT]
 
@@ -135,7 +154,14 @@ def rewrite_mentions(db, c: ContentItem, prompt: str, assets: list[LayoutAsset],
     for start, end, a in spots:
         out.append(prompt[last:start])
         shown = prompt[start + 1:end]
-        out.append(f"{shown} (image {pos[a.id]})" if a.id in pos else shown)
+        if a.id in pos:
+            out.append(f"{shown} (image {pos[a.id]})")
+        elif is_text(a):  # texto: entra inteiro, no ponto citado
+            out.append(f"{shown} (\"{text_of(a)[:MAX_TEXT]}\")")
+        elif is_link(a):
+            out.append(f"{shown} (video: {a.url})")
+        else:
+            out.append(shown)
         last = end
     out.append(prompt[last:])
     return "".join(out)
@@ -144,7 +170,7 @@ def rewrite_mentions(db, c: ContentItem, prompt: str, assets: list[LayoutAsset],
 def for_piece(db, c: ContentItem, limit: int = MAX_SENT) -> list[LayoutAsset]:
     """Ativos de imagem que entram na arte desta peça: os citados com @ no prompt (na ordem), depois os escolhidos,
     ou, sem escolha, "sempre" + os que combinam com o assunto."""
-    rows = [a for a in project_assets(db, c.project_id) if not is_link(a)]
+    rows = [a for a in project_assets(db, c.project_id) if is_image(a)]
     first = mentioned(db, c)
     ids = chosen_ids(c)
     if ids:
@@ -199,6 +225,8 @@ def catalog(db, project_id: int) -> str:
     lines = []
     for a in rows[:40]:
         extra = f" · link: {a.url}" if is_link(a) else ""
+        if is_text(a):
+            extra = f" · texto: {text_of(a)[:160]}"
         when = f" · quando usar: {a.use_when.strip()[:160]}" if a.use_when.strip() else ""
         always = " · vai em toda arte" if a.always else ""
         lines.append(f"- {label(a)} [{CATEGORIES.get(a.category, 'Outro')}]: {a.note.strip()[:160]}{when}{always}{extra}")

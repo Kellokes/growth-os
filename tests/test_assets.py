@@ -117,3 +117,30 @@ def test_at_mentions_send_the_asset_where_the_prompt_says(studio, monkeypatch):
     assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
     assert AI[-1]["refs"] == 2 and "cartas (image 1)" in AI[-1]["prompt"] and "image 1 = Cartas" in AI[-1]["prompt"]
     assert cartas["id"]
+
+
+def test_mentions_accept_text_and_video_assets(studio, monkeypatch):
+    ai_template(studio, monkeypatch, PLAIN)
+    add(studio, name="Cartas", category="carta", note="cartas do jogo")
+    r = studio.post("/api/assets", json={"project": "zombie-party", "name": "Tom", "text": "Sempre irônico, sem emoji."})
+    assert r.status_code == 200 and r.json()["is_text"] and r.json()["text"] == "Sempre irônico, sem emoji."
+    assert studio.post("/api/assets", json={"project": "zombie-party", "text": "sem nome"}).status_code == 422
+    studio.post("/api/assets", json={"project": "zombie-party", "link": "https://site.com/trailer.mp4", "name": "Trailer"})
+    tid = r.json()["id"]
+    assert studio.patch(f"/api/assets/{tid}", json={"text": "Novo tom."}).json()["text"] == "Novo tom."
+    s = dbmod.new_session()
+    c = dbmod.ContentItem(project_id=pid("zombie-party"), channel="instagram", body="x", visual_format="story",
+                          status="pending", image_mode="prompt",
+                          image_prompt="Cena com @Cartas, siga @Tom e lembre do @Trailer")
+    s.add(c)
+    s.commit()
+    cid = c.id
+    assert [a.name for a in ast.for_piece(s, c)] == ["Cartas"]  # só imagem vai como referência; texto e vídeo ficam no prompt
+    out = ast.rewrite_mentions(s, c, c.image_prompt, ast.for_piece(s, c), 1)
+    assert 'Tom ("Novo tom.")' in out and "Trailer (video: https://site.com/trailer.mp4)" in out and "Cartas (image 1)" in out
+    s.close()
+    AI.clear()
+    assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
+    assert AI[-1]["refs"] == 1 and 'Tom ("Novo tom.")' in AI[-1]["prompt"]
+    # o texto não aparece como imagem nas listas de referência do estúdio
+    assert all(x["name"] != "Tom" for x in studio.get("/api/layouts?project=zombie-party").json().get("references", []))

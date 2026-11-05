@@ -840,7 +840,7 @@ def _with_assets(prompt: str, assets: list, first_index: int, db=None, c: Conten
 def style_refs(db, project_id: int) -> list[LayoutAsset]:
     """Referências de estilo do projeto (logo, paleta, as antigas sem categoria e as marcadas "sempre"), para gerar artes."""
     rows = ast.project_assets(db, project_id)
-    return [a for a in rows if not ast.is_link(a) and (a.always or (a.category or "") in ("", "logo", "estilo"))]
+    return [a for a in rows if ast.is_image(a) and (a.always or (a.category or "") in ("", "logo", "estilo"))]
 
 
 def build_merge_prompt(project_name: str, c: ContentItem, feedback: str = "") -> str:
@@ -1222,7 +1222,7 @@ async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = ""
             rows = ast.for_piece(db, c, MAX_REFS_SENT)
             rows += [a for a in style_refs(db, c.project_id) if a not in rows]
         rows = [a for a in rows if a is not None and a.kind == "reference" and a.project_id == c.project_id
-                and not ast.is_link(a)][:MAX_REFS_SENT]
+                and ast.is_image(a)][:MAX_REFS_SENT]
         if not rows:
             raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
         refs = [(a.data, a.mime) for a in rows]

@@ -1330,3 +1330,5 @@ label.check input { width: auto; }
 .cf-mention button.on, .cf-mention button:hover { background: var(--ink); color: var(--on-ink); }
 .cf-mention img { width: 28px; height: 28px; object-fit: cover; border-radius: 6px; }
 .cf-mention small { margin-left: auto; opacity: .7; }
+.cf-mention .m-ico { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; background: var(--line); font-style: normal; font-size: 13px; }
+.as-txt { margin: 0; padding: 10px; font-size: 13px; color: var(--text-2); background: var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-word; }

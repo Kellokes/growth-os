@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import re
 from datetime import date, datetime, timedelta
@@ -28,6 +29,8 @@ from . import approvals as appr
 from . import content as cnt
 from . import growth
 from . import layouts as lay
+from . import media as med
+from . import assets as ast
 from . import missions
 from . import modelcfg
 from . import routines
@@ -1604,6 +1607,11 @@ class ContentIn(BaseModel):
     template_id: int | None = None  # modo template: qual template (0/vazio = o aprovado do projeto)
     ref_id: int | None = None  # modo reference: qual referência (0/vazio = todas)
     image_prompt: str | None = Field(default=None, max_length=4000)  # modo prompt
+    template_ids: dict[str, int] | None = None  # carrossel: {"capa": id, "pagina": id, "cta": id}; 0 = o padrão
+    slides: list[dict] | None = Field(default=None, max_length=12)  # carrossel: páginas do meio + CTA
+    media_source: str | None = Field(default=None, max_length=12)  # gerar_imagem | gerar_video | upload | link | nenhuma
+    media_url: str | None = Field(default=None, max_length=1000)  # link coletado na internet
+    asset_ids: list[int] | None = Field(default=None, max_length=12)  # ativos do projeto na arte; [] = automático
 
 
 class ContentDecideIn(BaseModel):
@@ -1685,6 +1693,49 @@ def _apply_content(c: ContentItem, body: ContentIn, db: DB | None = None) -> Non
         c.image_mode = mode
     if data.get("image_prompt") is not None:
         c.image_prompt = body.image_prompt.strip()
+    if "template_ids" in data:
+        clean: dict[str, int] = {}
+        for role, val in (body.template_ids or {}).items():
+            if role not in lay.ROLES or not val:
+                continue
+            a = db.get(LayoutAsset, val) if db is not None else None
+            if db is not None and (a is None or a.kind != "template" or a.project_id != c.project_id):
+                raise HTTPException(422, "template não encontrado neste projeto")
+            clean[role] = int(val)
+        if json.dumps(clean, sort_keys=True) != json.dumps(lay.piece_template_ids(c), sort_keys=True):
+            c.template_ids = json.dumps(clean)
+            c.template_id = clean.get("capa") if c.visual_format == "carrossel" else c.template_id
+    if data.get("slides") is not None and db is not None:
+        new = lay.clean_slides(body.slides)
+        old = lay.piece_slides(c)
+        strip = lambda xs: [(x["role"], x["title"], x["text"]) for x in xs]  # noqa: E731
+        if strip(new) != strip(old):
+            lay.set_slides(db, c, new)
+    if data.get("asset_ids") is not None:
+        ok = {a.id for a in ast.project_assets(db, c.project_id)} if db is not None else set()
+        ids = [i for i in dict.fromkeys(body.asset_ids) if i in ok][:ast.MAX_SENT]
+        if len(ids) != len(set(body.asset_ids)) and db is not None:
+            raise HTTPException(422, "ativo não encontrado neste projeto (ou mais de 5)")
+        c.asset_ids = json.dumps(ids) if ids else ""
+    if data.get("media_source") is not None:
+        src = body.media_source.strip().lower()
+        if src not in med.SOURCES:
+            raise HTTPException(422, "fonte da mídia inválida")
+        c.media_source = src
+    if data.get("media_url") is not None:
+        url = body.media_url.strip()
+        if url:
+            try:
+                med.check_url(url)
+            except ValueError as e:
+                raise HTTPException(422, str(e)) from e
+        if url != c.media_url:
+            c.media_url = url
+            if c.media_source == "link" and c.media_id and db is not None:  # link novo: a mídia baixada do antigo sai
+                old_m = db.get(LayoutAsset, c.media_id)
+                if old_m is not None:
+                    db.delete(old_m)
+                c.media_id = None
     for field, kind in (("template_id", "template"), ("ref_id", "reference")):
         if field in data:
             val = data[field] or None
@@ -1729,7 +1780,7 @@ def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Dep
     if c.status == "failed":
         c.status, c.note = "approved", ""
     db.commit()
-    if {"title", "body", "img_title", "img_text"} & set(body.model_dump(exclude_unset=True)):
+    if {"title", "body", "img_title", "img_text", "slides"} & set(body.model_dump(exclude_unset=True)):
         lay.rerender_piece(db, c)  # o texto da imagem mudou: refaz a imagem final, com o mesmo fundo
     audit(db, auth.user.username, "content_edit", f"#{c.id}: {sorted(body.model_dump(exclude_unset=True))}", client_ip(request))
     return _content_json(db, c)
@@ -1900,6 +1951,80 @@ def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: 
     return _content_json(db, c)
 
 
+class MediaUploadIn(BaseModel):
+    data: str = Field(max_length=35_000_000)  # vídeo de até 25 MB em base64
+
+
+class MediaLinkIn(BaseModel):
+    url: str = Field(max_length=1000)
+
+
+def _editable_visual(db: DB, cid: int) -> ContentItem:
+    c = _content_or_404(db, cid)
+    if c.status not in cnt.EDITABLE:
+        raise HTTPException(409, "só dá para mudar a mídia de uma peça em aprovação ou aprovada")
+    if not c.visual_format:
+        raise HTTPException(422, "esta peça não é visual: escolha story, carrossel ou reel antes")
+    return c
+
+
+async def _compose_after_media(db: DB, c: ContentItem) -> None:
+    """Mídia nova: monta a imagem no layout na hora (se o template tem janela, sem IA). Falha fica em image_error."""
+    if (c.image_mode or "template") != "template":
+        return
+    try:
+        await lay.generate_piece_image(db, c)
+    except ProviderError as e:
+        db.rollback()
+        c.image_error = str(e)[:500]
+        db.commit()
+
+
+@app.post("/api/content/{cid}/media/upload")
+async def content_upload_media(cid: int, body: MediaUploadIn, request: Request, auth: Auth = Depends(current_auth),
+                               db: DB = Depends(get_db)):
+    """Foto ou vídeo do owner que entra NO layout (diferente de "subir imagem final", que substitui tudo)."""
+    c = _editable_visual(db, cid)
+    raw = body.data.split(",", 1)[1] if body.data.startswith("data:") and "," in body.data else body.data
+    try:
+        data = base64.b64decode(raw, validate=True)
+        mime = med.check_media(data)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, str(e) if isinstance(e, ValueError) and str(e) else "arquivo inválido") from e
+    c.media_source = "upload"
+    med.set_media(db, c, data, mime, "upload")
+    audit(db, auth.user.username, "content_media_upload", f"#{c.id} {mime} {len(data) // 1024} KB", client_ip(request))
+    await _compose_after_media(db, c)
+    return _content_json(db, c)
+
+
+@app.post("/api/content/{cid}/media/link")
+async def content_media_link(cid: int, body: MediaLinkIn, request: Request, auth: Auth = Depends(current_auth),
+                             db: DB = Depends(get_db)):
+    """Baixa uma foto ou um vídeo de um link público (https, arquivo direto) e usa na peça."""
+    c = _editable_visual(db, cid)
+    try:
+        data, mime = await med.download(body.url)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    c.media_source, c.media_url = "link", body.url.strip()
+    med.set_media(db, c, data, mime, "link", c.media_url)
+    audit(db, auth.user.username, "content_media_link", f"#{c.id} {c.media_url}"[:500], client_ip(request))
+    await _compose_after_media(db, c)
+    return _content_json(db, c)
+
+
+@app.delete("/api/content/{cid}/media")
+def content_delete_media(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    c = _content_or_404(db, cid)
+    if c.media_id and (m := db.get(LayoutAsset, c.media_id)) is not None:
+        db.delete(m)
+    c.media_id, c.media_job = None, ""
+    db.commit()
+    audit(db, auth.user.username, "content_media_delete", f"#{c.id}", client_ip(request))
+    return _content_json(db, c)
+
+
 @app.post("/api/content/{cid}/video")
 async def content_generate_video(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     """Anima a peça (mesmo template, texto e fundo) num MP4. Não usa IA: só o serviço motion."""
@@ -1928,7 +2053,8 @@ def delete_content(cid: int, request: Request, auth: Auth = Depends(current_auth
     c = _content_or_404(db, cid)
     if c.status == "sent":
         raise HTTPException(409, "conteúdo enviado fica no histórico")
-    for aid in (c.image_id, c.bg_id, c.video_id):
+    lay.drop_slides(db, c)
+    for aid in (c.image_id, c.bg_id, c.video_id, c.media_id):
         if aid and (img := db.get(LayoutAsset, aid)) is not None:
             db.delete(img)
     db.delete(c)
@@ -2008,6 +2134,87 @@ def agent_outputs(project: str = "all", days: int = 14, agent: str = "",
     return {"outputs": out, "days": days}
 
 
+# ---------- ativos do projeto (logo, artefatos, cartas, vídeos do site) que entram nas artes ----------
+
+class AssetIn(BaseModel):
+    project: str = Field(max_length=48)
+    data: str = Field(default="", max_length=6_000_000)  # imagem (base64); ou
+    link: str = Field(default="", max_length=1000)  # link de vídeo (https)
+    name: str = Field(default="", max_length=80)
+    category: str = Field(default="outro", max_length=20)
+    note: str = Field(default="", max_length=500)  # o que é
+    use_when: str = Field(default="", max_length=500)  # quando usar
+    always: bool = False
+
+
+class AssetEditIn(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    category: str | None = Field(default=None, max_length=20)
+    note: str | None = Field(default=None, max_length=500)
+    use_when: str | None = Field(default=None, max_length=500)
+    always: bool | None = None
+    link: str | None = Field(default=None, max_length=1000)
+
+
+@app.get("/api/assets")
+def assets_list(project: str, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, project)
+    return {"project": p.slug, "categories": [{"key": k, "name": v} for k, v in ast.CATEGORIES.items()],
+            "assets": [ast.asset_json(a) for a in ast.project_assets(db, p.id)], "limit": ast.MAX_ASSETS}
+
+
+@app.post("/api/assets")
+def assets_add(body: AssetIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    p = _project_or_404(db, body.project)
+    if len(ast.project_assets(db, p.id)) >= ast.MAX_ASSETS:
+        raise HTTPException(422, f"no máximo {ast.MAX_ASSETS} ativos por projeto: apague algum")
+    if bool(body.data) == bool(body.link.strip()):
+        raise HTTPException(422, "mande uma imagem ou um link de vídeo")
+    if body.link.strip():
+        try:
+            url = med.check_url(body.link)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        data, mime = b"", ast.LINK_MIME
+    else:
+        url = ""
+        try:
+            data, mime = lay.decode_image(body.data)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+    a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, url=url, name=body.name.strip(),
+                    category=ast.norm_category(body.category, bool(url)), note=body.note.strip(),
+                    use_when=body.use_when.strip(), always=int(body.always and not url))
+    db.add(a)
+    db.commit()
+    audit(db, auth.user.username, "asset_add", f"{p.slug} #{a.id} {a.category} {a.name}"[:500], client_ip(request))
+    return ast.asset_json(a)
+
+
+@app.patch("/api/assets/{aid}")
+def assets_edit(aid: int, body: AssetEditIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    a = _asset_or_404(db, aid)
+    if a.kind != "reference":
+        raise HTTPException(409, "isto não é um ativo do projeto")
+    link = ast.is_link(a)
+    for field in ("name", "note", "use_when"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(a, field, val.strip())
+    if body.category is not None:
+        a.category = ast.norm_category(body.category, link)
+    if body.always is not None:
+        a.always = int(body.always and not link)
+    if body.link is not None and link:
+        try:
+            a.url = med.check_url(body.link)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+    db.commit()
+    audit(db, auth.user.username, "asset_edit", f"#{a.id} {a.name}"[:500], client_ip(request))
+    return ast.asset_json(a)
+
+
 # ---------- estúdio de layouts por projeto (referências + layouts gerados) ----------
 
 class BriefIn(BaseModel):
@@ -2024,6 +2231,8 @@ class ReferenceIn(BaseModel):
 class GenerateIn(BaseModel):
     project: str = Field(max_length=48)
     format: str = Field(max_length=12)
+    role: str = Field(default="", max_length=12)  # carrossel: capa | pagina | cta
+    name: str = Field(default="", max_length=80)
     count: int = Field(default=2, ge=1, le=lay.MAX_PER_REQUEST)
     feedback: str = Field(default="", max_length=1000)
 
@@ -2059,8 +2268,11 @@ def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Dep
         model, problem = "", str(e)
     return {
         "project": p.slug, "brief": p.style_brief or "",
-        "formats": [{"key": k, "name": v[0], "ratio": v[1], "use": v[2]} for k, v in lay.FORMATS.items()],
-        "references": [lay.asset_json(a) for a in rows if a.kind == "reference"],
+        "formats": [{"key": k, "name": v[0], "ratio": v[1], "use": v[2],
+                     "roles": [{"key": r, "name": lay.role_label(k, r)} for r in lay.roles_for(k)]}
+                    for k, v in lay.FORMATS.items()],
+        "positions": list(lay.TEXT_POSITIONS),
+        "references": [{**lay.asset_json(a), **ast.asset_json(a)} for a in rows if a.kind == "reference" and not ast.is_link(a)],
         "layouts": [lay.asset_json(a) for a in rows if a.kind == "layout"],
         "templates": [lay.asset_json(a) for a in rows if a.kind == "template"],
         "html_model": _html_model(db),
@@ -2109,7 +2321,7 @@ def layouts_add_reference(body: ReferenceIn, request: Request, auth: Auth = Depe
         data, mime = lay.decode_image(body.data)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, note=body.note.strip())
+    a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, note=body.note.strip(), category="estilo")
     db.add(a)
     db.commit()
     audit(db, auth.user.username, "layout_reference_add", f"{p.slug} #{a.id}", client_ip(request))
@@ -2127,10 +2339,10 @@ async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depe
         choice = lay.image_choice(db, log=True, project_id=p.id)
     except ProviderError as e:
         raise HTTPException(422, str(e)) from e
-    refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == p.id, LayoutAsset.kind == "reference")
-                 .order_by(LayoutAsset.id).all())
+    refs_rows = lay.style_refs(db, p.id)[:lay.MAX_REFS_SENT]  # logo, paleta e o que for "sempre": não as cartas e objetos
     refs = [(a.data, a.mime) for a in refs_rows]
-    prompt = lay.build_prompt(p.name, p.style_brief or "", body.format, body.feedback, [a.note for a in refs_rows])
+    role = lay.norm_role(body.format, body.role)
+    prompt = lay.build_prompt(p.name, p.style_brief or "", body.format, body.feedback, [a.note for a in refs_rows], role)
     ratio = lay.FORMATS[body.format][1]
     made, error = [], ""
     for _ in range(body.count):
@@ -2141,7 +2353,7 @@ async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depe
             error = str(e)
             break
         a = LayoutAsset(project_id=p.id, kind="layout", format=body.format, status="proposed", mime=mime, data=data,
-                        note=body.feedback.strip(), prompt=prompt, model=choice.model)
+                        note=body.feedback.strip(), prompt=prompt, model=choice.model, role=role, name=body.name.strip())
         db.add(a)
         db.commit()
         made.append(a)
@@ -2153,6 +2365,83 @@ async def layouts_generate(body: GenerateIn, request: Request, auth: Auth = Depe
 
 class TemplateIn(BaseModel):
     feedback: str = Field(default="", max_length=1000)
+    simple: bool = False  # True = texto padrão, sem IA e sem custo
+    position: str = Field(default="embaixo", max_length=10)  # embaixo | meio | topo (só no simples)
+
+
+class LayoutUploadIn(BaseModel):
+    project: str = Field(max_length=48)
+    format: str = Field(max_length=12)
+    role: str = Field(default="", max_length=12)
+    name: str = Field(default="", max_length=80)
+    data: str = Field(max_length=6_000_000)
+    text: str = Field(default="embaixo", max_length=10)  # embaixo | meio | topo | ia (a IA define onde vai o texto)
+
+
+class LayoutEditIn(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    role: str | None = Field(default=None, max_length=12)
+
+
+@app.post("/api/layouts/upload")
+async def layouts_upload(body: LayoutUploadIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Arte do owner (sem texto) vira layout aprovado e já sai como template: texto padrão (sem IA) ou com a IA de HTML."""
+    p = _project_or_404(db, body.project)
+    if body.format not in lay.FORMATS:
+        raise HTTPException(422, "formato inválido")
+    try:
+        data, mime = lay.decode_image(body.data)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    role = lay.norm_role(body.format, body.role)
+    a = LayoutAsset(project_id=p.id, kind="layout", format=body.format, status="approved", mime=mime, data=data,
+                    model="upload", role=role, name=body.name.strip())
+    db.add(a)
+    db.commit()
+    audit(db, auth.user.username, "layout_upload", f"{p.slug} {body.format}/{role or '-'} #{a.id}", client_ip(request))
+    try:
+        if body.text == "ia":
+            t = await lay.generate_template(db, a)
+        else:
+            t = await asyncio.to_thread(lay.make_simple_template, db, a, body.text if body.text in lay.TEXT_POSITIONS else "embaixo")
+            t.status = "approved"  # foi o owner que subiu e escolheu o texto padrão: já vale
+            lay.ensure_default(db, t.project_id, t.format, t.role)
+            db.commit()
+    except ProviderError as e:
+        return {"layout": lay.asset_json(a), "template": None, "error": str(e)}
+    return {"layout": lay.asset_json(a), "template": lay.asset_json(t), "error": ""}
+
+
+@app.patch("/api/layouts/{aid}")
+def layouts_edit(aid: int, body: LayoutEditIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Renomeia ou muda o papel (capa, páginas, CTA) de um layout ou template."""
+    a = _asset_or_404(db, aid)
+    if a.kind not in ("layout", "template"):
+        raise HTTPException(409, "só layouts e templates têm nome e papel")
+    if body.name is not None:
+        a.name = body.name.strip()
+    if body.role is not None and a.format == "carrossel":
+        new = lay.norm_role(a.format, body.role)
+        if new != (a.role or "") and a.is_default:
+            a.is_default = 0
+        a.role = new
+        if a.kind == "template":
+            lay.ensure_default(db, a.project_id, a.format, a.role)
+    db.commit()
+    audit(db, auth.user.username, "layout_edit", f"#{a.id} {a.name!r} {a.role}", client_ip(request))
+    return lay.asset_json(a)
+
+
+@app.post("/api/layouts/{aid}/default")
+def layouts_default(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """O template vira o padrão do formato (e papel): é o que as peças usam quando ninguém escolhe outro."""
+    a = _asset_or_404(db, aid)
+    if a.kind != "template" or a.status != "approved":
+        raise HTTPException(409, "aprove o template antes de torná-lo padrão")
+    lay.set_default(db, a)
+    db.commit()
+    audit(db, auth.user.username, "layout_default", f"#{a.id} {a.format}/{a.role or '-'}", client_ip(request))
+    return lay.asset_json(a)
 
 
 @app.post("/api/layouts/{aid}/template")
@@ -2163,7 +2452,11 @@ async def layouts_make_template(aid: int, body: TemplateIn, request: Request, au
     if a.kind != "layout" or a.status != "approved":
         raise HTTPException(409, "aprove o layout antes de convertê-lo em HTML")
     try:
-        t = await lay.generate_template(db, a, body.feedback)
+        if body.simple:
+            t = await asyncio.to_thread(lay.make_simple_template, db, a,
+                                        body.position if body.position in lay.TEXT_POSITIONS else "embaixo")
+        else:
+            t = await lay.generate_template(db, a, body.feedback)
     except ProviderError as e:
         raise HTTPException(422, str(e)) from e
     audit(db, auth.user.username, "layout_template", f"#{a.id} -> #{t.id} {a.format} {t.model}", client_ip(request))
@@ -2173,20 +2466,19 @@ async def layouts_make_template(aid: int, body: TemplateIn, request: Request, au
 @app.post("/api/layouts/{aid}/decide")
 def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth = Depends(current_auth),
                    db: DB = Depends(get_db)):
-    """Aprovar vira o layout oficial do projeto naquele formato (o anterior é arquivado); rejeitar descarta a proposta."""
+    """Aprovar deixa o layout/template disponível (vários por formato); o primeiro template aprovado vira o padrão."""
     a = _asset_or_404(db, aid)
     if a.kind not in ("layout", "template") or a.status not in ("proposed", "rejected", "approved"):
         raise HTTPException(409, "este layout não está em votação")
     if body.approve:
-        for old in db.query(LayoutAsset).filter(LayoutAsset.project_id == a.project_id, LayoutAsset.kind == a.kind,
-                                                LayoutAsset.format == a.format, LayoutAsset.status == "approved",
-                                                LayoutAsset.id != a.id).all():
-            old.status = "archived"
         a.status = "approved"
+        if a.kind == "template":
+            lay.ensure_default(db, a.project_id, a.format, a.role or "")
     else:
-        if a.status == "approved":
-            raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo")
+        if a.status == "approved" and a.kind == "template" and a.is_default:
+            raise HTTPException(409, "este é o template padrão: torne outro padrão antes de rejeitá-lo")
         a.status = "rejected"
+        a.is_default = 0
         a.note = body.note.strip() or a.note
     db.commit()
     audit(db, auth.user.username, "layout_" + ("approve" if body.approve else "reject"), f"#{a.id} {a.format}", client_ip(request))
@@ -2196,14 +2488,18 @@ def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth 
 @app.delete("/api/layouts/assets/{aid}")
 def layouts_delete(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     a = _asset_or_404(db, aid)
-    if a.kind in ("piece", "background", "video"):
+    if a.kind in ("piece", "background", "video", "media"):
         raise HTTPException(409, "a imagem de uma peça se troca na Central de Conteúdo")
-    if a.kind in ("layout", "template") and a.status == "approved":
-        raise HTTPException(409, "este é o layout oficial: aprove outro para substituí-lo antes de apagar")
+    if a.kind == "template" and a.is_default and len(lay.role_templates(db, a.project_id, a.format, a.role or "")) > 1:
+        raise HTTPException(409, "este é o template padrão: torne outro padrão antes de apagar")
+    fmt, role, pid = a.format, a.role or "", a.project_id
     if a.kind == "template":
         lay.delete_template(db, a)
     else:
         db.delete(a)
     db.commit()
+    if a.kind == "template":
+        lay.ensure_default(db, pid, fmt, role)
+        db.commit()
     audit(db, auth.user.username, "layout_delete", f"#{aid}", client_ip(request))
     return {"ok": True}

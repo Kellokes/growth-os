@@ -7,7 +7,7 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 
 const PORT = 3000;
-const MAX_BODY = 40_000_000;
+const MAX_BODY = 60_000_000; // vídeo de fonte de até 25 MB vira ~34 MB em base64
 const JOB_TIMEOUT_MS = 200_000;
 const ROOT = path.resolve("node_modules");
 const CLI = path.join(ROOT, "hyperframes", "dist", "cli.js");

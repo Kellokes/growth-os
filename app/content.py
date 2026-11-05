@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session as DB
 
 from .config import get_settings
+from .assets import resolve_names
 from .db import ContentItem, Task, utcnow
 
 MAX_CONTENT_PER_TASK = 10
@@ -119,12 +120,34 @@ ou uma lista), e ela vai para a Central de Conteúdo esperar a aprovação do ow
  "midia": "descrição da imagem/vídeo (o que deve aparecer nela)", "formato": "story|carrossel|reel (só para posts visuais)",
  "modo_imagem": "template (padrão) | reference (só as referências do projeto) | prompt (só o prompt abaixo)",
  "prompt_imagem": "prompt completo da imagem, em inglês, só se o modo for prompt ou reference",
- "titulo_imagem": "título curto (até 6 palavras) escrito NA imagem", "texto_imagem": "frase de apoio curta escrita NA imagem", "quando": "AAAA-MM-DD HH:MM (sugestão, hora de Brasília)"}}
+ "titulo_imagem": "título curto (até 6 palavras) escrito NA imagem", "texto_imagem": "frase de apoio curta escrita NA imagem",
+ "paginas": [{{"titulo": "...", "texto": "..."}}], "cta": {{"titulo": "chamada final", "texto": "..."}},
+ "ativos": ["nome exato de um ativo do projeto (logo, carta, objeto) que deve aparecer na arte"],
+ "fonte_midia": "gerar_imagem (padrão) | link | nenhuma", "link_midia": "https://... (arquivo direto de foto ou vídeo, se fonte_midia for link)",
+ "quando": "AAAA-MM-DD HH:MM (sugestão, hora de Brasília)"}}
 ```
 Canais: {channels}. Só "canal" e "texto" são obrigatórios.
 Posts visuais ganham a imagem pronta do sistema antes de você aprovar: o fundo é gerado a partir de "midia" (descreva só a
 cena, sem texto) e o texto da imagem ("titulo_imagem", "texto_imagem") entra no template fixo do projeto. Se a peça pedir uma imagem livre (sem o template), use "modo_imagem": "prompt" e
-descreva a imagem inteira em "prompt_imagem"; o owner pode trocar o modo e editar o prompt antes de aprovar. Não gere nem peça arquivos."""
+descreva a imagem inteira em "prompt_imagem"; o owner pode trocar o modo e editar o prompt antes de aprovar.
+Carrossel roda em três layouts: a capa ("titulo_imagem", "texto_imagem"), as páginas do meio ("paginas", até 8, texto curto em
+cada) e o CTA final ("cta"). Se você achou uma foto ou um vídeo na internet que deve entrar no post, use "fonte_midia": "link"
+e o endereço direto do arquivo em "link_midia". Não gere nem peça arquivos."""
+
+
+def _media_link(it: dict) -> str:
+    url = str(it.get("link_midia") or "").strip()[:1000]
+    return url if url.startswith("https://") else ""
+
+
+def _media_source(it: dict) -> str:
+    """Agente só escolhe fontes que não custam caro nem dependem do owner: gerar_imagem, link ou nenhuma."""
+    from .media import norm_source
+
+    src = norm_source(it.get("fonte_midia"))
+    if src == "link" and not _media_link(it):
+        return "gerar_imagem"
+    return src if src in ("gerar_imagem", "link", "nenhuma") else "gerar_imagem"
 
 
 def _items(raw: str) -> list[dict]:
@@ -166,6 +189,10 @@ def ingest_blocks(db: DB, task: Task, text: str) -> list[ContentItem]:
                 img_text=str(it.get("texto_imagem") or "").strip()[:400],
                 image_mode=norm_mode(it.get("modo_imagem")),
                 image_prompt=str(it.get("prompt_imagem") or "").strip()[:4000],
+                slides=block_slides(it),
+                media_source=_media_source(it),
+                media_url=_media_link(it),
+                asset_ids=resolve_names(db, task.project_id, it.get("ativos")),
                 visual_format=norm_visual(it.get("formato") or it.get("format"), channel),
                 scheduled_at=parse_when(it.get("quando")),
                 status="pending",
@@ -189,13 +216,60 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         "visual_format": c.visual_format, "needs_image": needs_image(c), "image_error": c.image_error,
         "image_url": f"/api/layouts/assets/{c.image_id}" if c.image_id else "",
         "video_url": f"/api/layouts/assets/{c.video_id}" if c.video_id else "",
-        "can_video": bool(c.bg_id and c.visual_format),
+        "can_video": bool(c.visual_format and c.image_id and (c.image_mode or "template") == "template"),
+        "template_ids": _json_obj(c.template_ids),
+        "slides": slides_json(c),
+        "media_source": c.media_source or "gerar_imagem", "media_url": c.media_url,
+        "media_file_url": f"/api/layouts/assets/{c.media_id}" if c.media_id else "",
+        "media_generating": bool(c.media_job),
+        "asset_ids": _json_list(c.asset_ids),
         "status": c.status, "stage": stage(c, now), "link": c.link, "note": c.note,
         "scheduled_at": c.scheduled_at.isoformat(timespec="minutes") if c.scheduled_at else None,
         "sent_at": c.sent_at.isoformat() if c.sent_at else None,
         "created_at": c.created_at.isoformat(),
         "decided_at": c.decided_at.isoformat() if c.decided_at else None,
     }
+
+
+def _json_list(raw: str) -> list:
+    try:
+        v = json.loads(raw or "")
+    except ValueError:
+        return []
+    return v if isinstance(v, list) else []
+
+
+def _json_obj(raw: str) -> dict:
+    try:
+        v = json.loads(raw or "")
+    except ValueError:
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+def slides_json(c: ContentItem) -> list[dict]:
+    """Páginas e CTA do carrossel, com a imagem de cada um (se já renderizada)."""
+    from .layouts import piece_slides
+
+    return [{"role": s["role"], "title": s["title"], "text": s["text"],
+             "image_url": f"/api/layouts/assets/{s['image_id']}" if s.get("image_id") else ""} for s in piece_slides(c)]
+
+
+def block_slides(it: dict) -> str:
+    """Páginas e CTA que o agente mandou no bloco (``paginas`` e ``cta``) -> JSON guardado na peça."""
+    pages = it.get("paginas") or it.get("páginas") or []
+    out = []
+    for p in pages if isinstance(pages, list) else []:
+        if isinstance(p, dict):
+            out.append({"role": "pagina", "title": str(p.get("titulo") or "")[:120], "text": str(p.get("texto") or "")[:300]})
+        elif isinstance(p, str) and p.strip():
+            out.append({"role": "pagina", "title": "", "text": p.strip()[:300]})
+    cta = it.get("cta")
+    if isinstance(cta, dict):
+        out.append({"role": "cta", "title": str(cta.get("titulo") or "")[:120], "text": str(cta.get("texto") or "")[:300]})
+    elif isinstance(cta, str) and cta.strip():
+        out.append({"role": "cta", "title": cta.strip()[:120], "text": ""})
+    return json.dumps(out, ensure_ascii=False) if out else ""
 
 
 def channels_json() -> list[dict]:

@@ -1,7 +1,7 @@
 // Central de conteúdo: peças (posts, e-mails...), agenda e saídas dos agentes, por projeto (ou todos).
 (() => {
   const { $, esc, api, icon, initProjects } = window.GOS;
-  const TABS = ["pecas", "agenda", "saidas"];
+  const TABS = ["pecas", "agenda", "saidas", "ativos"];
   const STAGES = [
     ["pending", "Aguardando você", "aprovar ou rejeitar"],
     ["scheduled", "Agendadas", "aprovadas, com data"],
@@ -17,7 +17,7 @@
   let items = []; let stageF = "pending"; let groupF = "";
   let aDays = 7; let oDays = 14; let outAgent = ""; let outputs = [];
   let current = null; let sw = null;
-  const loaded = { agenda: false, saidas: false };
+  const loaded = { agenda: false, saidas: false, ativos: false };
 
   const pinfo = (slug) => projects.find((p) => p.slug === slug) || { name: slug, icon: "◆" };
   const aname = (slug) => slug ? (agents[slug] ? `${agents[slug].icon} ${agents[slug].name}` : slug) : "✋ você";
@@ -49,6 +49,7 @@
     if (location.hash.slice(1) !== name) history.replaceState(null, "", `#${name}`);
     if (name === "agenda" && !loaded.agenda) loadAgenda();
     if (name === "saidas" && !loaded.saidas) loadOutputs();
+    if (name === "ativos" && !loaded.ativos) loadAssets();
   }
   const activeTab = () => { const h = location.hash.slice(1); return TABS.includes(h) ? h : TABS[0]; };
   window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
@@ -149,7 +150,7 @@
     labelsFor(it?.channel || "instagram");
     $("#cf-head").value = it?.title || ""; $("#cf-to").value = it?.recipient || ""; $("#cf-purpose").value = it?.purpose || "";
     $("#cf-body").value = it?.body || ""; $("#cf-media").value = it?.media || ""; $("#cf-format").value = it?.visual_format;
-    $("#cf-mode").value = it?.image_mode || "template"; $("#cf-iprompt").value = it?.image_prompt || ""; delete $("#cf-tpl").dataset.sel; delete $("#cf-ref").dataset.sel;
+    $("#cf-mode").value = it?.image_mode || "template"; $("#cf-iprompt").value = it?.image_prompt || ""; initVisual(it);
     $("#cf-when").value = it?.scheduled_at || "";
     $("#content-form").querySelectorAll("input, textarea, select").forEach((el) => { if (el.id !== "cf-link") el.disabled = !!ro; });
     $("#cf-tags").innerHTML = isNew ? "" : `<span class="badge ${STAGE_BADGE[it.stage] || ""}">${esc(STAGE_LABEL[it.stage] || it.stage)}</span>
@@ -165,7 +166,7 @@
     $("#content-dialog").showModal();
   }
 
-  // templates e referências do projeto da peça, para o seletor "Como gerar a imagem"
+  // ---------- visual da peça: layout (templates do projeto), mídia que entra nele e texto ----------
   const layoutCache = {};
   async function projectLayouts(slug) {
     if (!slug) return { templates: [], references: [] };
@@ -173,62 +174,158 @@
     return layoutCache[slug];
   }
   const MODE_HINT = {
-    template: "Gera só o fundo (uma imagem do OpenRouter) e monta o texto no template do projeto: todas as peças saem iguais.",
-    reference: "Sem template: o modelo cria a imagem inteira a partir da referência escolhida, sem texto escrito nela.",
-    prompt: "Sem template e sem referência: a imagem sai só do prompt abaixo (o agente propõe um; você pode editar).",
+    template: "A foto ou o vídeo entram no layout escolhido e o texto vai por cima: todas as peças saem com o mesmo desenho.",
+    reference: "Sem layout: o modelo cria a imagem inteira a partir da referência escolhida, sem texto escrito nela (1 imagem paga).",
+    prompt: "Sem layout e sem referência: a imagem sai só do prompt abaixo (o agente propõe um; você pode editar). 1 imagem paga.",
   };
+  const SOURCES = [
+    ["gerar_imagem", "Gerar imagem (IA)", "A IA de imagem cria o cenário dentro da arte do layout. Cobra 1 imagem do OpenRouter."],
+    ["gerar_video", "Gerar vídeo (IA)", "A IA de vídeo (Modelos › Vídeos) gera o clipe; leva alguns minutos e a imagem aparece sozinha quando ficar pronto. Cobra 1 vídeo do OpenRouter."],
+    ["upload", "Subir arquivo", "Foto (PNG, JPEG, WebP, até 8 MB) ou vídeo (MP4/MOV, até 25 MB) que você já tem. Se o layout não tiver espaço para foto, a IA encaixa a foto na arte (1 imagem)."],
+    ["link", "Link da internet", "Endereço direto do arquivo (termina em .jpg, .png, .mp4…). O sistema baixa uma vez e guarda. Página de post do Instagram não serve: copie o endereço da mídia."],
+    ["nenhuma", "Só o layout", "Sem foto nem vídeo: a arte do layout com o texto. Sem custo de IA."],
+  ];
+  const ROLES = [["capa", "Capa"], ["pagina", "Páginas"], ["cta", "CTA final"]];
+  let src = "gerar_imagem"; let pages = []; let tplSel = {};
+
+  function initVisual(it) {
+    src = it?.media_source || "gerar_imagem";
+    const slides = it?.slides || [];
+    pages = slides.filter((s) => s.role === "pagina").map((s) => ({ title: s.title, text: s.text }));
+    const cta = slides.find((s) => s.role === "cta");
+    $("#cf-cta-title").value = cta ? cta.title : ""; $("#cf-cta-text").value = cta ? cta.text : "";
+    $("#cf-imgtitle").value = it?.img_title || ""; $("#cf-imgtext-in").value = it?.img_text || "";
+    $("#cf-url").value = it?.media_url || "";
+    assetSel = [...(it?.asset_ids || [])];
+    tplSel = it?.visual_format === "carrossel" ? { ...(it?.template_ids || {}) } : { "": it?.template_id || 0 };
+    delete $("#cf-ref").dataset.sel;
+  }
+
+  function drawPages() {
+    $("#cf-pages").innerHTML = pages.map((p, i) => `<div class="cf-page" data-page="${i}">
+      <label>Página ${i + 2} · título<input data-pf="title" maxlength="120" value="${esc(p.title)}"></label>
+      <label>Texto<input data-pf="text" maxlength="300" value="${esc(p.text)}"></label>
+      <button class="btn small ghost" type="button" data-pdel="${i}" aria-label="Tirar página">✕</button></div>`).join("")
+      || `<small class="muted">Sem páginas definidas: cada parágrafo do texto vira uma página.</small>`;
+    $("#cf-add-page").hidden = pages.length >= 8;
+  }
+  $("#cf-pages").addEventListener("input", (ev) => {
+    const row = ev.target.closest("[data-page]"); if (!row || !ev.target.dataset.pf) return;
+    pages[Number(row.dataset.page)][ev.target.dataset.pf] = ev.target.value;
+  });
+  $("#cf-pages").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-pdel]"); if (!b) return;
+    pages.splice(Number(b.dataset.pdel), 1); drawPages();
+  });
+  $("#cf-add-page").onclick = () => { pages.push({ title: "", text: "" }); drawPages(); };
+
   async function renderMode() {
     const fmt = $("#cf-format").value; const mode = $("#cf-mode").value;
-    $("#cf-modebox").hidden = !fmt;
-    $("#cf-imgtext").hidden = !fmt || mode !== "template";
+    $("#cf-visual").hidden = !fmt;
     if (!fmt) return;
+    const tplMode = mode === "template";
+    const carousel = fmt === "carrossel";
     const slug = current ? current.project : $("#cf-project").value;
     const lay = await projectLayouts(slug);
-    const tpls = (lay.templates || []).filter((t) => t.format === fmt && ["approved", "proposed"].includes(t.status));
-    const tsel = $("#cf-tpl").dataset.sel ?? String(current?.template_id || "");
-    $("#cf-tpl").innerHTML = `<option value="">Template aprovado do projeto</option>` + tpls.map((t) => `<option value="${t.id}">#${t.id} · ${t.status === "approved" ? "aprovado" : "proposto"}</option>`).join("");
-    $("#cf-tpl").value = tpls.some((t) => String(t.id) === tsel) ? tsel : "";
+    const ok = (lay.templates || []).filter((t) => t.format === fmt && ["approved", "proposed"].includes(t.status));
+    const roles = carousel ? ROLES : [["", "Template"]];
+    $("#cf-tpls").innerHTML = roles.map(([r, label]) => {
+      const rows = ok.filter((t) => !carousel || (t.role || "capa") === r);
+      const def = rows.find((t) => t.is_default) || rows.find((t) => t.status === "approved");
+      const sel = String(tplSel[r] || "");
+      const fallback = carousel && r !== "capa" && !rows.length ? "o da capa" : def ? (def.name || `#${def.id}`) : "nenhum ainda";
+      return `<label>${esc(label)}<select data-trole="${esc(r)}" ${ro() ? "disabled" : ""}><option value="">Padrão: ${esc(fallback)}</option>${rows.map((t) => `<option value="${t.id}" ${String(t.id) === sel ? "selected" : ""}>${esc(t.name || `Template #${t.id}`)}${t.status === "approved" ? "" : " · proposta"}</option>`).join("")}</select></label>`;
+    }).join("") + (ok.length ? "" : `<small class="muted">Este projeto ainda não tem template de ${esc(fmt)}: crie em <a href="/layouts">Layouts</a>.</small>`);
+    $("#cf-tpls").hidden = !tplMode;
     const rsel = $("#cf-ref").dataset.sel ?? String(current?.ref_id || "");
     const refs = lay.references || [];
     $("#cf-ref").innerHTML = `<option value="">Todas as referências do projeto</option>` + refs.map((r) => `<option value="${r.id}">#${r.id}${r.note ? " · " + esc(r.note) : ""}</option>`).join("");
     $("#cf-ref").value = refs.some((r) => String(r.id) === rsel) ? rsel : "";
-    $("#cf-tpl-wrap").hidden = mode !== "template";
     $("#cf-ref-wrap").hidden = mode !== "reference";
-    $("#cf-iprompt-wrap").hidden = mode === "template";
+    $("#cf-iprompt-wrap").hidden = tplMode;
     $("#cf-modehint").textContent = MODE_HINT[mode];
+    $("#cf-src-step").hidden = !tplMode; $("#cf-imgtext").hidden = !tplMode;
+    $("#cf-src").innerHTML = SOURCES.map(([k, label]) => `<button type="button" data-src="${k}" class="${k === src ? "on" : ""}" aria-pressed="${k === src}" ${ro() ? "disabled" : ""}>${esc(label)}</button>`).join("");
+    $("#cf-srchint").textContent = (SOURCES.find((x) => x[0] === src) || SOURCES[0])[2];
+    $("#cf-url-wrap").hidden = src !== "link";
+    $("#cf-carousel").hidden = !carousel;
+    $("#cf-imgtitle-label").textContent = carousel ? "Capa · título" : "Título na imagem";
+    if (carousel) drawPages();
+    renderPieceAssets();
   }
-  const modeBody = () => ({ image_mode: $("#cf-mode").value, template_id: Number($("#cf-tpl").value) || 0, ref_id: Number($("#cf-ref").value) || 0, image_prompt: $("#cf-iprompt").value });
-  async function saveMode() {  // grava a escolha de modo antes de gerar, senão o botão usaria a escolha antiga
-    if (!current) return;
-    const m = modeBody();
-    if (m.image_mode === (current.image_mode || "template") && m.template_id === (current.template_id || 0) && m.ref_id === (current.ref_id || 0) && m.image_prompt === (current.image_prompt || "")) return;
-    current = await api(`/api/content/${current.id}`, { method: "PATCH", body: JSON.stringify(m) });
-  }
-  ["cf-mode", "cf-tpl", "cf-ref"].forEach((id) => $("#" + id).addEventListener("change", () => { $("#" + id).dataset.sel = $("#" + id).value; renderMode(); }));
-  $("#cf-project").addEventListener("change", () => { $("#cf-tpl").dataset.sel = ""; $("#cf-ref").dataset.sel = ""; renderMode(); });
+  const ro = () => !!current && ["sent", "rejected"].includes(current.status);
+  $("#cf-tpls").addEventListener("change", (ev) => { const s = ev.target.closest("[data-trole]"); if (s) tplSel[s.dataset.trole] = Number(s.value) || 0; });
+  $("#cf-src").addEventListener("click", (ev) => { const b = ev.target.closest("[data-src]"); if (!b) return; src = b.dataset.src; renderMode(); renderImage(false); });
 
-  function renderImage() {
-    const it = current; const box = $("#cf-image");
-    renderMode();
-    const can = it && ["pending", "approved", "failed"].includes(it.status) && $("#cf-format").value;
-    box.innerHTML = `${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça">` : ""}
-      ${it?.image_error ? `<div class="alert">${esc(it.image_error)}</div>` : ""}
-      ${can && it.visual_format ? `<div class="row"><button class="btn small" type="button" data-img="gen">${it.image_url ? "Gerar outra versão" : "Gerar imagem"}</button>
-        <button class="btn small ghost" type="button" data-img="up">Subir minha imagem</button></div>
-        <small class="muted">Cobra uma imagem do OpenRouter por geração.</small>` : ""}
-      ${it?.video_url ? `<video class="cimg big" src="${esc(it.video_url)}" controls playsinline preload="metadata"></video>` : ""}
-      ${can && it.can_video ? `<div class="row"><button class="btn small" type="button" data-vid="gen">${it.video_url ? "Gerar o vídeo de novo" : "Gerar vídeo (6 s)"}</button>
-        ${it.video_url ? '<button class="btn small ghost" type="button" data-vid="del">Apagar vídeo</button>' : ""}</div>
-        <small class="muted">Anima o mesmo template com o texto e o fundo desta peça. Sem custo de IA; leva alguns segundos. Se você mudar o texto da imagem, o vídeo sai e precisa ser gerado de novo.</small>` : ""}`;
+  const slidesBody = () => [...pages.filter((p) => p.title.trim() || p.text.trim()).map((p) => ({ role: "pagina", title: p.title, text: p.text })),
+    { role: "cta", title: $("#cf-cta-title").value, text: $("#cf-cta-text").value }];
+  function modeBody() {
+    const fmt = $("#cf-format").value;
+    const b = { image_mode: $("#cf-mode").value, ref_id: Number($("#cf-ref").value) || 0, image_prompt: $("#cf-iprompt").value,
+      media_source: src, media_url: $("#cf-url").value.trim(), asset_ids: assetSel };
+    if (fmt === "carrossel") {
+      b.template_ids = Object.fromEntries(ROLES.map(([r]) => [r, tplSel[r] || 0]).filter(([, v]) => v));
+      if (!pages.length && !current?.slides?.some((s) => s.role === "pagina") && !$("#cf-cta-title").value && !$("#cf-cta-text").value) { /* nada a salvar */ } else b.slides = slidesBody();
+    } else b.template_id = tplSel[""] || 0;
+    return b;
   }
-  $("#cf-format").onchange = () => { renderImage(); };
+  const same = (a, b) => JSON.stringify(a ?? "") === JSON.stringify(b ?? "");
+  async function saveMode() {  // grava as escolhas antes de gerar, senão o botão usaria as antigas
+    if (!current || ro()) return;
+    const body = { ...modeBody(), img_title: $("#cf-imgtitle").value, img_text: $("#cf-imgtext-in").value };
+    const diff = Object.fromEntries(Object.entries(body).filter(([k, v]) => {
+      if (k === "slides") return !same(v.map((x) => [x.role, x.title, x.text]), (current.slides || []).map((x) => [x.role, x.title, x.text]));
+      if (k === "template_ids") return !same(v, current.template_ids || {});
+      if (k === "asset_ids") return !same(v, current.asset_ids || []);
+      return (v || "") !== (current[k] || "");
+    }));
+    if (Object.keys(diff).length) current = await api(`/api/content/${current.id}`, { method: "PATCH", body: JSON.stringify(diff) });
+  }
+  $("#cf-mode").addEventListener("change", () => { renderMode(); renderImage(false); });
+  $("#cf-ref").addEventListener("change", () => { $("#cf-ref").dataset.sel = $("#cf-ref").value; });
+  $("#cf-project").addEventListener("change", () => { tplSel = {}; $("#cf-ref").dataset.sel = ""; renderMode(); });
+
+  const GEN_LABEL = { gerar_imagem: "Gerar imagem", gerar_video: "Gerar vídeo com IA", upload: "Escolher foto ou vídeo", link: "Baixar o link e montar", nenhuma: "Montar no layout" };
+  function renderImage(withMode = true) {
+    const it = current; const box = $("#cf-image");
+    if (withMode) renderMode();
+    const can = it && ["pending", "approved", "failed"].includes(it.status) && $("#cf-format").value && it.visual_format;
+    const tplMode = $("#cf-mode").value === "template";
+    const action = tplMode ? src : "gerar_imagem";
+    const slides = (it?.slides || []).filter((s) => s.image_url);
+    const again = it?.image_url && action !== "upload" ? "Refazer" : GEN_LABEL[action];
+    box.innerHTML = `${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça (capa)">` : ""}
+      ${slides.length && it.visual_format === "carrossel" ? `<div class="cf-strip">${slides.map((s, i) => `<figure><img src="${esc(s.image_url)}" alt="${s.role === "cta" ? "CTA final" : `página ${i + 2}`}" loading="lazy"><figcaption>${s.role === "cta" ? "CTA final" : `Página ${i + 2}`}</figcaption></figure>`).join("")}</div>` : ""}
+      ${it?.media_file_url && tplMode && ["upload", "link", "gerar_video"].includes(src) ? `<small class="muted">Mídia da peça: <a href="${esc(it.media_file_url)}" target="_blank" rel="noopener">abrir</a> · <button class="btn small ghost" type="button" data-img="rmmedia">tirar</button></small>` : ""}
+      ${it?.media_generating ? `<div class="secret-note">Gerando o vídeo com a IA… a imagem aparece aqui sozinha quando ficar pronto (alguns minutos).</div>` : ""}
+      ${it?.image_error ? `<div class="alert">${esc(it.image_error)}</div>` : ""}
+      ${!it && $("#cf-format").value ? `<small class="muted">Salve a peça para gerar ou subir a mídia.</small>` : ""}
+      ${can ? `<div class="row"><button class="btn small primary" type="button" data-img="gen" ${it.media_generating ? "disabled" : ""}>${esc(again)}</button>
+        ${action === "upload" && it.media_file_url ? '<button class="btn small" type="button" data-img="compose">Montar de novo</button>' : ""}
+        <button class="btn small ghost" type="button" data-img="up" title="Substitui tudo: a imagem final vai como está">Subir imagem final pronta</button></div>` : ""}
+      ${it?.video_url ? `<video class="cimg big" src="${esc(it.video_url)}" controls playsinline preload="metadata"></video>` : ""}
+      ${can && it.can_video ? `<div class="row"><button class="btn small" type="button" data-vid="gen">${it.video_url ? "Montar o vídeo de novo" : "Montar vídeo animado"}</button>
+        ${it.video_url ? '<button class="btn small ghost" type="button" data-vid="del">Apagar vídeo</button>' : ""}</div>
+        <small class="muted">Anima o layout com o texto e a mídia desta peça (com vídeo de fonte, ele roda dentro do layout). Sem custo de IA.</small>` : ""}`;
+  }
+  $("#cf-format").onchange = () => { tplSel = {}; renderImage(); };
+  const refresh = async () => { await loadPieces(); renderImage(); renderActions(); };
   $("#cf-image").addEventListener("click", async (ev) => {
     const b = ev.target.closest("[data-img]"); if (!b || !current) return;
-    if (b.dataset.img === "up") return $("#cf-image-file").click();
-    b.disabled = true; b.textContent = "Gerando… (até 1 min)";
-    try { await saveMode(); current = await api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) }); }
-    catch (e) { alert(e.message); }
-    await loadPieces(); renderImage(); renderActions();
+    const what = b.dataset.img;
+    if (what === "up") return $("#cf-image-file").click();
+    try {
+      if (what === "rmmedia") { current = await api(`/api/content/${current.id}/media`, { method: "DELETE" }); return refresh(); }
+      await saveMode();
+      const tplMode = $("#cf-mode").value === "template";
+      if (what === "gen" && tplMode && src === "upload") return $("#cf-media-file").click();
+      b.disabled = true; b.textContent = src === "gerar_video" && tplMode ? "Pedindo o vídeo…" : "Montando… (até 1 min)";
+      if (what === "gen" && tplMode && src === "link") {
+        const url = $("#cf-url").value.trim(); if (!url) { alert("Cole o link do arquivo."); return refresh(); }
+        current = await api(`/api/content/${current.id}/media/link`, { method: "POST", body: JSON.stringify({ url }) });
+      } else current = await api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) });
+    } catch (e) { alert(e.message); }
+    refresh();
   });
   $("#cf-image").addEventListener("click", async (ev) => {
     const b = ev.target.closest("[data-vid]"); if (!b || !current) return;
@@ -236,15 +333,134 @@
     b.disabled = true; if (b.dataset.vid === "gen") b.textContent = "Renderizando… (até 2 min)";
     try { current = await api(`/api/content/${current.id}/video`, { method: b.dataset.vid === "del" ? "DELETE" : "POST" }); }
     catch (e) { alert(e.message); }
-    await loadPieces(); renderImage(); renderActions();
+    refresh();
   });
+  const readFile = (f) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
   $("#cf-image-file").onchange = async (ev) => {
     const f = ev.target.files[0]; ev.target.value = ""; if (!f || !current) return;
-    const data = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
-    try { current = await api(`/api/content/${current.id}/image/upload`, { method: "POST", body: JSON.stringify({ data }) }); }
+    try { current = await api(`/api/content/${current.id}/image/upload`, { method: "POST", body: JSON.stringify({ data: await readFile(f) }) }); }
     catch (e) { alert(e.message); }
-    await loadPieces(); renderImage();
+    refresh();
   };
+  $("#cf-media-file").onchange = async (ev) => {
+    const f = ev.target.files[0]; ev.target.value = ""; if (!f || !current) return;
+    const box = $("#cf-image"); box.insertAdjacentHTML("afterbegin", `<small class="muted">Enviando ${esc(f.name)} e montando no layout…</small>`);
+    try { current = await api(`/api/content/${current.id}/media/upload`, { method: "POST", body: JSON.stringify({ data: await readFile(f) }) }); }
+    catch (e) { alert(e.message); }
+    refresh();
+  };
+
+  // ---------- ativos do projeto (biblioteca usada nas artes) ----------
+  let assets = []; let assetCats = []; let asKind = "img"; let asFilter = ""; let asEdit = 0;
+  const assetCache = {};
+  async function projectAssets(slug, fresh = false) {
+    if (!slug || slug === "all") return [];
+    if (fresh || !assetCache[slug]) {
+      try { const r = await api(`/api/assets?project=${encodeURIComponent(slug)}`); assetCache[slug] = r.assets; assetCats = r.categories; }
+      catch (e) { return []; }
+    }
+    return assetCache[slug];
+  }
+  async function loadAssets() {
+    const single = project && project !== "all";
+    $("#as-pick").hidden = single; $("#as-body").hidden = !single;
+    if (!single) return;
+    assets = await projectAssets(project, true);
+    loaded.ativos = true;
+    renderAssets();
+  }
+  function renderAssets() {
+    $("#as-cat").innerHTML = assetCats.filter((c) => c.key !== "video").map((c) => `<option value="${esc(c.key)}">${esc(c.name)}</option>`).join("");
+    document.querySelectorAll("#as-kind [data-ak]").forEach((b) => b.classList.toggle("on", b.dataset.ak === asKind));
+    const link = asKind === "link";
+    $("#as-cat-wrap").hidden = link; $("#as-link-wrap").hidden = !link; $("#as-always-wrap").hidden = link;
+    $("#as-file-btn").hidden = link; $("#as-add-link").hidden = !link;
+    const counts = {};
+    for (const a of assets) counts[a.category] = (counts[a.category] || 0) + 1;
+    if (asFilter && !counts[asFilter]) asFilter = "";
+    const chips = [["", "Todos", assets.length], ...assetCats.filter((c) => counts[c.key]).map((c) => [c.key, c.name, counts[c.key]])];
+    $("#as-filter").innerHTML = chips.length > 2 ? chips.map(([k, l, n]) => `<button type="button" class="fchip ${k === asFilter ? "active" : ""}" data-afilter="${esc(k)}">${esc(l)} <span>${n}</span></button>`).join("") : "";
+    const list = assets.filter((a) => !asFilter || a.category === asFilter);
+    $("#as-list").innerHTML = list.map((a) => a.id === asEdit ? `
+      <div class="as-card" data-aid="${a.id}">
+        <label>Nome<input data-ae="name" maxlength="80" value="${esc(a.name)}"></label>
+        ${a.is_link ? `<label>Link<input data-ae="link" maxlength="1000" value="${esc(a.link)}"></label>`
+          : `<label>Tipo<select data-ae="category">${assetCats.filter((c) => c.key !== "video").map((c) => `<option value="${esc(c.key)}" ${c.key === a.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>`}
+        <label>O que é<textarea data-ae="note" rows="2" maxlength="500">${esc(a.note)}</textarea></label>
+        <label>Quando usar<textarea data-ae="use_when" rows="2" maxlength="500">${esc(a.use_when)}</textarea></label>
+        ${a.is_link ? "" : `<label class="check"><input type="checkbox" data-ae="always" ${a.always ? "checked" : ""}> Vai em toda arte</label>`}
+        <div class="row"><button class="btn small primary" type="button" data-asave="${a.id}">Salvar</button><button class="btn small ghost" type="button" data-acancel="1">Cancelar</button></div>
+      </div>` : `
+      <figure class="as-card" data-aid="${a.id}">
+        ${a.is_link ? `<a class="as-vid" href="${esc(a.link)}" target="_blank" rel="noopener noreferrer" title="abrir o vídeo">▶</a>` : `<img src="${esc(a.url)}" alt="${esc(a.name)}" loading="lazy">`}
+        <b>${esc(a.name || "sem nome")}</b>
+        <small>${esc(a.category_name)}${a.always ? " · vai em toda arte" : ""}</small>
+        ${a.note ? `<small>${esc(a.note)}</small>` : ""}
+        ${a.use_when ? `<small><b>Quando usar:</b> ${esc(a.use_when)}</small>` : ""}
+        <div class="row"><button class="btn small ghost" type="button" data-aedit="${a.id}">Editar</button><button class="btn small danger" type="button" data-adel="${a.id}">Apagar</button></div>
+      </figure>`).join("") || `<div class="empty-card card tile-empty"><h2>Nenhum ativo ainda</h2><p class="muted">Suba a logo, as cartas, os objetos e os links de vídeo do projeto.</p></div>`;
+  }
+  $("#as-kind").addEventListener("click", (ev) => { const b = ev.target.closest("[data-ak]"); if (b) { asKind = b.dataset.ak; renderAssets(); } });
+  $("#as-filter").addEventListener("click", (ev) => { const b = ev.target.closest("[data-afilter]"); if (b) { asFilter = b.dataset.afilter; renderAssets(); } });
+  const assetForm = () => ({ project, name: $("#as-name").value, category: $("#as-cat").value, note: $("#as-note").value,
+    use_when: $("#as-when").value, always: $("#as-always").checked });
+  const clearAssetForm = () => { ["#as-name", "#as-note", "#as-when", "#as-link"].forEach((s) => { $(s).value = ""; }); $("#as-always").checked = false; };
+  $("#as-file").onchange = async (ev) => {
+    const files = [...ev.target.files]; ev.target.value = ""; const msg = $("#as-msg");
+    for (const f of files) {
+      msg.textContent = `Enviando ${f.name}…`;
+      const body = { ...assetForm(), data: await readFile(f) };
+      if (!body.name || files.length > 1) body.name = f.name.replace(/\.[^.]+$/, "");
+      try { await api("/api/assets", { method: "POST", body: JSON.stringify(body) }); } catch (e) { alert(`${f.name}: ${e.message}`); }
+    }
+    msg.textContent = files.length ? "Salvo." : ""; clearAssetForm(); loadAssets();
+  };
+  $("#as-add-link").onclick = async () => {
+    try { await api("/api/assets", { method: "POST", body: JSON.stringify({ ...assetForm(), category: "video", always: false, link: $("#as-link").value }) }); $("#as-msg").textContent = "Salvo."; clearAssetForm(); }
+    catch (e) { alert(e.message); }
+    loadAssets();
+  };
+  $("#as-list").addEventListener("click", async (ev) => {
+    const b = ev.target.closest("button"); if (!b) return;
+    if (b.dataset.aedit) { asEdit = Number(b.dataset.aedit); return renderAssets(); }
+    if (b.dataset.acancel) { asEdit = 0; return renderAssets(); }
+    if (b.dataset.adel) {
+      if (!confirm("Apagar este ativo? As peças que o usavam passam a usar o automático.")) return;
+      try { await api(`/api/layouts/assets/${b.dataset.adel}`, { method: "DELETE" }); } catch (e) { alert(e.message); }
+      return loadAssets();
+    }
+    if (b.dataset.asave) {
+      const card = b.closest("[data-aid]"); const body = {};
+      card.querySelectorAll("[data-ae]").forEach((el) => { body[el.dataset.ae] = el.type === "checkbox" ? el.checked : el.value; });
+      try { await api(`/api/assets/${b.dataset.asave}`, { method: "PATCH", body: JSON.stringify(body) }); asEdit = 0; } catch (e) { alert(e.message); }
+      loadAssets();
+    }
+  });
+
+  // ativos na arte de uma peça: escolhidos, ou automático ("toda arte" + os que combinam com o assunto)
+  let assetSel = [];
+  async function renderPieceAssets() {
+    const slug = current ? current.project : $("#cf-project").value;
+    const list = await projectAssets(slug);
+    const imgs = list.filter((a) => !a.is_link); const vids = list.filter((a) => a.is_link);
+    $("#cf-assets-step").hidden = $("#cf-visual").hidden || (!imgs.length && !vids.length);
+    $("#cf-assets").innerHTML = imgs.map((a) => {
+      const on = assetSel.includes(a.id); const auto = !assetSel.length && a.always;
+      return `<button type="button" data-asset="${a.id}" class="${on ? "on" : ""} ${auto ? "auto" : ""}" aria-pressed="${on}" ${ro() ? "disabled" : ""} title="${esc(a.note)}">${esc(a.name || `#${a.id}`)}</button>`;
+    }).join("");
+    $("#cf-assets-hint").textContent = !imgs.length ? "Este projeto ainda não tem ativos de imagem (aba Ativos)."
+      : assetSel.length ? `${assetSel.length} escolhido(s): vão como referência junto do prompt (até 5).`
+        : "Nenhum escolhido: vão os marcados \"toda arte\" (tracejados) e os que combinam com o assunto da peça. Toque para escolher.";
+    $("#cf-vidlib").innerHTML = `<option value="">Colar um link abaixo</option>` + vids.map((v) => `<option value="${esc(v.link)}" ${v.link === $("#cf-url").value ? "selected" : ""}>${esc(v.name || v.link)}</option>`).join("");
+    $("#cf-vid-wrap").hidden = src !== "link" || !vids.length;
+  }
+  $("#cf-assets").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-asset]"); if (!b) return;
+    const id = Number(b.dataset.asset);
+    assetSel = assetSel.includes(id) ? assetSel.filter((x) => x !== id) : assetSel.length >= 5 ? assetSel : [...assetSel, id];
+    renderPieceAssets();
+  });
+  $("#cf-vidlib").addEventListener("change", () => { if ($("#cf-vidlib").value) $("#cf-url").value = $("#cf-vidlib").value; });
 
   function renderActions() {
     const it = current; const b = [];
@@ -262,7 +478,8 @@
   const formBody = () => ({ channel: $("#cf-channel").value, title: $("#cf-head").value, recipient: $("#cf-to").value,
     purpose: $("#cf-purpose").value, body: $("#cf-body").value, media: $("#cf-media").value, visual_format: $("#cf-format").value, ...modeBody(), img_title: $("#cf-imgtitle").value, img_text: $("#cf-imgtext-in").value, scheduled_at: $("#cf-when").value });
   // Os campos do formulário têm o mesmo nome que os do JSON da peça.
-  const changed = () => { const f = formBody(); return Object.keys(f).some((k) => (f[k] || "") !== (current[k] || "")); };
+  const norm = (k, v) => (k === "slides" ? (v || []).map((x) => [x.role, x.title, x.text]) : v || (k === "template_ids" ? {} : k === "asset_ids" ? [] : ""));
+  const changed = () => { const f = formBody(); return Object.keys(f).some((k) => !same(norm(k, f[k]), norm(k, current[k]))); };
 
   async function save() {
     if (!current) {
@@ -429,6 +646,7 @@
       loadPieces();
       if (activeTab() === "agenda") loadAgenda();
       if (activeTab() === "saidas") loadOutputs();
+      loaded.ativos = false; if (activeTab() === "ativos") loadAssets();
     }, { allowAll: true });
   })();
 })();

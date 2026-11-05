@@ -7,10 +7,12 @@ owner: nunca roda sozinha nem em laço.
 """
 import asyncio
 import base64
+import json
 import re
 
 import httpx
 
+from . import assets as ast
 from . import calllog, modelcfg
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
@@ -25,7 +27,33 @@ FORMATS: dict[str, tuple[str, str, str]] = {
     "reel": ("Reel", "9:16", "capa/quadro de vídeo vertical"),
 }
 
-MAX_REFERENCES = 8
+# Carrossel sempre roda em três layouts: capa, páginas do meio e CTA final. Story e reel têm um papel só ("").
+ROLES: dict[str, tuple[str, str]] = {
+    "capa": ("Capa", "the COVER slide (first slide): the strongest, most eye-catching composition"),
+    "pagina": ("Páginas", "an INNER content slide (pages 2..n): calmer, with a larger empty area for a paragraph of text, "
+                          "consistent with the cover"),
+    "cta": ("CTA final", "the FINAL call-to-action slide: closing composition with a clear empty area for the call to action"),
+}
+
+
+def roles_for(fmt: str) -> tuple[str, ...]:
+    return tuple(ROLES) if fmt == "carrossel" else ("",)
+
+
+def norm_role(fmt: str, role) -> str:
+    r = str(role or "").strip().lower()
+    r = {"pagina": "pagina", "página": "pagina", "paginas": "pagina", "páginas": "pagina", "meio": "pagina",
+         "capa": "capa", "cover": "capa", "cta": "cta", "final": "cta"}.get(r, r)
+    if fmt != "carrossel":
+        return ""
+    return r if r in ROLES else "capa"
+
+
+def role_label(fmt: str, role: str) -> str:
+    return ROLES[role][0] if fmt == "carrossel" and role in ROLES else FORMATS.get(fmt, ("",))[0]
+
+
+MAX_REFERENCES = 60  # ativos por projeto (a biblioteca em Conteúdo › Ativos); por geração vão no máximo MAX_REFS_SENT
 MAX_IMAGE_BYTES = 4_000_000
 MAX_PER_REQUEST = 4  # layouts por clique em "Gerar": limita o custo da API
 MAX_REFS_SENT = 6  # referências que vão junto de cada geração
@@ -64,8 +92,11 @@ def data_url(data: bytes, mime: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
-def build_prompt(project_name: str, brief: str, fmt: str, feedback: str = "", notes: list[str] | None = None) -> str:
+def build_prompt(project_name: str, brief: str, fmt: str, feedback: str = "", notes: list[str] | None = None,
+                 role: str = "") -> str:
     name, ratio, use = FORMATS[fmt]
+    if fmt == "carrossel" and role in ROLES:
+        use = f"{use}, {ROLES[role][1]}"
     lines = [
         f"Create a brand layout template for social media: {name} ({ratio}, {use}) for the brand \"{project_name}\".",
         "This is a visual REFERENCE of the ARTWORK only: show the composition, color palette, graphic elements, frame, margins "
@@ -177,7 +208,22 @@ def asset_json(a: LayoutAsset) -> dict:
     return {
         "id": a.id, "kind": a.kind, "format": a.format, "status": a.status, "note": a.note, "model": a.model,
         "mime": a.mime, "url": f"/api/layouts/assets/{a.id}", "created_at": a.created_at.isoformat(),
+        "name": a.name or "", "role": a.role or "", "is_default": bool(a.is_default),
+        "media_slot": "{{midia}}" in (a.html or ""), "uploaded": a.model == "upload",
     }
+
+
+def asset_label(a: LayoutAsset) -> str:
+    return a.name or f"{role_label(a.format, a.role or '')} #{a.id}"
+
+
+def has_alpha(data: bytes, mime: str) -> bool:
+    """PNG com canal alfa (ou tRNS) ou WebP com alfa: a foto/vídeo da peça pode ficar ATRÁS da arte."""
+    if mime == "image/png" and len(data) > 26:
+        return data[25] in (4, 6) or b"tRNS" in data[:4096]
+    if mime == "image/webp" and len(data) > 21 and data[12:16] == b"VP8X":
+        return bool(data[20] & 0x10)
+    return False
 
 
 # ---------- template HTML do layout ----------
@@ -186,7 +232,7 @@ def asset_json(a: LayoutAsset) -> dict:
 
 CANVAS = {"story": (1080, 1920), "carrossel": (1080, 1350), "reel": (1080, 1920)}
 REQUIRED_TOKENS = ("{{bg}}", "{{titulo}}", "{{texto}}")
-_TOKEN = re.compile(r"\{\{(bg|titulo|texto|marca)\}\}")
+_TOKEN = re.compile(r"\{\{(bg|titulo|texto|marca|midia)\}\}")
 _FORBIDDEN = re.compile(r"<\s*(script|iframe|object|embed|link|meta|base|form)\b|\bon\w+\s*=|javascript:|@import|https?:|//\w", re.I)
 MAX_HTML = 60_000
 
@@ -266,6 +312,9 @@ def build_template_prompt(project_name: str, fmt: str, feedback: str = "") -> st
         "background-position: center;  (the placeholder {{bg}} is replaced by the real image).",
         "- Placeholders (exact text, used once each): {{titulo}} for the headline, {{texto}} for the supporting line. "
         "Do not use {{marca}}: the logo is part of the background. Style them so long text wraps and never overflows (word-wrap, max sizes).",
+        "- PHOTO WINDOW (optional): if the artwork has a clear window or area meant for a photo/scene (not the text panel), add ONE "
+        "empty absolutely positioned <div> exactly over it, with overflow hidden and the same rounded corners, containing only the "
+        "placeholder {{midia}} (a photo or video of the post goes there). If there is no such window, do not use {{midia}}.",
         "- Fonts: use ONLY these families, first in the font-family list: " + ", ".join(BUNDLED_FONTS[:13]) + ". Any other family is replaced.",
         "- Do not put any other text on the page, and keep the page background transparent apart from the {{bg}} layer.",
         "Answer with the HTML document only, inside a ```html code block.",
@@ -353,17 +402,102 @@ async def request_html_for(choice: modelcfg.Choice, prompt: str, image: tuple[by
         return text
 
 
+TEXT_POSITIONS = {"embaixo": "flex-end", "meio": "center", "topo": "flex-start"}
+
+
+def simple_template(fmt: str, position: str = "embaixo", media_under: bool = False) -> str:
+    """Template pronto, sem IA: a arte que o owner subiu em tela cheia e o texto numa faixa com sombra (embaixo, no meio ou
+    em cima). Se a arte tem transparência, a foto/vídeo da peça fica atrás dela."""
+    w, h = CANVAS[fmt]
+    align = TEXT_POSITIONS.get(position, "flex-end")
+    shade = {"flex-end": "linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0) 45%)",
+             "flex-start": "linear-gradient(to bottom, rgba(0,0,0,.72), rgba(0,0,0,0) 45%)",
+             "center": "radial-gradient(ellipse at center, rgba(0,0,0,.55), rgba(0,0,0,0) 70%)"}[align]
+    media = '<div class="photo">{{midia}}</div>' if media_under else ""
+    return f"""<html><head><style>
+html, body {{ margin: 0; width: {w}px; height: {h}px; overflow: hidden; }}
+.photo {{ position: absolute; inset: 0; }}
+.art {{ position: absolute; inset: 0; background-image: {{{{bg}}}}; background-size: cover; background-position: center; }}
+.shade {{ position: absolute; inset: 0; background: {shade}; }}
+.box {{ position: absolute; inset: 7% 8%; display: flex; flex-direction: column; justify-content: {align}; gap: 28px;
+  text-align: center; color: #fff; }}
+.t {{ font-family: 'Montserrat', sans-serif; font-weight: 800; font-size: 76px; line-height: 1.12; overflow-wrap: break-word; }}
+.s {{ font-family: 'Montserrat', sans-serif; font-weight: 500; font-size: 38px; line-height: 1.28; overflow-wrap: break-word; }}
+</style></head><body>{media}<div class="art"></div><div class="shade"></div>
+<div class="box"><div class="t">{{{{titulo}}}}</div><div class="s">{{{{texto}}}}</div></div></body></html>"""
+
+
 def approved_asset(db, project_id: int, kind: str, fmt: str) -> LayoutAsset | None:
     return (db.query(LayoutAsset).filter(LayoutAsset.project_id == project_id, LayoutAsset.kind == kind,
-                                         LayoutAsset.format == fmt, LayoutAsset.status == "approved").first())
+                                         LayoutAsset.format == fmt, LayoutAsset.status == "approved")
+            .order_by(LayoutAsset.id.desc()).first())
 
 
 def approved_layout(db, project_id: int, fmt: str) -> LayoutAsset | None:
     return approved_asset(db, project_id, "layout", fmt)
 
 
-def approved_template(db, project_id: int, fmt: str) -> LayoutAsset | None:
-    return approved_asset(db, project_id, "template", fmt)
+def role_templates(db, project_id: int, fmt: str, role: str = "") -> list[LayoutAsset]:
+    """Templates aprovados do formato e papel (o padrão primeiro). Templates antigos de carrossel, sem papel, valem como capa."""
+    roles = [role] + ([""] if fmt == "carrossel" and role == "capa" else [])
+    rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == project_id, LayoutAsset.kind == "template",
+                                         LayoutAsset.format == fmt, LayoutAsset.status == "approved",
+                                         LayoutAsset.role.in_(roles))
+            .order_by(LayoutAsset.is_default.desc(), LayoutAsset.id.desc()).all())
+    return rows
+
+
+def approved_template(db, project_id: int, fmt: str, role: str = "") -> LayoutAsset | None:
+    """O template padrão do projeto no formato (e papel, no carrossel). Sem padrão marcado, o aprovado mais novo.
+    Páginas e CTA sem template próprio usam o da capa: o carrossel nunca fica parado por falta de um dos três."""
+    role = norm_role(fmt, role) if fmt == "carrossel" else ""
+    rows = role_templates(db, project_id, fmt, role)
+    if not rows and role in ("pagina", "cta"):
+        rows = role_templates(db, project_id, fmt, "capa")
+    return rows[0] if rows else None
+
+
+def set_default(db, t: LayoutAsset) -> None:
+    """Marca o template como o padrão do formato e papel (desmarca os outros)."""
+    for o in db.query(LayoutAsset).filter(LayoutAsset.project_id == t.project_id, LayoutAsset.kind == "template",
+                                          LayoutAsset.format == t.format, LayoutAsset.role == (t.role or ""),
+                                          LayoutAsset.is_default == 1, LayoutAsset.id != t.id).all():
+        o.is_default = 0
+    t.is_default = 1
+
+
+def ensure_default(db, project_id: int, fmt: str, role: str) -> None:
+    """Se o formato e papel ficou sem padrão, o aprovado mais novo vira o padrão."""
+    rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == project_id, LayoutAsset.kind == "template",
+                                         LayoutAsset.format == fmt, LayoutAsset.role == (role or ""),
+                                         LayoutAsset.status == "approved").order_by(LayoutAsset.id.desc()).all())
+    if rows and not any(r.is_default for r in rows):
+        rows[0].is_default = 1
+
+
+def make_simple_template(db, layout: LayoutAsset, position: str = "embaixo") -> LayoutAsset:
+    """Arte (gerada ou que o owner subiu) -> template com texto padrão, sem IA e sem custo."""
+    project = db.get(GrowthProject, layout.project_id)
+    under = has_alpha(layout.data, layout.mime)
+    html = simple_template(layout.format, position, under)
+    from . import motion
+
+    preview = motion.render_still(html, layout.format, (layout.data, layout.mime), "TÍTULO DO POST",
+                                  "Frase de apoio do post, em uma ou duas linhas.", project.name if project else "")
+    return _save_template(db, layout, html, preview, f"texto padrão ({position})", "", "texto-padrao")
+
+
+def _save_template(db, layout: LayoutAsset, html: str, preview: bytes, note: str, prompt: str, model: str) -> LayoutAsset:
+    plate = LayoutAsset(project_id=layout.project_id, kind="plate", format=layout.format, status="proposed", mime=layout.mime,
+                        data=layout.data, model=layout.model, prompt=layout.prompt, role=layout.role or "")
+    db.add(plate)
+    db.flush()
+    t = LayoutAsset(project_id=layout.project_id, kind="template", format=layout.format, status="proposed", mime="image/png",
+                    data=preview, html=html, note=note, prompt=prompt, model=model, plate_id=plate.id,
+                    role=layout.role or "", name=layout.name or "")
+    db.add(t)
+    db.commit()
+    return t
 
 
 async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> LayoutAsset:
@@ -384,15 +518,7 @@ async def generate_template(db, layout: LayoutAsset, feedback: str = "") -> Layo
     with calllog.context("layout_html", layout.project_id):
         preview = await asyncio.to_thread(motion.render_still, html, layout.format, (plate_data, plate_mime), "TÍTULO DO POST",
                                           "Frase de apoio do post, em uma ou duas linhas.", name)
-    plate = LayoutAsset(project_id=layout.project_id, kind="plate", format=layout.format, status="proposed", mime=plate_mime,
-                        data=plate_data, model=layout.model, prompt=layout.prompt)
-    db.add(plate)
-    db.flush()
-    t = LayoutAsset(project_id=layout.project_id, kind="template", format=layout.format, status="proposed", mime="image/png",
-                    data=preview, html=html, note=feedback.strip(), prompt=prompt, model=choice.model, plate_id=plate.id)
-    db.add(t)
-    db.commit()
-    return t
+    return _save_template(db, layout, html, preview, feedback.strip(), prompt, choice.model)
 
 
 def delete_template(db, t: LayoutAsset) -> None:
@@ -475,15 +601,119 @@ def build_free_prompt(project_name: str, brief: str, c: ContentItem, feedback: s
     return "\n".join(x for x in lines if x)
 
 
-def piece_template(db, c: ContentItem) -> LayoutAsset | None:
-    """Template da peça: o escolhido (do mesmo projeto e formato) ou, sem escolha, o aprovado do projeto."""
-    if c.template_id:
-        t = db.get(LayoutAsset, c.template_id)
-        if (t is None or t.kind != "template" or t.project_id != c.project_id or t.format != c.visual_format
+def _with_assets(prompt: str, assets: list, first_index: int) -> str:
+    lines = ast.prompt_lines(assets, first_index)
+    return f"{prompt}\n{lines}" if lines else prompt
+
+
+def style_refs(db, project_id: int) -> list[LayoutAsset]:
+    """Referências de estilo do projeto (logo, paleta, as antigas sem categoria e as marcadas "sempre"), para gerar artes."""
+    rows = ast.project_assets(db, project_id)
+    return [a for a in rows if not ast.is_link(a) and (a.always or (a.category or "") in ("", "logo", "estilo"))]
+
+
+def build_merge_prompt(project_name: str, c: ContentItem, feedback: str = "") -> str:
+    """Foto do owner (upload ou link) encaixada na arte do layout, quando o template não tem a janela {{midia}}."""
+    name, ratio, _ = FORMATS[c.visual_format]
+    lines = [
+        f"Edit the FIRST attached image, the artwork of the brand \"{project_name}\" ({name}, {ratio}). Put the photo from the "
+        "SECOND attached image inside the photo window/scenery area of the artwork, keeping that photo recognizable (same people, "
+        "objects and scene: crop and fit it, do not redraw it).",
+        "KEEP EXACTLY as they are: the logo, frame, borders, ornaments, dividers and the empty panel reserved for text. The text "
+        "panel must stay plain and empty. ABSOLUTELY NO new text, letters or numbers anywhere.",
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+def _json(raw: str, default):
+    try:
+        v = json.loads(raw or "")
+    except (ValueError, TypeError):
+        return default
+    return v if isinstance(v, type(default)) else default
+
+
+def piece_template_ids(c: ContentItem) -> dict[str, int]:
+    """Templates escolhidos por papel ({"capa": 3, "pagina": 5, "cta": 7}); story/reel usam template_id."""
+    raw = _json(c.template_ids, {})
+    out = {r: int(v) for r, v in raw.items() if r in ROLES and isinstance(v, int) and v > 0}
+    if c.template_id and "capa" not in out and c.visual_format == "carrossel":
+        out["capa"] = c.template_id
+    return out
+
+
+def piece_template(db, c: ContentItem, role: str = "") -> LayoutAsset | None:
+    """Template da peça no papel pedido: o escolhido (do mesmo projeto e formato) ou, sem escolha, o padrão do projeto."""
+    fmt = c.visual_format
+    role = norm_role(fmt, role or "capa") if fmt == "carrossel" else ""
+    tid = piece_template_ids(c).get(role) if fmt == "carrossel" else c.template_id
+    if tid:
+        t = db.get(LayoutAsset, tid)
+        if (t is None or t.kind != "template" or t.project_id != c.project_id or t.format != fmt
                 or t.status not in ("approved", "proposed")):
-            raise ProviderError("o template escolhido não existe mais ou não serve para este formato: escolha outro")
+            raise ProviderError(f"o template escolhido ({role_label(fmt, role)}) não existe mais ou não serve para este formato: "
+                                "escolha outro")
         return t
-    return approved_template(db, c.project_id, c.visual_format)
+    return approved_template(db, c.project_id, fmt, role)
+
+
+# ---------- carrossel: capa + páginas + CTA ----------
+
+MAX_PAGES = 8
+DEFAULT_CTA = {"role": "cta", "title": "Gostou? Salve e compartilhe", "text": ""}
+
+
+def clean_slides(raw) -> list[dict]:
+    """Páginas do meio e o CTA final, na ordem; o CTA é sempre o último e só um. Textos aparados."""
+    pages, cta = [], None
+    for s in raw if isinstance(raw, list) else []:
+        if not isinstance(s, dict):
+            continue
+        item = {"role": "cta" if s.get("role") == "cta" else "pagina",
+                "title": str(s.get("title") or s.get("titulo") or "").strip()[:120],
+                "text": str(s.get("text") or s.get("texto") or "").strip()[:300]}
+        if isinstance(s.get("image_id"), int):
+            item["image_id"] = s["image_id"]
+        if item["role"] == "cta":
+            cta = item
+        elif len(pages) < MAX_PAGES and (item["title"] or item["text"]):
+            pages.append(item)
+    return pages + [cta or dict(DEFAULT_CTA)]
+
+
+def default_slides(c: ContentItem) -> list[dict]:
+    """Sem páginas definidas: cada parágrafo do texto (depois do primeiro) vira uma página, e um CTA padrão no fim."""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", c.body or "") if p.strip()]
+    pages = [{"role": "pagina", "title": "", "text": p[:300]} for p in (paras[1:] or paras)[:MAX_PAGES]]
+    return clean_slides(pages)
+
+
+def piece_slides(c: ContentItem) -> list[dict]:
+    if c.visual_format != "carrossel":
+        return []
+    raw = _json(c.slides, [])
+    return clean_slides(raw) if raw else default_slides(c)
+
+
+def _drop_slide_images(db, slides: list[dict]) -> None:
+    for s in slides:
+        if s.get("image_id") and (old := db.get(LayoutAsset, s["image_id"])) is not None:
+            db.delete(old)
+        s.pop("image_id", None)
+
+
+def drop_slides(db, c: ContentItem) -> None:
+    """Apaga as imagens das páginas e do CTA (a capa fica em image_id)."""
+    raw = _json(c.slides, [])
+    _drop_slide_images(db, raw)
+    c.slides = json.dumps(raw, ensure_ascii=False) if raw else ""
+
+
+def set_slides(db, c: ContentItem, slides) -> None:
+    """O owner editou as páginas: guarda os textos novos e apaga as imagens antigas (são refeitas em seguida)."""
+    drop_slides(db, c)
+    c.slides = json.dumps(clean_slides(slides), ensure_ascii=False)
 
 
 def _replace_asset(db, c: ContentItem, attr: str, asset: LayoutAsset) -> None:
@@ -496,7 +726,7 @@ def _replace_asset(db, c: ContentItem, attr: str, asset: LayoutAsset) -> None:
 
 
 def set_piece_image(db, c: ContentItem, data: bytes, mime: str, model: str = "", prompt: str = "") -> None:
-    """Guarda a imagem final da peça e apaga a anterior (uma imagem por peça)."""
+    """Guarda a imagem final da peça (a capa, no carrossel) e apaga a anterior (uma imagem por peça)."""
     _replace_asset(db, c, "image_id", LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime=mime,
                                                    data=data, model=model, prompt=prompt))
     c.image_error = ""
@@ -512,17 +742,96 @@ def drop_video(db, c: ContentItem) -> None:
         c.video_id = None
 
 
-def render_piece(db, c: ContentItem, bg: LayoutAsset, template: LayoutAsset) -> bytes:
-    project = db.get(GrowthProject, c.project_id)
-    title, text = piece_texts(c)
+def drop_bg(db, c: ContentItem) -> None:
+    if c.bg_id:
+        old = db.get(LayoutAsset, c.bg_id)
+        if old is not None:
+            db.delete(old)
+        c.bg_id = None
+
+
+def _plate(db, template: LayoutAsset) -> LayoutAsset | None:
+    return db.get(LayoutAsset, template.plate_id) if template.plate_id else None
+
+
+def cover_layers(db, c: ContentItem, template: LayoutAsset) -> tuple[tuple[bytes, str] | None, tuple[bytes, str] | None]:
+    """(fundo, mídia) da capa. Fundo feito pela IA (cenário ou foto encaixada) tem prioridade; senão a arte do layout,
+    com a foto/vídeo da peça na janela {{midia}}, atrás da arte transparente, ou (vídeo) no lugar da arte."""
+    from . import media as med
     from . import motion
 
-    return motion.render_still(template.html, c.visual_format, (bg.data, bg.mime), title, text, project.name if project else "")
+    if c.bg_id and (bg := db.get(LayoutAsset, c.bg_id)) is not None:
+        return (bg.data, bg.mime), None
+    plate = _plate(db, template)
+    art = (plate.data, plate.mime) if plate is not None else None
+    src = med.norm_source(c.media_source)
+    m = med.piece_media(db, c) if src in ("gerar_video", "upload", "link") else None
+    if m is None:
+        return art, None
+    layer = (m.data, m.mime)
+    if motion.has_media_slot(template.html) or (art is not None and has_alpha(*art)):
+        return art, layer
+    if med.is_video(m.mime):
+        return None, layer  # vídeo em tela cheia com o texto do template por cima (a arte opaca esconderia o vídeo)
+    return layer, None  # template antigo, sem arte: a foto vira o fundo
+
+
+def _render(db, c: ContentItem, template: LayoutAsset, bg, media, title: str, text: str) -> bytes:
+    project = db.get(GrowthProject, c.project_id)
+    from . import motion
+
+    kw = {"media": media} if media is not None else {}
+    return motion.render_still(template.html, c.visual_format, bg, title, text, project.name if project else "", **kw)
+
+
+def render_piece(db, c: ContentItem, bg: LayoutAsset | None, template: LayoutAsset) -> bytes:
+    """Capa com um fundo explícito (compatível com o fluxo antigo) ou com as camadas da peça."""
+    title, text = piece_texts(c)
+    if bg is not None:
+        return _render(db, c, template, (bg.data, bg.mime), None, title, text)
+    layers = cover_layers(db, c, template)
+    return _render(db, c, template, layers[0], layers[1], title, text)
+
+
+def render_slides(db, c: ContentItem, cover_bg: tuple[bytes, str] | None) -> str:
+    """Páginas e CTA do carrossel, cada um no seu template (sem IA: só a arte do layout e o texto). -> erros, se houver."""
+    slides = piece_slides(c)
+    _drop_slide_images(db, slides)
+    errors = []
+    for s in slides:
+        try:
+            t = piece_template(db, c, s["role"])
+            if t is None:
+                raise ProviderError(f"defina o template de {role_label('carrossel', s['role'])} em Layouts")
+            plate = _plate(db, t)
+            bg = (plate.data, plate.mime) if plate is not None else cover_bg
+            png = _render(db, c, t, bg, None, s["title"], s["text"])
+        except ProviderError as e:
+            errors.append(f"{role_label('carrossel', s['role'])}: {e}")
+            continue
+        a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime="image/png", data=png,
+                        model="template", role=s["role"])
+        db.add(a)
+        db.flush()
+        s["image_id"] = a.id
+    c.slides = json.dumps(slides, ensure_ascii=False)
+    return "; ".join(errors)[:500]
+
+
+def _finish(db, c: ContentItem, template: LayoutAsset, final: bytes, model: str, prompt: str) -> None:
+    """Guarda a capa e, no carrossel, refaz as páginas e o CTA."""
+    _replace_asset(db, c, "image_id", LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format,
+                                                   mime="image/png", data=final, model=model, prompt=prompt))
+    err = ""
+    if c.visual_format == "carrossel":
+        err = render_slides(db, c, cover_layers(db, c, template)[0])
+    c.image_error = err
+    db.commit()
 
 
 def rerender_piece(db, c: ContentItem) -> None:
-    """Texto da imagem mudou: refaz só a imagem final, com o mesmo fundo (sem gastar IA). Erros ficam em image_error."""
-    if not (c.image_id and c.bg_id and c.visual_format):
+    """Texto da imagem mudou: refaz a imagem final (e as páginas), com o mesmo fundo (sem gastar IA). Erros em image_error."""
+    if not (c.image_id and c.visual_format):
         return
     if (c.image_mode or "template") != "template":
         return
@@ -530,11 +839,11 @@ def rerender_piece(db, c: ContentItem) -> None:
         template = piece_template(db, c)
     except ProviderError:
         return
-    bg = db.get(LayoutAsset, c.bg_id)
-    if bg is None or template is None:
+    if template is None:
         return
     try:
-        set_piece_image(db, c, render_piece(db, c, bg, template), "image/png", "template")
+        final = render_piece(db, c, None, template)
+        _finish(db, c, template, final, "template", "")
         drop_video(db, c)
         db.commit()
     except ProviderError as e:
@@ -544,7 +853,11 @@ def rerender_piece(db, c: ContentItem) -> None:
 
 
 async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
-    """Gera um fundo novo (a única parte paga) e monta a imagem final no template aprovado do projeto."""
+    """Imagem da peça no layout escolhido, com a mídia da fonte escolhida:
+    gerar_imagem: a IA refaz só o cenário dentro da arte (1 imagem paga); gerar_video: pede o vídeo (fica pronto em minutos);
+    upload/link: a foto ou o vídeo entram no layout (sem IA se o template tem a janela {{midia}}); nenhuma: só arte e texto."""
+    from . import media as med
+
     if not c.visual_format:
         raise ProviderError("esta peça não é visual (story, carrossel ou reel)")
     mode = c.image_mode or "template"
@@ -552,27 +865,68 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
         return await _generate_free_image(db, c, mode, feedback)
     template = piece_template(db, c)
     if template is None:
-        raise ProviderError(f"Defina o template de {FORMATS[c.visual_format][0]} deste projeto em Layouts antes de gerar a imagem.")
-    choice = image_choice(db, log=True, project_id=c.project_id)
+        raise ProviderError(f"Defina o template de {role_label(c.visual_format, 'capa')} deste projeto em Layouts antes de gerar a imagem.")
+    src = med.norm_source(c.media_source)
     project = db.get(GrowthProject, c.project_id)
-    refs_rows = (db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
-                 .order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all())
-    plate = db.get(LayoutAsset, template.plate_id) if template.plate_id else None
-    if plate is not None:  # arte aprovada sem texto: o modelo só troca o cenário e mantém logo e moldura
-        prompt = build_scenery_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
-        refs = [(plate.data, plate.mime)]
-    else:  # template antigo, sem arte: fundo novo como antes
-        prompt = build_background_prompt(project.name if project else "", (project.style_brief if project else "") or "", c, feedback)
-        refs = [(a.data, a.mime) for a in refs_rows]
-    with calllog.context("image", c.project_id):
-        data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
-    bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
-                     model=choice.model, prompt=prompt)
-    with calllog.context("image", c.project_id):
-        final = render_piece(db, c, bg, template)  # renderiza antes de guardar: se o renderizador cair, o fundo não fica órfão
-    _replace_asset(db, c, "bg_id", bg)
+    name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
+    plate = _plate(db, template)
+    if src == "gerar_imagem":
+        choice = image_choice(db, log=True, project_id=c.project_id)
+        picked = ast.for_piece(db, c)
+        if plate is not None:  # arte aprovada sem texto: o modelo só troca o cenário e mantém logo e moldura
+            prompt = _with_assets(build_scenery_prompt(name, brief, c, feedback), picked, 2)
+            refs = [(plate.data, plate.mime)] + [(a.data, a.mime) for a in picked]
+        else:  # template antigo, sem arte: fundo novo a partir dos ativos da peça (ou do estilo do projeto)
+            rows = picked or style_refs(db, c.project_id)
+            prompt = _with_assets(build_background_prompt(name, brief, c, feedback), picked, 1)
+            refs = [(a.data, a.mime) for a in rows[:MAX_REFS_SENT]]
+        with calllog.context("image", c.project_id):
+            data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
+        bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
+                         model=choice.model, prompt=prompt)
+        with calllog.context("image", c.project_id):
+            final = await asyncio.to_thread(render_piece, db, c, bg, template)  # se o renderizador cair, o fundo não fica órfão
+        _replace_asset(db, c, "bg_id", bg)
+        drop_video(db, c)
+        return await asyncio.to_thread(_finish, db, c, template, final, choice.model, prompt)
+
+    m = med.piece_media(db, c) if src != "nenhuma" else None
+    if src == "gerar_video" and m is None:
+        if c.media_job:
+            raise ProviderError("o vídeo ainda está sendo gerado; a imagem aparece sozinha quando ele ficar pronto")
+        return await med.start_video(db, c)
+    if src == "link" and m is None and c.media_url:
+        try:
+            data, mime = await med.download(c.media_url)
+        except ValueError as e:
+            raise ProviderError(f"link: {e}") from e
+        m = med.set_media(db, c, data, mime, "link", c.media_url)
+    if src in ("upload", "link") and m is None:
+        raise ProviderError("suba a foto ou o vídeo da peça" if src == "upload" else "cole o link da foto ou do vídeo")
+    drop_bg(db, c)
     drop_video(db, c)
-    set_piece_image(db, c, final, "image/png", choice.model, prompt)
+    model, prompt = "template", ""
+    from . import motion
+
+    if (m is not None and not med.is_video(m.mime) and plate is not None and not motion.has_media_slot(template.html)
+            and not has_alpha(plate.data, plate.mime)):
+        # o layout não tem janela para a foto: a IA encaixa a foto na arte (1 imagem paga), mantendo logo e moldura
+        choice = image_choice(db, log=True, project_id=c.project_id)
+        picked = ast.for_piece(db, c, MAX_REFS_SENT - 2)
+        prompt = _with_assets(build_merge_prompt(name, c, feedback), picked, 3)
+        with calllog.context("image", c.project_id):
+            data, mime = await request_image(choice.model, prompt, [(plate.data, plate.mime), (m.data, m.mime)]
+                                             + [(a.data, a.mime) for a in picked], FORMATS[c.visual_format][1])
+        bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
+                         model=choice.model, prompt=prompt)
+        with calllog.context("image", c.project_id):
+            final = await asyncio.to_thread(render_piece, db, c, bg, template)
+        _replace_asset(db, c, "bg_id", bg)
+        model = choice.model
+    else:
+        with calllog.context("piece_render", c.project_id):
+            final = await asyncio.to_thread(render_piece, db, c, None, template)
+    await asyncio.to_thread(_finish, db, c, template, final, model, prompt)
 
 
 async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = "") -> None:
@@ -582,59 +936,90 @@ async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = ""
     name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
     refs: list[tuple[bytes, str]] = []
     if mode == "reference":
-        q = db.query(LayoutAsset).filter(LayoutAsset.project_id == c.project_id, LayoutAsset.kind == "reference")
-        rows = [db.get(LayoutAsset, c.ref_id)] if c.ref_id else q.order_by(LayoutAsset.id).limit(MAX_REFS_SENT).all()
-        rows = [a for a in rows if a is not None and a.kind == "reference" and a.project_id == c.project_id]
+        if c.ref_id:
+            rows = [db.get(LayoutAsset, c.ref_id)]
+        else:  # os ativos da peça e o estilo do projeto (logo, paleta)
+            rows = ast.for_piece(db, c, MAX_REFS_SENT)
+            rows += [a for a in style_refs(db, c.project_id) if a not in rows]
+        rows = [a for a in rows if a is not None and a.kind == "reference" and a.project_id == c.project_id
+                and not ast.is_link(a)][:MAX_REFS_SENT]
         if not rows:
-            raise ProviderError("Suba ao menos uma referência deste projeto em Layouts (ou escolha outro modo de imagem).")
+            raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
         refs = [(a.data, a.mime) for a in rows]
-        prompt = build_reference_prompt(name, brief, c, feedback)
+        prompt = _with_assets(build_reference_prompt(name, brief, c, feedback), rows, 1)
     else:
-        prompt = build_free_prompt(name, brief, c, feedback)
+        picked = ast.for_piece(db, c) if ast.chosen_ids(c) else []  # modo prompt: só os ativos que o owner escolheu
+        refs = [(a.data, a.mime) for a in picked]
+        prompt = _with_assets(build_free_prompt(name, brief, c, feedback), picked, 1)
     with calllog.context("image", c.project_id):
         data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
-    if c.bg_id:  # sem template não há fundo separado: o fundo e o vídeo de antes não valem mais
-        old = db.get(LayoutAsset, c.bg_id)
-        if old is not None:
-            db.delete(old)
-        c.bg_id = None
+    drop_bg(db, c)  # sem template não há fundo separado: o fundo e o vídeo de antes não valem mais
     drop_video(db, c)
+    drop_slides(db, c)
     set_piece_image(db, c, data, mime, choice.model, prompt)
 
 
+def can_video(db, c: ContentItem) -> bool:
+    """Dá para montar o vídeo animado: modo template com a capa pronta (fundo gerado, mídia ou só a arte)."""
+    return bool(c.visual_format and c.image_id and (c.image_mode or "template") == "template")
+
+
 async def generate_piece_video(db, c: ContentItem) -> None:
-    """Anima o template aprovado com o texto e o fundo da peça (sem IA, sem custo) e guarda o MP4."""
-    if not (c.visual_format and c.bg_id):
-        raise ProviderError("o vídeo usa o fundo gerado da peça: gere a imagem primeiro")
-    bg, template = db.get(LayoutAsset, c.bg_id), piece_template(db, c)
-    if bg is None or template is None:
-        raise ProviderError("faltam o fundo ou o template aprovado do projeto para montar o vídeo")
+    """Anima o template da peça com o texto e o fundo (e o vídeo de fonte, se houver) e guarda o MP4. Sem IA, sem custo."""
+    if not can_video(db, c):
+        raise ProviderError("o vídeo usa a imagem da peça no layout: gere a imagem primeiro")
+    template = piece_template(db, c)
+    if template is None:
+        raise ProviderError("falta o template do projeto para montar o vídeo")
+    bg, layer = cover_layers(db, c, template)
     project = db.get(GrowthProject, c.project_id)
     title, text = piece_texts(c)
     from . import motion
 
+    kw = {"media": layer} if layer is not None else {}
     with calllog.context("video_render", c.project_id):
-        video = await motion.render_video(template.html, c.visual_format, (bg.data, bg.mime), title, text, project.name if project else "")
+        video = await motion.render_video(template.html, c.visual_format, bg, title, text, project.name if project else "", **kw)
     _replace_asset(db, c, "video_id", LayoutAsset(project_id=c.project_id, kind="video", format=c.visual_format,
                                                    mime="video/mp4", data=video, model="hyperframes"))
     db.commit()
+
+
+def _waiting_for_owner(db, c: ContentItem) -> bool:
+    """Peças que a passada automática não mexe: vídeo de IA (caro, só no clique), mídia que o owner ainda não mandou."""
+    from . import media as med
+
+    if (c.image_mode or "template") != "template":
+        return False
+    src = med.norm_source(c.media_source)
+    if src == "gerar_video":
+        return True
+    if src == "upload":
+        return med.piece_media(db, c) is None
+    if src == "link":
+        return med.piece_media(db, c) is None and not c.media_url
+    return False
 
 
 async def autogen_pending() -> int:
     """Passada do agendador: imagem para peças que aguardam aprovação, até AUTOGEN_PER_TICK por vez.
 
     Cada peça tem uma tentativa automática: se falhar, o motivo fica em image_error e só o botão do owner tenta de novo.
-    Sem template aprovado ou sem modelo de imagem configurado, a peça espera sem gastar nada.
+    Sem template aprovado, sem modelo de imagem ou esperando a mídia do owner, a peça espera sem gastar nada.
     """
+    from . import media as med
+
     done = 0
     db = new_session()
     try:
         rows = (db.query(ContentItem).filter(ContentItem.status == "pending", ContentItem.visual_format != "",
-                                             ContentItem.image_id.is_(None), ContentItem.image_error == "")
+                                             ContentItem.image_id.is_(None), ContentItem.image_error == "",
+                                             ContentItem.media_job == "")
                 .order_by(ContentItem.id).limit(50).all())
         for c in rows:
             if done >= AUTOGEN_PER_TICK:
                 break
+            if _waiting_for_owner(db, c):
+                continue
             try:
                 if (c.image_mode or "template") == "template" and piece_template(db, c) is None:
                     continue
@@ -643,7 +1028,8 @@ async def autogen_pending() -> int:
                 db.commit()
                 continue
             try:
-                image_choice(db, log=True, project_id=c.project_id)
+                if (c.image_mode or "template") != "template" or med.norm_source(c.media_source) == "gerar_imagem":
+                    image_choice(db, log=True, project_id=c.project_id)
                 await generate_piece_image(db, c)
             except ProviderError as e:
                 db.rollback()

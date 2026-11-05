@@ -3,6 +3,7 @@ import os
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import close_all_sessions
 
 from app import db as dbmod
 from app.config import get_settings
@@ -21,7 +22,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("GOS_WORKSPACE_DIR", str(tmp_path / "ws"))
     monkeypatch.setenv("GOS_COOKIE_SECURE", "false")
     monkeypatch.setenv("GOS_SCHEDULER_ENABLED", "false")
+    # Nunca o arquivo real: os testes também rodam dentro do container (gos-self test).
+    monkeypatch.setenv("GOS_GITHUB_TOKEN_FILE", str(tmp_path / "gh-token"))
     get_settings.cache_clear()
+    # Sessão que um teste anterior deixou aberta segura uma transação: no Postgres o DROP TABLE abaixo esperaria para sempre.
+    close_all_sessions()
     engine = dbmod.init_db()
     dbmod.Base.metadata.drop_all(engine)
     dbmod.Base.metadata.create_all(engine)
@@ -32,6 +37,7 @@ def client(tmp_path, monkeypatch):
 
     with TestClient(app) as c:
         yield c
+    close_all_sessions()
     get_settings.cache_clear()
 
 
@@ -44,13 +50,26 @@ def code() -> str:
 
     step = _offset["n"]
     _offset["n"] = step + 1 if step < 1 else -1
+    # Perto da virada da janela de 30s o código sai de uma janela e é conferido na seguinte (2 de distância, fora da
+    # tolerância): espera a virada passar, senão o login falha de vez em quando sem motivo.
+    now = time.time()
+    if 30 - now % 30 < 1.0:
+        time.sleep(30 - now % 30 + 0.05)
     return pyotp.TOTP(TOTP_SECRET).at(time.time() + 30 * step)
+
+
+def login(client, password: str = PASSWORD, totp: str | None = None):
+    """Faz as duas etapas do login e devolve a resposta da etapa 2 (ou da 1, se a senha falhar)."""
+    r = client.post("/login", data={"username": "owner", "password": password}, follow_redirects=False)
+    if r.status_code != 303:
+        return r
+    return client.post("/login/2fa", data={"totp": totp or code()}, follow_redirects=False)
 
 
 @pytest.fixture()
 def logged(client):
-    r = client.post("/login", data={"username": "owner", "password": PASSWORD, "totp": code()}, follow_redirects=False)
-    assert r.status_code == 303
+    r = login(client)
+    assert r.status_code == 303 and r.headers["location"] == "/"
     page = client.get("/").text
     csrf = page.split('data-csrf="')[1].split('"')[0]
     client.headers["X-CSRF-Token"] = csrf

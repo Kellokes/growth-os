@@ -2,7 +2,7 @@
   const $ = (s) => document.querySelector(s);
   const app = $("#app");
   const CSRF = app.dataset.csrf;
-  const state = { conv: null, commands: {}, boxes: {}, pending: null, busy: false };
+  const state = { conv: null, commands: {}, boxes: {}, pending: null, busy: false, choice: { provider: "", model: "", reasoning: "" } };
 
   async function api(path, opts = {}) {
     const res = await fetch(path, {
@@ -105,9 +105,9 @@
   function addMessage(m) {
     $("#empty")?.remove();
     const row = el("div", `msg ${m.role}${m.error ? " error" : ""}`);
-    row.appendChild(el("div", "avatar", m.role === "user" ? "Eu" : "◆"));
+    row.appendChild(el("div", m.role === "user" ? "avatar" : "avatar logo", m.role === "user" ? "Eu" : "◆"));
     const body = el("div", "body");
-    body.appendChild(el("div", "meta", m.role === "user" ? "Você" : esc(`Growth OS · ${m.provider || ""}`)));
+    body.appendChild(el("div", "meta", m.role === "user" ? "Você" : esc(["Growth OS", m.provider, m.model].filter(Boolean).join(" · "))));
     const content = el("div", "content");
     if (m.typing) content.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
     else render(m.content, content);
@@ -125,7 +125,7 @@
   ];
 
   function emptyState() {
-    const e = el("div", "empty", '<div class="logo">◆</div><h2>O que vamos operar hoje?</h2><p>A IA executa sozinha o que é comum e pede o seu 2FA só para o que é perigoso.</p>');
+    const e = el("div", "empty", '<div class="orb" aria-hidden="true"><i></i></div><h2>O que vamos operar hoje?</h2><p>A IA executa sozinha o que é comum e pede o seu 2FA só para o que é perigoso.</p>');
     e.id = "empty";
     const chips = el("div", "chips");
     for (const [label, prompt] of PROMPTS) {
@@ -136,72 +136,46 @@
     return e;
   }
 
+  // ---------- provider, modelo e raciocínio da thread ----------
+  const M = window.GOSModels;
+  let picker = null;
+  function defaultChoice() {
+    const eff = M.data()?.effective?.threads;
+    if (eff?.provider && M.prov(eff.provider)?.available) return { provider: eff.provider, model: eff.model, reasoning: eff.reasoning };
+    const first = M.data()?.providers.find((p) => p.available);
+    return { provider: first?.id || "", model: "", reasoning: "" };
+  }
+  function choiceFor(conv) {
+    if (conv?.provider && M.prov(conv.provider)?.available) return { provider: conv.provider, model: conv.model || "", reasoning: conv.reasoning || "" };
+    return defaultChoice();
+  }
+  function showChoice() {
+    $("#model-label").textContent = M.describe(state.choice) || "Nenhum provider disponível";
+    $("#model-btn").title = `Provider, modelo e raciocínio desta thread: ${M.describe(state.choice)}`;
+  }
   async function loadProviders() {
-    const list = await api("/api/providers");
-    const sel = $("#provider");
-    sel.innerHTML = "";
-    for (const p of list) {
-      const o = el("option", null, esc(p.label + (p.available ? "" : ` (${p.reason})`)));
-      o.value = p.id; o.disabled = !p.available;
-      sel.appendChild(o);
-    }
-    const saved = localStorage.getItem("gos.provider");
-    const first = list.find((p) => p.available);
-    sel.value = (saved && list.find((p) => p.id === saved && p.available)) ? saved : (first?.id || "");
-    sel.onchange = () => localStorage.setItem("gos.provider", sel.value);
+    await M.load(api);
+    picker = M.mount($("#model-fields"), api, { kind: "text", inherit: null });
+    state.choice = defaultChoice();
+    showChoice();
   }
+  $("#model-btn").onclick = async () => { if (!picker) return; await picker.set(state.choice); $("#model-dialog").showModal(); };
+  $("#model-cancel").onclick = () => $("#model-dialog").close();
+  $("#model-reset").onclick = () => picker.set(defaultChoice());
+  $("#model-form").onsubmit = (ev) => {
+    ev.preventDefault();
+    state.choice = picker.get(); showChoice();
+    $("#model-dialog").close();
+  };
 
-  // ---------- lista de conversas: filtro por categoria, busca, lixeira ----------
-  const TRASH = "__trash__", ALL = "__all__";
+  // ---------- lista de threads: fica no menu lateral (shell.js), aqui só reage ----------
+  const T = window.GOS.threads;
+  const { TRASH, NONE } = T;
   const NEW_TITLES = ["Nova thread", "Nova conversa"];
-  let filter = ALL;
-  try { filter = localStorage.getItem("gos.convFilter") || ALL; } catch { /* sem storage */ }
-  let searchTimer = null;
-
-  async function loadFilters() {
-    const data = await api("/api/conversations/categories");
-    const box = $("#conv-filters"); box.innerHTML = "";
-    const total = data.categories.reduce((n, c) => n + c.count, 0);
-    const opts = [[ALL, "Todas", total], ...data.categories.map((c) => [c.name, c.name || "Sem categoria", c.count])];
-    if (data.trash) opts.push([TRASH, "🗑 Lixeira", data.trash]);
-    if (!opts.some(([v]) => v === filter)) filter = ALL;
-    for (const [value, label, count] of opts) {
-      const b = el("button", "fchip" + (value === filter ? " active" : ""));
-      b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", value === filter);
-      b.innerHTML = `${esc(label)} <span>${count}</span>`;
-      b.onclick = () => { filter = value; try { localStorage.setItem("gos.convFilter", value); } catch { /* ok */ } loadConversations(); };
-      box.appendChild(b);
-    }
-    const dl = $("#conv-cats"); dl.innerHTML = "";
-    for (const c of data.categories) if (c.name) { const o = el("option"); o.value = c.name; dl.appendChild(o); }
-  }
-
-  async function loadConversations() {
-    await loadFilters().catch(() => {});
-    const qs = new URLSearchParams();
-    if (filter === TRASH) qs.set("trash", "1"); else if (filter !== ALL) qs.set("category", filter);
-    const q = $("#conv-search").value.trim(); if (q) qs.set("q", q);
-    const list = await api("/api/conversations?" + qs);
-    const ul = $("#conv-list"); ul.innerHTML = "";
-    if (!list.length) ul.appendChild(el("li", "conv-empty", filter === TRASH ? "Lixeira vazia." : q ? "Nada encontrado." : "Nenhuma thread ainda."));
-    for (const c of list) {
-      const li = el("li"); const b = el("button", state.conv?.id === c.id ? "active" : "");
-      b.type = "button";
-      b.innerHTML = `<span class="conv-t">${esc(c.title)}</span>` + (c.category && filter === ALL ? `<span class="conv-cat">${esc(c.category)}</span>` : "");
-      b.onclick = () => { openConversation(c.id); closePanel(); };
-      li.appendChild(b); ul.appendChild(li);
-    }
-    return list;
-  }
-
-  // ---------- gaveta no celular ----------
-  const openPanel = () => { app.classList.add("panel-open"); $("#conv-backdrop").hidden = false; };
-  const closePanel = () => { app.classList.remove("panel-open"); $("#conv-backdrop").hidden = true; };
-  $("#conv-toggle").onclick = () => (app.classList.contains("panel-open") ? closePanel() : openPanel());
-  $("#conv-close").onclick = closePanel;
-  $("#conv-backdrop").onclick = closePanel;
-  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closePanel(); });
-  $("#conv-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadConversations, 250); });
+  const loadConversations = () => { T.setActive(state.conv?.id ?? null); return T.reload(); };
+  const closePanel = T.closePanel;
+  T.onPick = (id) => openConversation(id);
+  T.onNew = (category) => newConversation(category);
 
   // ---------- organizar: título, categoria, excluir (só do sistema), restaurar ----------
   function showConvMeta(c) {
@@ -244,7 +218,6 @@
       const c = await api(`/api/conversations/${state.conv.id}/restore`, { method: "POST" });
       Object.assign(state.conv, c); showConvMeta(state.conv);
       if ($("#conv-dialog").open) $("#conv-dialog").close();
-      filter = ALL; try { localStorage.setItem("gos.convFilter", ALL); } catch { /* ok */ }
       loadConversations();
     } catch (e) { alert(e.message); }
   }
@@ -256,11 +229,13 @@
     $("#conv-title").textContent = "Nova thread"; $("#conv-edit").hidden = true;
     $("#trash-bar").hidden = true; $("#input").disabled = false; $("#composer").classList.remove("disabled");
     $("#messages").innerHTML = ""; $("#messages").appendChild(emptyState());
+    state.choice = defaultChoice(); showChoice();
   }
 
   async function openConversation(id) {
     const c = await api(`/api/conversations/${id}`);
     state.conv = c; state.commands = {}; state.boxes = {};
+    state.choice = choiceFor(c); showChoice();
     for (const r of c.commands) state.commands[r.command] = r;
     showConvMeta(c);
     $("#messages").innerHTML = "";
@@ -271,18 +246,36 @@
     loadConversations();
   }
 
-  async function newConversation() {
+  // category: nome da categoria quando vem do "+" de um grupo; vazio = sem categoria.
+  // category: nome da categoria quando vem do "+" de um grupo; vazio = sem categoria.
+  async function newConversation(category = NONE) {
     closePanel();
-    // Reaproveita a conversa vazia aberta em vez de empilhar várias "Nova conversa".
-    if (state.conv && !state.conv.deleted && NEW_TITLES.includes(state.conv.title) && !$("#messages .msg")) { $("#input").focus(); return; }
-    const c = await api("/api/conversations", { method: "POST" });
-    if (filter !== ALL && filter !== TRASH) {
-      // Nova conversa já nasce na categoria que está filtrada.
-      Object.assign(c, await api(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ category: filter }) }));
-    } else if (filter === TRASH) { filter = ALL; }
+    const want = typeof category === "string" ? category : NONE;
+    // Reaproveita a conversa vazia aberta em vez de empilhar várias "Nova thread".
+    const reuse = state.conv && !state.conv.deleted && NEW_TITLES.includes(state.conv.title) && !$("#messages .msg");
+    if (reuse && (state.conv.category || NONE) === want) { $("#input").focus(); return; }
+    const c = reuse ? state.conv : await api("/api/conversations", { method: "POST" });
+    if (want || reuse) {
+      Object.assign(c, await api(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ category: want }) }));
+    }
+    if (want) T.expand(want);
     await openConversation(c.id);
     $("#input").focus();
   }
+
+  // Botão dentro da mensagem (Continuar / Tentar de novo). Some depois do clique.
+  function addAction(row, label, fn) {
+    const bar = el("div", "msg-actions");
+    const b = el("button", "btn small", esc(label)); b.type = "button";
+    b.onclick = () => { if (state.busy) return; bar.remove(); fn(); };
+    bar.appendChild(b); row.querySelector(".body").appendChild(bar);
+  }
+
+  const HTTP_HINT = {
+    502: "O servidor do Growth OS não respondeu (502). Ele pode estar reiniciando por um deploy ou caiu no meio do pedido.",
+    503: "O Growth OS está indisponível agora (503), provavelmente reiniciando.",
+    504: "O pedido demorou demais e o proxy desistiu (504).",
+  };
 
   // Lê o NDJSON do laço do agente e desenha cada evento assim que chega.
   async function consume(path, body, provider) {
@@ -290,6 +283,8 @@
     let typing = addMessage({ role: "assistant", provider, typing: true });
     const setTyping = (label) => { typing?.querySelector(".content").setAttribute("data-label", label); };
     const dropTyping = () => { typing?.remove(); typing = null; };
+    const retryContinue = () => continueAgent();
+    let ended = false; let reached = false;
     try {
       const res = await fetch(path, {
         method: "POST", credentials: "same-origin",
@@ -297,7 +292,12 @@
         body: JSON.stringify(body),
       });
       if (res.status === 401) { location.href = "/login"; return; }
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `erro ${res.status}`); }
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        const err = new Error(d.detail || HTTP_HINT[res.status] || `erro ${res.status}`);
+        err.retry = res.status >= 500; throw err;
+      }
+      reached = true;
       const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
       for (;;) {
         const { value, done } = await reader.read();
@@ -309,21 +309,36 @@
           if (!line) continue;
           const ev = JSON.parse(line);
           if (ev.type === "step") { setTyping(`passo ${ev.n}`); }
-          else if (ev.type === "message") { dropTyping(); addMessage({ role: "assistant", provider: ev.provider, content: ev.content }); typing = addMessage({ role: "assistant", provider, typing: true }); }
+          else if (ev.type === "message") { dropTyping(); addMessage({ role: "assistant", provider: ev.provider, model: ev.model, content: ev.content }); typing = addMessage({ role: "assistant", provider, typing: true }); }
           else if (ev.type === "command") {
             state.commands[ev.run.command] = ev.run;
             const box = state.boxes[ev.run.command]; if (box) showRun(box, ev.run);
           } else if (ev.type === "approval") {
-            dropTyping();
+            ended = true; dropTyping();
             state.commands[ev.run.command] = ev.run;
             const box = state.boxes[ev.run.command]; if (box) showRun(box, ev.run);
             openApproval(ev.run, box);
-          } else if (ev.type === "notice") { dropTyping(); addMessage({ role: "assistant", provider, content: ev.message }); }
-          else if (ev.type === "error") { dropTyping(); addMessage({ role: "assistant", provider, content: `Erro: ${ev.message}`, error: true }); }
+          } else if (ev.type === "notice") {
+            dropTyping(); const row = addMessage({ role: "assistant", provider, content: ev.message });
+            if (ev.continue) addAction(row, "Continuar", retryContinue);
+          } else if (ev.type === "error") {
+            ended = true; dropTyping();
+            const row = addMessage({ role: "assistant", provider, content: `Erro: ${ev.message}`, error: true });
+            if (ev.retry) addAction(row, "Tentar de novo", retryContinue);
+          } else if (ev.type === "done") { ended = true; }
+          // "ping" só mantém a conexão viva enquanto a IA pensa
         }
       }
+      if (!ended) {  // conexão caiu no meio (deploy, proxy, rede): o que já rodou está salvo
+        dropTyping();
+        const row = addMessage({ role: "assistant", provider, content: "Erro: a conexão com o servidor caiu no meio da resposta. O que já foi feito está salvo.", error: true });
+        addAction(row, "Tentar de novo", retryContinue);
+      }
     } catch (e) {
-      dropTyping(); addMessage({ role: "assistant", provider, content: `Erro: ${e.message}`, error: true });
+      dropTyping();
+      const row = addMessage({ role: "assistant", provider, content: `Erro: ${e.message}`, error: true });
+      // Antes de chegar ao app (502 do proxy) nada foi salvo: repete o mesmo pedido. Depois, só continua.
+      if (e.retry || e instanceof TypeError) addAction(row, "Tentar de novo", reached ? retryContinue : () => consume(path, body, provider));
     } finally {
       dropTyping(); state.busy = false; $("#send").disabled = false; $("#input").focus();
       loadConversations();
@@ -331,22 +346,23 @@
   }
 
   function continueAgent() {
-    const provider = $("#provider").value;
-    if (state.conv && provider) consume(`/api/conversations/${state.conv.id}/continue`, { provider }, provider);
+    const { provider } = state.choice;
+    if (state.conv && provider) consume(`/api/conversations/${state.conv.id}/continue`, { ...state.choice }, provider);
   }
 
   $("#composer").onsubmit = async (ev) => {
     ev.preventDefault();
     if (state.busy) return;
     const input = $("#input"); const text = input.value.trim(); if (!text) return;
-    const provider = $("#provider").value;
+    const { provider } = state.choice;
     if (!provider) { alert("Nenhum provider disponível. Configure Claude, Codex ou OpenRouter no servidor."); return; }
-    if (!state.conv) await newConversation();
+    if (!state.conv) { const keep = state.choice; await newConversation(); state.choice = keep; showChoice(); }
     if (state.conv.deleted) return;
     input.value = ""; input.style.height = "auto";
     addMessage({ role: "user", content: text });
     if (NEW_TITLES.includes(state.conv.title)) { state.conv.title = text.split("\n")[0].slice(0, 80); $("#conv-title").textContent = state.conv.title; }
-    consume(`/api/conversations/${state.conv.id}/messages`, { provider, content: text }, provider);
+    Object.assign(state.conv, state.choice);
+    consume(`/api/conversations/${state.conv.id}/messages`, { ...state.choice, content: text }, provider);
   };
 
   $("#input").addEventListener("keydown", (ev) => {
@@ -359,13 +375,14 @@
     $("#input").value = chip.dataset.prompt;
     $("#composer").requestSubmit();
   });
-  $("#new-conv").onclick = newConversation;
-  $("#new-conv-m").onclick = newConversation;
   (async () => {
     await loadProviders();
     const convs = await loadConversations();
-    const wanted = Number(new URLSearchParams(location.search).get("c"));
-    if (wanted) await openConversation(wanted);
+    const params = new URLSearchParams(location.search);
+    const wanted = Number(params.get("c"));
+    if (params.has("c") || params.has("new")) history.replaceState(null, "", "/");
+    if (params.has("new")) await newConversation(params.get("cat") || NONE);
+    else if (wanted) await openConversation(wanted);
     else if (convs.length) await openConversation(convs[0].id);
   })().catch((e) => console.error(e));
 })();

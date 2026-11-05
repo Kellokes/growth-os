@@ -1,0 +1,231 @@
+"""Configuração de modelos: qual provider, modelo e nível de raciocínio cada atividade usa.
+
+Ordem de decisão para uma atividade (ex.: "threads"):
+  1. a escolha explícita (a thread ou o agente escolheu na hora)
+  2. a regra salva para a atividade em /settings
+  3. a regra "Padrão" (vale para tudo que não tem regra própria)
+  4. o que já existia antes: GOS_AGENT_PROVIDER / primeiro provider disponível, modelo padrão da conta/CLI
+Modelo vazio = o padrão do provider (o da conta no Claude/Codex, GOS_OPENROUTER_MODEL no OpenRouter).
+Raciocínio vazio = o padrão do modelo.
+"""
+
+import re
+import time
+from dataclasses import dataclass
+
+import httpx
+from sqlalchemy.orm import Session as DB
+
+from .db import ModelSetting, utcnow
+
+# Ids de modelo vão como argumento separado para a CLI (nunca por shell), mas validamos mesmo assim.
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-\[\]]{0,119}$")
+
+TEXT, IMAGE, VIDEO, AUDIO = "text", "image", "video", "audio"
+
+ACTIVITIES: list[dict] = [
+    {"key": "default", "label": "Padrão", "kind": TEXT,
+     "help": "Vale para tudo que não tiver uma regra própria abaixo."},
+    {"key": "threads", "label": "Threads", "kind": TEXT,
+     "help": "Ponto de partida de cada thread nova. Dá para trocar na própria thread."},
+    {"key": "agents_plan", "label": "Agentes · plano do dia", "kind": TEXT,
+     "help": "Quando os agentes propõem as tarefas da manhã."},
+    {"key": "agents_run", "label": "Agentes · execução", "kind": TEXT,
+     "help": "Quando um agente executa uma tarefa aprovada."},
+    {"key": "layout_html", "label": "Layouts · converter em HTML", "kind": TEXT,
+     "help": "Lê o layout aprovado e define onde e como o texto é escrito sobre a arte (a arte sem texto sai do modelo de Imagens). Aceita Codex, Claude ou um modelo do OpenRouter que aceite imagem de entrada."},
+    {"key": "image", "label": "Imagens", "kind": IMAGE,
+     "help": "Geração de imagens (posts, criativos). Precisa de um modelo que gere imagem."},
+    {"key": "video", "label": "Vídeos", "kind": VIDEO,
+     "help": "Geração de vídeo. Precisa de um modelo que gere vídeo."},
+    {"key": "audio", "label": "Áudio", "kind": AUDIO,
+     "help": "Voz, narração e transcrição."},
+]
+ACTIVITY_KEYS = {a["key"] for a in ACTIVITIES}
+
+# O que cada provider sabe fazer e como ele chama o "nível de raciocínio".
+# Os modelos são sugestões: o campo aceita qualquer id que a sua conta tenha.
+CATALOG: dict[str, dict] = {
+    "claude": {
+        "kinds": [TEXT],
+        "reasoning": [
+            {"id": "low", "label": "Baixo"}, {"id": "medium", "label": "Médio"}, {"id": "high", "label": "Alto"},
+            {"id": "xhigh", "label": "Muito alto"}, {"id": "max", "label": "Máximo"},
+        ],
+        "models": [
+            {"id": "opus", "label": "Opus (mais recente)"},
+            {"id": "sonnet", "label": "Sonnet (mais recente)"},
+            {"id": "haiku", "label": "Haiku (mais recente)"},
+            {"id": "claude-opus-5-5", "label": "Claude Opus 5.5"},
+            {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5"},
+            {"id": "claude-haiku-5-5", "label": "Claude Haiku 5.5"},
+            {"id": "claude-fable-5-1", "label": "Claude Fable 5.1"},
+        ],
+    },
+    "codex": {
+        # Lista do próprio Codex CLI (`codex debug models`). Os GPT-5.x saíram: o CLI marca todos com "upgrade" para o GPT-6
+        # e a conta ChatGPT recusa ("model is not supported when using Codex with a ChatGPT account").
+        "kinds": [TEXT],
+        "reasoning": [
+            {"id": "low", "label": "Baixo"}, {"id": "medium", "label": "Médio"}, {"id": "high", "label": "Alto"},
+            {"id": "xhigh", "label": "Muito alto"}, {"id": "max", "label": "Máximo"},
+        ],
+        "models": [
+            {"id": "gpt-6-astra", "label": "GPT-6 Astra"},
+            {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol"},
+            {"id": "gpt-6.1-terra", "label": "GPT-6.1 Terra"},
+            {"id": "gpt-6-sol", "label": "GPT-6 Sol"},
+            {"id": "gpt-6-luna", "label": "GPT-6 Luna"},
+        ],
+    },
+    "openrouter": {
+        "kinds": [TEXT, IMAGE, VIDEO, AUDIO],
+        "reasoning": [
+            {"id": "none", "label": "Desligado"}, {"id": "minimal", "label": "Mínimo"}, {"id": "low", "label": "Baixo"},
+            {"id": "medium", "label": "Médio"}, {"id": "high", "label": "Alto"}, {"id": "xhigh", "label": "Muito alto"},
+        ],
+        "models": [
+            {"id": "anthropic/claude-sonnet-4.5", "label": "Claude Sonnet 4.5", "kinds": [TEXT]},
+            {"id": "openai/gpt-5", "label": "GPT-5", "kinds": [TEXT]},
+            {"id": "google/gemini-2.5-pro", "label": "Gemini 2.5 Pro", "kinds": [TEXT]},
+            {"id": "deepseek/deepseek-chat-v3.1", "label": "DeepSeek V3.1", "kinds": [TEXT]},
+            {"id": "google/gemini-2.5-flash-image", "label": "Gemini 2.5 Flash Image", "kinds": [IMAGE]},
+            {"id": "openai/gpt-5-image", "label": "GPT-5 Image", "kinds": [IMAGE]},
+            {"id": "openai/gpt-4o-audio-preview", "label": "GPT-4o Audio", "kinds": [AUDIO]},
+        ],
+    },
+}
+
+
+@dataclass
+class Choice:
+    provider: str = ""
+    model: str = ""
+    reasoning: str = ""
+    source: str = ""  # explicit | activity key | "" (nada configurado)
+
+
+# Modelos que já estiveram na lista do Codex e a conta ChatGPT não aceita mais. Configurações antigas que ainda
+# apontam para eles voltam ao padrão da conta em vez de falhar toda vez.
+CODEX_RETIRED = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
+
+
+def check(provider: str, model: str, reasoning: str, kind: str = TEXT) -> str | None:
+    """Devolve a mensagem de erro, ou None se a combinação é válida."""
+    if not provider:
+        return None if not (model or reasoning) else "escolha o provider antes do modelo"
+    cat = CATALOG.get(provider)
+    if cat is None:
+        return "provider_desconhecido"
+    if kind not in cat["kinds"]:
+        return f"{provider} não faz {kind} pelo Growth OS"
+    if model and not MODEL_RE.match(model):
+        return "id de modelo inválido"
+    if reasoning and reasoning not in {r["id"] for r in cat["reasoning"]}:
+        return f"nível de raciocínio inválido para {provider}"
+    return None
+
+
+def kind_of(activity: str) -> str:
+    return next((a["kind"] for a in ACTIVITIES if a["key"] == activity), TEXT)
+
+
+def saved(db: DB) -> dict[str, ModelSetting]:
+    return {r.activity: r for r in db.query(ModelSetting).all()}
+
+
+def resolve(db: DB, activity: str) -> Choice:
+    rows = saved(db)
+    keys = [activity] if activity == "default" or kind_of(activity) != TEXT else [activity, "default"]
+    for key in keys:
+        r = rows.get(key)
+        if r and r.provider:
+            model = r.model or ""
+            if r.provider == "codex" and model in CODEX_RETIRED:
+                model = ""
+            return Choice(r.provider, model, r.reasoning or "", key)
+    return Choice()
+
+
+def save(db: DB, activity: str, provider: str, model: str, reasoning: str) -> ModelSetting:
+    r = db.get(ModelSetting, activity) or ModelSetting(activity=activity)
+    r.provider, r.model, r.reasoning, r.updated_at = provider, model, reasoning, utcnow()
+    db.add(r)
+    db.commit()
+    return r
+
+
+# ---------- lista viva do OpenRouter (pública, sem chave) ----------
+
+_OR_URL = "https://openrouter.ai/api/v1/models"
+_OR_CACHE: dict = {"at": 0.0, "models": None}
+_OR_TTL = 6 * 3600
+KINDS = (TEXT, IMAGE, VIDEO, AUDIO)
+
+
+def _price(v) -> float | None:
+    """Preço do OpenRouter (string em dólar por unidade). -1 = variável, vira None."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f < 0 else f
+
+
+def parse_openrouter(data: list) -> list[dict]:
+    out = []
+    for m in data:
+        mid = str(m.get("id", ""))
+        if not MODEL_RE.match(mid):
+            continue
+        arch = m.get("architecture") or {}
+        outs = [str(x) for x in (arch.get("output_modalities") or ["text"])]
+        ins = [str(x) for x in (arch.get("input_modalities") or ["text"])]
+        pricing = {}
+        for key, raw in (m.get("pricing") or {}).items():
+            if isinstance(key, str) and len(key) <= 40:
+                val = _price(raw)
+                if val is None and str(raw).strip() not in ("", "0"):
+                    pricing[key] = None  # variável
+                elif val:
+                    pricing[key] = val
+        out.append({
+            "id": mid,
+            "label": str(m.get("name") or mid)[:80],
+            "kinds": [k for k in KINDS if k in outs] or [TEXT],  # o que o modelo GERA
+            "inputs": [k for k in KINDS if k in ins],  # o que ele ENTENDE (ex.: áudio para transcrever)
+            "pricing": pricing,  # dólar por token / imagem / requisição; vazio = grátis
+            "free": not pricing,
+            "context": m.get("context_length") if isinstance(m.get("context_length"), int) else None,
+            "reasoning": "reasoning" in (m.get("supported_parameters") or []),
+        })
+    return out
+
+
+async def openrouter_models() -> dict:
+    """Todos os modelos do OpenRouter com preços. Cai na lista fixa (sem preços) se a API não responder."""
+    if _OR_CACHE["models"] is not None and time.time() - _OR_CACHE["at"] < _OR_TTL:
+        return {"live": True, "updated_at": _OR_CACHE["at"], "models": _OR_CACHE["models"]}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            # sem o filtro, a API pode devolver só os modelos que geram texto
+            resp = await client.get(_OR_URL, params={"output_modalities": "all"})
+            if resp.status_code >= 400:
+                resp = await client.get(_OR_URL)
+        resp.raise_for_status()
+        out = parse_openrouter(resp.json().get("data", []))
+        if out:
+            _OR_CACHE.update(at=time.time(), models=out)
+            return {"live": True, "updated_at": _OR_CACHE["at"], "models": out}
+    except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+        pass
+    fallback = [{**m, "inputs": m.get("kinds", [TEXT]), "pricing": {}, "free": False, "context": None}
+                for m in CATALOG["openrouter"]["models"]]
+    return {"live": False, "updated_at": None, "models": fallback}
+
+
+def for_kind(models: list[dict], kind: str) -> list[dict]:
+    """Modelos que servem para a atividade. Áudio inclui quem só ENTENDE áudio (transcrição)."""
+    if kind == AUDIO:
+        return [m for m in models if AUDIO in m["kinds"] or AUDIO in m.get("inputs", [])]
+    return [m for m in models if kind in m["kinds"]]

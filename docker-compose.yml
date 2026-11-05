@@ -36,19 +36,44 @@ services:
     mem_limit: 128m
     pids_limit: 64
 
+  # Serviço motion: HyperFrames + Chromium + ffmpeg. Gera a imagem final e o vídeo MP4 das peças a partir do template aprovado.
+  # Fica numa rede interna SEM saída para a internet: o HTML gerado pela IA não alcança nada fora daqui.
+  motion:
+    build: ./motion
+    container_name: growth-os-motion
+    restart: unless-stopped
+    networks: [render]
+    # Sem "ports": só o app alcança, pela rede "render".
+    shm_size: 1g
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 3g
+    pids_limit: 512
+
   growth-os:
-    build: .
+    build:
+      context: .
+      args:
+        # Versão que está rodando, para a IA comparar com a main (gos-self info).
+        GROWTH_OS_COMMIT: ${GROWTH_OS_COMMIT:-}
+        # Semana do ano: renova os CLIs do Claude e do Codex (ver Dockerfile).
+        CLI_REFRESH: ${CLI_REFRESH:-}
     container_name: growth-os
     restart: unless-stopped
     env_file: .env
     environment:
       GOS_DATABASE_URL: postgresql+psycopg://gos:${GOS_POSTGRES_PASSWORD}@postgres:5432/gos
       DOCKER_GATEWAY_URL: http://docker-gateway:2375
+      GOS_MOTION_URL: http://motion:3000
     depends_on:
       postgres:
         condition: service_healthy
       docker-gateway:
         condition: service_started
+    networks: [default, render]
     # Só o Caddy do host enxerga a porta; nada fica exposto direto na internet.
     ports:
       - "127.0.0.1:8100:8000"
@@ -74,6 +99,10 @@ services:
       - no-new-privileges:true
     mem_limit: 2g
     pids_limit: 512
+
+networks:
+  render:
+    internal: true
 
 volumes:
   gos-pgdata:

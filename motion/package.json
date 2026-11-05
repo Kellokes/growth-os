@@ -1,0 +1,11 @@
+{
+  "name": "growth-os-motion",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Renderiza em MP4/PNG a composição HyperFrames montada pelo Growth OS. Sem internet.",
+  "dependencies": {
+    "gsap": "3.13.0",
+    "hyperframes": "0.9.9"
+  }
+}

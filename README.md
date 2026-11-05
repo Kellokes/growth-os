@@ -12,7 +12,7 @@ O plano completo está em [docs/PLAN.md](docs/PLAN.md).
 - Bloqueio por 15 min após 5 tentativas erradas; códigos 2FA não podem ser reutilizados.
 - Sessão no servidor, cookie `HttpOnly` + `Secure` + `SameSite=Strict`, token CSRF em toda escrita.
 - CSP restritiva, sem scripts de terceiros, sem `/docs` da API.
-- A IA trabalha em laço (até 8 passos por pedido): propõe um comando, o Growth OS executa, devolve a saída e ela segue.
+- A IA trabalha em laço (até 25 passos por pedido, `GOS_AGENT_MAX_STEPS`): propõe um comando, o Growth OS executa, devolve a saída e ela segue. No limite ela para e mostra **Continuar**; se o provider falhar (timeout, 502), aparece **Tentar de novo**, que retoma do ponto onde parou. A conversa enviada à IA cabe em `GOS_AGENT_HISTORY_CHARS` (pedido original + mensagens recentes; saídas antigas vão resumidas).
   - **Roda direto:** leitura, criar/editar arquivos, instalar dependências, testes, `git commit`, `docker ps/logs`…
   - **Pede seu 2FA e pausa:** `rm -r`, `git push --force`/para a `main`, `docker stop/down/up`, SQL destrutivo, `kill`, `.env`…
   - **Bloqueado sempre:** `sudo`, `curl | sh`, leitura de credenciais, socket do Docker, `/proc/*/environ`…
@@ -55,6 +55,20 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
   tmpfs para o credential helper do git; comandos não recebem o token no ambiente e leitura direta é bloqueada.
   Mesmo assim trate-o como acessível à IA: o escopo pequeno e a proteção da `main` nos repos são o limite real.
 
+## O Growth OS mexendo no próprio código
+
+- A IA trabalha num clone do GitHub em `/workspace/growth-os`, nunca na pasta `~/growth-os` do servidor
+  (que tem o `.env`). O código que roda fica em `/app`, só leitura.
+- Ferramenta `gos-self`: `info` (versão rodando × main, acesso do token), `sync`, `branch NOME` (cria `gos/NOME`),
+  `test` (pytest com SQLite temporário, sem tocar no token real) e `pr` (testes, push da branch e PR).
+- Os PRs que mexem em deploy, workflows, Docker, executor, login ou gateway saem com um aviso no topo.
+- Nada chega à produção sem você: push na `main` pede 2FA, a IA nunca faz merge e o deploy só roda depois
+  do seu merge.
+- **Para ativar:** inclua `Kellokes/growth-os` no token fine-grained do `GOS_GITHUB_TOKEN` (Contents e
+  Pull requests em leitura e escrita). **Não** dê a permissão *Workflows*: sem ela o GitHub recusa qualquer
+  push que altere `.github/workflows`, e assim a IA não consegue mexer no workflow que tem a chave de deploy.
+  Vale também proteger a `main` (Settings → Branches) exigindo PR.
+
 ## Agentes e plano da manhã (etapa 3)
 
 - Tudo é por projeto: cada projeto tem o seu time (9 áreas), os seus KPIs e as suas tarefas. Na primeira
@@ -68,11 +82,45 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
 
 - O agendador roda dentro do app e gera o plano uma vez por dia a partir de `GOS_PLAN_HOUR`
   (padrão 7h, fuso `GOS_TIMEZONE`). O botão "Gerar plano" faz o mesmo na hora.
-- Provider dos agentes: `GOS_AGENT_PROVIDER` (padrão `claude`), ou o escolhido em cada agente; se não
-  estiver disponível, usa o primeiro que estiver.
+- Modelos (ícone de controles no topo, `/settings`): para cada atividade (Padrão, Threads, Agentes · plano,
+  Agentes · execução, Imagens, Vídeos, Áudio) você escolhe provider, modelo e nível de raciocínio. Modelo
+  vazio = padrão da conta (Claude/Codex) ou `GOS_OPENROUTER_MODEL`. Threads e cada agente podem trocar na
+  hora; a thread lembra a escolha. Claude recebe `--model`/`--effort`, Codex `--model` e
+  `-c model_reasoning_effort=...`, OpenRouter `model` e `reasoning.effort`.
+- Provider dos agentes: o escolhido no agente, senão a regra de Modelos da atividade, senão
+  `GOS_AGENT_PROVIDER` (padrão `claude`); se não estiver disponível, usa o primeiro que estiver.
 - Aviso no Telegram (opcional): crie um bot com o @BotFather, mande uma mensagem para ele e preencha
   `GOS_TELEGRAM_BOT_TOKEN` e `GOS_TELEGRAM_CHAT_ID`. O bot só envia; não aceita comandos.
 - `GOS_PUBLIC_URL` (ex.: `https://os.takeonestudio.io`) coloca o link do plano no aviso.
+
+## Kanban, habilidades, integrações e rotinas
+
+- **Kanban** (`/board`): cada atividade dos agentes numa coluna da etapa em que está (aguardando você, na fila,
+  em execução, esperando 2FA, concluída, falhou/rejeitada), por projeto ou todos. Arrastar uma proposta para
+  "Na fila" aprova; uma falha arrastada para "Na fila" (ou "Tentar de novo") roda de novo.
+- **Automações** (`/automations`), sempre do projeto escolhido:
+  - Habilidades: playbooks com os passos que os agentes marcados seguem. Entram no prompt do plano e da
+    execução. Há uma biblioteca com modelos prontos.
+  - Integrações: catálogo grátis/self-hosted primeiro (Umami, Plausible, Search Console, Meta Graph API,
+    Postiz, Uptime Kuma, Stripe, API do projeto). A tela guarda só a configuração pública. A chave vai no
+    `.env` do VPS no nome que a tela mostra (ex.: `GOS_INT_ZOMBIE_PARTY_UMAMI_API_KEY`) e o app precisa
+    reiniciar para ler. Comandos da IA não recebem variáveis `GOS_*`.
+  - Rotinas: atividades que se repetem (todo dia, semana ou mês, numa hora). Na hora marcada viram tarefa
+    do agente. Por padrão entram como proposta e esperam aprovação; "Rodar sem pedir aprovação" coloca
+    direto na fila (comandos perigosos continuam pedindo 2FA). Não empilham: se a anterior ainda está
+    aberta, a rodada é pulada.
+
+## Central de conteúdo
+
+`/content`, por projeto ou todos. Junta tudo que sai para fora e o que os agentes entregam:
+
+- **Peças**: posts (Instagram, TikTok, LinkedIn, X...), e-mails de contato e parceria, artigos. Os agentes
+  entregam cada peça num bloco ```` ```conteudo ```` no fim da tarefa (o formato está no prompt da execução).
+  Toda peça de agente nasce "aguardando você", inclusive as de rotinas com auto-aprovação. Aprovada, ela fica
+  agendada (com data) ou pronta para sair. Até as integrações de envio existirem (etapa 4), o app não publica
+  nem envia nada: você copia o texto, publica e marca como enviada (com o link, se quiser).
+- **Agenda**: peças com data e as próximas execuções das rotinas, dia a dia (hora de Brasília).
+- **Saídas**: o resultado das tarefas concluídas ou que falharam, com as peças que cada uma gerou.
 
 ## Banco de dados
 
@@ -123,6 +171,8 @@ pytest
 ```
 app/
   main.py          rotas (páginas, chat, comandos, auditoria)
+  growth.py        agentes, plano do dia, fila de tarefas e agendador
+  routines.py      habilidades, integrações e rotinas (automações)
   security.py      senha, 2FA, sessões, CSRF
   executor.py      classificação de risco e execução de comandos
   providers/       Claude CLI, Codex CLI, OpenRouter

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Código 2FA · Growth OS{% endblock %}
+{% block body %}
+<main class="login">
+  <button class="icon-btn theme-fab theme-btn" type="button" data-theme-toggle aria-label="Alternar tema"><span class="i-sun">{{ ic("sun") }}</span><span class="i-moon">{{ ic("moon") }}</span></button>
+  <form class="card login-card" method="post" action="/login/2fa" autocomplete="off" data-otp-form>
+    <div class="orb small" aria-hidden="true"><i></i></div>
+    <div class="brand"><span class="logo">◆</span><span class="brand-name">Growth OS</span></div>
+    <ol class="login-steps" aria-label="Etapa 2 de 2"><li class="done">Senha</li><li class="on">Código 2FA</li></ol>
+    <h1 class="login-title">Confirme que é você</h1>
+    <p class="muted">Digite o código de 6 dígitos do seu app autenticador. Ele vale por 30 segundos.</p>
+    {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+    <label>Código 2FA<input class="otp-input" name="totp" inputmode="numeric" pattern="[0-9 ]{6,8}" maxlength="8"
+      autocomplete="one-time-code" placeholder="000000" required autofocus></label>
+    <button class="btn primary big" type="submit">Entrar {{ ic("arrow") }}</button>
+    <a class="login-back" href="/login">Voltar e usar outra conta</a>
+  </form>
+</main>
+<script src="/static/login.js"></script>
+{% endblock %}

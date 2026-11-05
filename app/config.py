@@ -21,10 +21,15 @@ class Settings(BaseSettings):
     command_max_output_bytes: int = 200_000
 
     provider_timeout_seconds: int = 300
+    # Laço do agente: passos seguidos antes de parar e pedir "continue", e quanto da conversa vai para a IA.
+    agent_max_steps: int = 25
+    agent_history_chars: int = 120_000
     claude_bin: str = "claude"
     codex_bin: str = "codex"
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
+    # Serviço de vídeo (HyperFrames + Chromium + ffmpeg, rede interna sem internet) que anima o template da peça em MP4.
+    motion_url: str = "http://motion:3000"
 
     # Etapa 2: gateway do Docker (único com o socket) e Caddyfile montado só para leitura.
     gateway_url: str = "http://docker-gateway:2375"
@@ -41,6 +46,7 @@ class Settings(BaseSettings):
     plan_hour: int = 7  # hora local em que o plano do dia é gerado
     agent_provider: str = "claude"  # provider padrão dos agentes (cai no primeiro disponível)
     agent_concurrency: int = 2
+    runner_workers: int = 2  # tarefas rodando ao mesmo tempo (no máximo uma por agente e projeto)
     public_url: str = ""  # ex.: https://os.exemplo.com, para o link no aviso
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""  # ex.: "DOMAIN=exemplo.com" para resolver {$DOMAIN} do Caddyfile

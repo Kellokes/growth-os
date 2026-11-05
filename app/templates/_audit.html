@@ -4,3 +4,23 @@
   <form method="dialog"><button class="btn">Fechar</button></form>
 </dialog>
 <script src="/static/shell.js"></script>
+<section class="calllog" id="calllog" aria-label="Chamadas em segundo plano">
+  <button class="calllog-bar" id="calllog-toggle" type="button" aria-expanded="false" aria-controls="calllog-panel">
+    <span class="calllog-dot" id="calllog-dot"></span>
+    <strong>Chamadas em segundo plano</strong>
+    <span class="calllog-sum muted" id="calllog-sum">carregando…</span>
+    <span class="calllog-last muted" id="calllog-last"></span>
+    <span class="calllog-chev" aria-hidden="true">▴</span>
+  </button>
+  <div class="calllog-panel" id="calllog-panel" hidden>
+    <div class="calllog-filters" id="calllog-filters" role="group" aria-label="Filtrar">
+      <button class="btn small on" type="button" data-f="">Todas</button>
+      <button class="btn small" type="button" data-f="error">Com erro</button>
+      <button class="btn small" type="button" data-f="running">Em andamento</button>
+      <button class="btn small ghost calllog-clear" id="calllog-wipe" type="button" title="Esconde as chamadas da tela. O histórico continua salvo">Limpar tela</button>
+      <button class="btn small ghost" id="calllog-clear" type="button" title="Apaga do log só as chamadas com erro">Limpar erros</button>
+    </div>
+    <div class="calllog-list" id="calllog-list" role="list"></div>
+  </div>
+</section>
+<script src="/static/calllog.js"></script>

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,31 @@ COMO MUDAR CÓDIGO DOS PROJETOS
   projeto segue o fluxo dele. Rode os testes do projeto antes do push quando existirem.
 - Se o push ou o PR falharem por falta de acesso, diga ao owner que falta o token do GitHub para aquele repo.
 
+O SEU PRÓPRIO CÓDIGO (o Growth OS)
+- Você pode ler e propor mudanças no código do próprio Growth OS. Ele não está montado aqui (a pasta do
+  servidor tem o .env); você trabalha num clone do GitHub em /workspace/growth-os:
+    gos-self info                  repo, versão rodando em produção, estado da cópia e acesso do token
+    gos-self sync                  clona ou atualiza a cópia (comece sempre por aqui)
+    gos-self branch NOME           cria a branch gos/NOME a partir da main
+    gos-self test                  roda os testes da cópia
+    gos-self pr --title "..." --body "..."   roda os testes, dá push da branch e abre o PR
+- O código que roda agora fica em /app, só leitura. Mudanças só chegam à produção quando o owner faz merge
+  do PR; o deploy é automático depois do merge. Nunca tente reiniciar ou republicar o Growth OS você mesmo.
+- Não enfraqueça a política de segurança (executor, login, 2FA, gateway, deploy, workflows) sem o owner pedir.
+  Se um PR mexer nisso, diga claramente no texto do PR o que muda e por quê.
+
+MISSÕES (trabalho que envolve vários agentes de um projeto)
+- Se o pedido do owner é trabalho de time (campanha, lançamento, ação que passa por Design, Social, Growth...),
+  não faça tudo sozinho: proponha uma missão com um bloco ```missao (JSON). O owner aprova num cartão só e
+  os agentes do projeto executam, em ordem, cada um com as suas ferramentas. Ações externas (publicar, enviar)
+  ainda pedem aprovação à parte.
+```missao
+{"projeto": "slug-do-projeto", "titulo": "...", "objetivo": "critério de pronto",
+ "tarefas": [{"id": "a", "agente": "design", "titulo": "...", "detalhes": "..."},
+             {"id": "b", "agente": "social", "titulo": "...", "depende": "a"}]}
+```
+  Sem "tarefas", o Coordenador do projeto monta o plano. Use só slugs de agentes que existem no projeto.
+
 Responda em português, direto e sem enrolação."""
 
 
@@ -49,7 +75,11 @@ class ChatTurn:
 
 
 class ProviderError(RuntimeError):
-    pass
+    """Falha do provider. retryable=True quando tentar de novo tem chance de dar certo (timeout, 5xx, 429)."""
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def render_transcript(history: list[ChatTurn]) -> str:
@@ -83,7 +113,7 @@ async def run_cli(args: list[str], cwd: Path, timeout: int, stdin: str | None = 
         )
     except asyncio.TimeoutError as e:
         proc.kill()
-        raise ProviderError(f"{args[0]} excedeu {timeout}s") from e
+        raise ProviderError(f"{args[0]} excedeu {timeout}s", retryable=True) from e
     if proc.returncode != 0:
         msg = (err or out).decode(errors="replace").strip()[-800:]
         raise ProviderError(f"{args[0]} falhou (código {proc.returncode}): {msg}")
@@ -93,9 +123,22 @@ async def run_cli(args: list[str], cwd: Path, timeout: int, stdin: str | None = 
 class Provider:
     id: str = ""
     label: str = ""
+    # Escolhidos por atividade/thread (ver app/modelcfg.py). Vazio = padrão da conta/CLI/modelo.
+    model: str = ""
+    reasoning: str = ""
+
+    def configured(self, model: str = "", reasoning: str = "") -> "Provider":
+        """Cópia deste provider com o modelo e o raciocínio escolhidos (o original não muda)."""
+        p = copy.copy(self)
+        p.model, p.reasoning = model or "", reasoning or ""
+        return p
 
     def available(self) -> tuple[bool, str]:
         return True, ""
 
     async def complete(self, history: list[ChatTurn]) -> str:
         raise NotImplementedError
+
+    async def complete_with_image(self, prompt: str, image: bytes, mime: str) -> str:
+        """Prompt com UMA imagem de entrada. Só os providers que enxergam imagem implementam."""
+        raise ProviderError(f"{self.label} não lê imagem pelo Growth OS; escolha Codex, Claude ou um modelo com visão do OpenRouter")

@@ -1,9 +1,42 @@
-    <div class="brand"><span class="logo">◆</span> Growth OS</div>
-    <nav class="nav">
-      <a {% if active == 'chat' %}class="active" {% endif %}href="/">Threads</a>
-      <a {% if active == 'dashboard' %}class="active" {% endif %}href="/dashboard">Dashboard</a>
-      <a {% if active == 'plan' %}class="active" {% endif %}href="/plan">Plano do dia</a>
-      <a {% if active == 'agents' %}class="active" {% endif %}href="/agents">Agentes</a>
-      <a {% if active == 'projects' %}class="active" {% endif %}href="/projects">Projetos</a>
-      <button class="link" id="show-audit" type="button">Auditoria</button>
-    </nav>
+{% from "_icons.html" import ic %}
+{# Menu lateral, como nos harness: primeiro as seções, embaixo as threads, e no rodapé ícones de projetos, modelos, configurações, auditoria, tema e sair.
+   No celular vira gaveta, aberta pelo botão de menu da barra de cima. #}
+<div class="mbar">
+  <button class="icon-btn side-open" type="button" data-side-open aria-controls="sidenav" aria-label="Abrir menu">{{ ic("menu") }}</button>
+  <a class="brand" href="/" aria-label="Growth OS"><span class="logo">◆</span><span class="brand-name">Growth OS</span></a>
+  <button class="icon-btn" type="button" data-new-thread aria-label="Nova thread" title="Nova thread">{{ ic("plus") }}</button>
+</div>
+<aside class="sidenav" id="sidenav" aria-label="Menu">
+  <div class="side-head">
+    <a class="brand" href="/" aria-label="Growth OS"><span class="logo">◆</span><span class="brand-name">Growth OS</span></a>
+    <button class="icon-btn side-mini" id="side-mini" type="button" aria-label="Recolher menu" title="Recolher/expandir menu">{{ ic("menu") }}</button>
+    <button class="icon-btn side-close" id="side-close" type="button" aria-label="Fechar menu">{{ ic("close") }}</button>
+  </div>
+
+  <nav class="nav" aria-label="Seções">
+    {% for key, href, icon, label in [("dashboard", "/dashboard", "grid", "Dashboard"), ("approvals", "/approvals", "check", "Aprovações"), ("board", "/board", "kanban", "Kanban"), ("automations", "/automations", "bolt", "Automações"), ("layouts", "/layouts", "wand", "Layouts")] %}
+    <a class="nav-item{% if active == key %} active{% endif %}" href="{{ href }}"{% if active == key %} aria-current="page"{% endif %} title="{{ label }}">{{ ic(icon) }}<span>{{ label }}</span></a>
+    {% endfor %}
+  </nav>
+
+  <section class="side-threads" id="conv-panel" aria-label="Threads">
+    <div class="conv-head">
+      <span>Threads</span>
+      <button class="btn small primary" id="new-conv" type="button" data-new-thread>{{ ic("plus") }} Nova</button>
+    </div>
+    <label class="search-field">{{ ic("search") }}<input class="conv-search" id="conv-search" type="search" placeholder="Buscar thread…" autocomplete="off" aria-label="Buscar thread"></label>
+    <div class="conv-filters" id="conv-filters" role="tablist" aria-label="Categorias"></div>
+    <ul class="conv-list" id="conv-list"></ul>
+  </section>
+
+  <div class="side-foot">
+    <a class="icon-btn{% if active == "projects" %} on{% endif %}" href="/projects" aria-label="Projetos" title="Projetos"{% if active == "projects" %} aria-current="page"{% endif %}>{{ ic("projects") }}</a>
+    <a class="icon-btn{% if active == "models" %} on{% endif %}" href="/settings" aria-label="Modelos" title="Modelos: provider, modelo e raciocínio por atividade"{% if active == "models" %} aria-current="page"{% endif %}>{{ ic("sliders") }}</a>
+    <a class="icon-btn{% if active == "costs" %} on{% endif %}" href="/costs" aria-label="Custos" title="Custos das chamadas ao OpenRouter"{% if active == "costs" %} aria-current="page"{% endif %}>{{ ic("coin") }}</a>
+    <a class="icon-btn{% if active == "config" %} on{% endif %}" href="/config" aria-label="Configurações" title="Configurações"{% if active == "config" %} aria-current="page"{% endif %}>{{ ic("gear") }}</a>
+    <button class="icon-btn" id="show-audit" type="button" aria-label="Auditoria" title="Auditoria">{{ ic("audit") }}</button>
+    <button class="icon-btn theme-btn" type="button" data-theme-toggle aria-label="Alternar tema" title="Alternar tema claro/escuro"><span class="i-sun">{{ ic("sun") }}</span><span class="i-moon">{{ ic("moon") }}</span></button>
+    <button class="icon-btn" id="logout" type="button" aria-label="Sair" title="Sair">{{ ic("logout") }}</button>
+  </div>
+</aside>
+<div class="conv-backdrop" id="conv-backdrop" hidden></div>

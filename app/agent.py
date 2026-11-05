@@ -7,6 +7,7 @@ Cada passo: provider responde -> blocos ```bash são extraídos -> cada um é cl
 O laço para quando a resposta não tem mais comandos, ao pausar por aprovação ou no limite de passos.
 """
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -15,13 +16,16 @@ from sqlalchemy.orm import Session as DB
 from starlette.concurrency import run_in_threadpool
 
 from .audit import audit
+from . import actions, calllog
 from .config import get_settings
 from .projects import GatewayError, restart_container, restart_target
 from .db import CommandRun, Message
 from .executor import classify, run_command
 from .providers import ChatTurn, Provider, ProviderError
 
-MAX_STEPS = 8
+HEARTBEAT_SECONDS = 15  # linha "ping" no stream enquanto a IA pensa: proxies não cortam a conexão parada
+KEEP_FULL_TOOL_RESULTS = 6  # saídas de comando mais antigas que isso vão resumidas para a IA
+OLD_TOOL_CHARS = 1500
 _BLOCK = re.compile(r"```(?:bash|sh|shell|zsh|console)[ \t]*\n(.*?)```", re.S)
 
 
@@ -49,13 +53,45 @@ def tool_message(run: CommandRun, after_pause: bool = False) -> str:
     return msg
 
 
-def build_history(db: DB, cid: int) -> list[ChatTurn]:
+def _shorten(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit // 2] + "\n[... saída antiga cortada para caber no contexto ...]\n" + text[-limit // 2:]
+
+
+def build_history(db: DB, cid: int, budget: int | None = None) -> list[ChatTurn]:
+    """Conversa que vai para a IA, cabendo num orçamento de caracteres.
+
+    Mantém sempre o pedido original (primeira mensagem do owner) e as mensagens mais recentes; saídas de
+    comando antigas vão resumidas. Sem isso, um laço longo cresce até estourar o contexto do modelo
+    (o OpenRouter responde 400/502 e a thread trava no "continue").
+    """
+    budget = budget or get_settings().agent_history_chars
     rows = db.query(Message).filter(Message.conversation_id == cid).order_by(Message.id).all()
-    turns = []
-    for m in rows[-40:]:
-        role = "assistant" if m.role == "assistant" else "user"  # "tool" volta como mensagem do usuário
-        turns.append(ChatTurn(role, m.content))
-    return turns
+    turns = [ChatTurn("assistant" if m.role == "assistant" else "user", m.content) for m in rows]
+    tool_idx = [i for i, m in enumerate(rows) if m.role == "tool"]
+    for i in tool_idx[:-KEEP_FULL_TOOL_RESULTS]:
+        turns[i] = ChatTurn("user", _shorten(turns[i].content, OLD_TOOL_CHARS))
+    if not turns:
+        return turns
+
+    # Pedido original fica sempre; depois dele, as mensagens mais recentes que couberem.
+    first = next((i for i, m in enumerate(rows) if m.role == "user"), 0)
+    head, rest = turns[first], turns[first + 1:]
+    used, tail = len(head.content), []
+    for t in reversed(rest):
+        if tail and used + len(t.content) > budget:
+            break
+        if not tail and used + len(t.content) > budget:  # nem a última cabe sozinha: vai cortada
+            t = ChatTurn(t.role, _shorten(t.content, max(budget - used, 2000)))
+        tail.append(t)
+        used += len(t.content)
+    tail.reverse()
+    omitted = len(rest) - len(tail)
+    if omitted:
+        note = f"[{omitted} mensagens antigas desta thread foram omitidas para caber no contexto do modelo]"
+        return [head, ChatTurn("user", note), *tail]
+    return [head, *tail]
 
 
 async def execute_run(db: DB, run: CommandRun) -> None:
@@ -70,8 +106,10 @@ async def execute_run(db: DB, run: CommandRun) -> None:
         run.status = "done" if run.exit_code == 0 else "failed"
         db.commit()
         return
+    ticket = actions.ticket_for_conversation(run.conversation_id)  # só tarefas de agente em execução têm ticket
     result = await run_in_threadpool(
-        run_command, run.command, Path(s.workspace_dir), s.command_timeout_seconds, s.command_max_output_bytes
+        run_command, run.command, Path(s.workspace_dir), s.command_timeout_seconds, s.command_max_output_bytes,
+        {"TASK_TICKET": ticket} if ticket else None,
     )
     run.exit_code = result.exit_code
     run.output = result.output
@@ -79,20 +117,50 @@ async def execute_run(db: DB, run: CommandRun) -> None:
     db.commit()
 
 
-async def run_agent(db: DB, cid: int, provider: Provider, actor: str, ip: str) -> AsyncIterator[dict]:
-    """Gera eventos para a interface: step, message, command, approval, notice, done, error."""
-    for step in range(MAX_STEPS):
-        yield {"type": "step", "n": step + 1, "provider": provider.id}
+async def _complete(provider: Provider, history: list[ChatTurn], actor: str = "") -> AsyncIterator[dict | str]:
+    """Chama o provider; enquanto ele pensa, solta {"type": "ping"}. O último item é o texto da resposta."""
+    activity = calllog.current("activity") or "threads"
+    with calllog.track(provider.id, provider.model, activity, calllog.summarize_history(history), actor=actor) as call:
+        task = asyncio.ensure_future(provider.complete(history))
         try:
-            reply = await provider.complete(build_history(db, cid))
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=HEARTBEAT_SECONDS)
+                if done:
+                    break
+                yield {"type": "ping"}
+            reply = task.result()
+            call.done(calllog.summarize_text(reply))
+            yield reply
+        finally:
+            if not task.done():
+                task.cancel()
+
+
+async def run_agent(db: DB, cid: int, provider: Provider, actor: str, ip: str) -> AsyncIterator[dict]:
+    """Gera eventos para a interface: step, ping, message, command, approval, notice, done, error."""
+    max_steps = max(1, get_settings().agent_max_steps)
+    for step in range(max_steps):
+        yield {"type": "step", "n": step + 1, "provider": provider.id}
+        reply = ""
+        try:
+            async for item in _complete(provider, build_history(db, cid), actor):
+                if isinstance(item, dict):
+                    yield item
+                else:
+                    reply = item
         except ProviderError as e:
             audit(db, actor, "chat_error", f"{provider.id}: {e}", ip)
-            yield {"type": "error", "message": str(e)}
+            yield {"type": "error", "message": str(e), "retry": e.retryable}
             return
-        m = Message(conversation_id=cid, role="assistant", provider=provider.id, content=reply or "(sem resposta)")
+        except Exception as e:  # noqa: BLE001 - erro inesperado do provider (rede etc.): avisa e deixa tentar de novo
+            audit(db, actor, "chat_error", f"{provider.id}: {type(e).__name__}", ip)
+            yield {"type": "error", "message": f"{provider.id} falhou ({type(e).__name__}). Tente de novo.", "retry": True}
+            return
+        m = Message(conversation_id=cid, role="assistant", provider=provider.id, model=provider.model,
+                    content=reply or "(sem resposta)")
         db.add(m)
         db.commit()
-        yield {"type": "message", "id": m.id, "provider": provider.id, "content": m.content}
+        yield {"type": "message", "id": m.id, "provider": provider.id, "model": provider.model, "content": m.content}
 
         commands = extract_commands(reply)
         if not commands:
@@ -127,5 +195,7 @@ async def run_agent(db: DB, cid: int, provider: Provider, actor: str, ip: str) -
         db.commit()
         if paused:
             return  # retomado por /continue depois que o owner decidir
-    yield {"type": "notice", "message": f"Parei depois de {MAX_STEPS} passos seguidos. Diga \"continue\" se quiser que eu siga."}
+    yield {"type": "notice", "continue": True,
+           "message": f"Parei depois de {max_steps} passos seguidos para você acompanhar. "
+                      "Clique em Continuar (ou escreva \"continue\") para eu seguir de onde parei."}
     yield {"type": "done"}

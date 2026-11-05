@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Modelos · Growth OS{% endblock %}
+{% block body %}
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
+  <main class="main">
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("sliders") }}<span>Configurações</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1>Modelos</h1><p class="lede muted">Escolha qual provider, modelo e nível de raciocínio cada atividade usa. O que ficar em “Seguir o padrão” usa a regra Padrão. Threads e agentes ainda podem trocar na hora.</p></div>
+      </div>
+    </header>
+    <section class="page">
+      <div class="alerts" id="alerts"></div>
+      <h3 class="section-title">Texto e execução</h3>
+      <div class="model-grid" id="text-rules"><div class="muted">Carregando…</div></div>
+      <h3 class="section-title">Mídia</h3>
+      <p class="muted small-print media-note">Claude e Codex pelo login da conta só trabalham com texto, então imagem, vídeo e áudio usam o OpenRouter. O Growth OS ainda não gera mídia sozinho: o que você salvar aqui fica pronto para as integrações de conteúdo.</p>
+      <div class="model-grid" id="media-rules"></div>
+      <h3 class="section-title">Providers</h3>
+      <div class="card provider-list" id="providers"></div>
+    </section>
+  </main>
+</div>
+{% include "_audit.html" %}
+<script src="/static/modelpick.js"></script>
+<script src="/static/settings.js"></script>
+{% endblock %}

@@ -1,60 +1,47 @@
 {% extends "base.html" %}
+{% from "_icons.html" import ic %}
 {% block body %}
-<div class="shell" id="app" data-csrf="{{ csrf }}">
-  <aside class="sidebar">
-    {% include "_nav.html" %}
-    <div class="conv-panel" id="conv-panel" aria-label="Threads">
-      <div class="conv-head">
-        <span>Threads</span>
-        <button class="icon-btn conv-close" id="conv-close" type="button" aria-label="Fechar">✕</button>
-        <button class="btn small" id="new-conv" type="button">+ Nova</button>
-      </div>
-      <input class="conv-search" id="conv-search" type="search" placeholder="Buscar thread…" autocomplete="off">
-      <div class="conv-filters" id="conv-filters" role="tablist" aria-label="Categorias"></div>
-      <ul class="conv-list" id="conv-list"></ul>
-    </div>
-    <div class="conv-backdrop" id="conv-backdrop" hidden></div>
-    {% include "_side_foot.html" %}
-  </aside>
-
+<div class="shell chat-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
   <main class="main">
-    <header class="topbar chat-top">
-      <button class="btn ghost conv-toggle" id="conv-toggle" type="button" aria-controls="conv-panel">☰ <span>Threads</span></button>
-      <div class="conv-title-wrap">
-        <h1 id="conv-title">Nova thread</h1>
-        <button class="icon-btn" id="conv-edit" type="button" aria-label="Organizar thread" title="Renomear, categoria ou excluir" hidden>⋯</button>
-      </div>
-      <button class="btn primary conv-new-m" id="new-conv-m" type="button" aria-label="Nova thread">+ Nova</button>
-      <label class="provider">Provider
-        <select id="provider"></select>
-      </label>
-    </header>
-
-    <div class="trash-bar" id="trash-bar" hidden>
-      <span>Esta thread está na lixeira (continua salva no banco).</span>
-      <button class="btn small" id="trash-restore" type="button">Restaurar</button>
-    </div>
-
-    <section class="messages" id="messages">
-      <div class="empty" id="empty">
-        <div class="logo">◆</div>
-        <h2>O que vamos operar hoje?</h2>
-        <p>Peça para criar, analisar ou alterar algo no VPS. A IA planeja, executa os comandos e confere o resultado sozinha.
-        Só o que apaga dados, derruba serviços ou mexe em segredos pede o seu código 2FA.</p>
-        <div class="chips">
-          <button class="chip" type="button" data-prompt="Mostre o estado do servidor: disco, memória e containers rodando.">Estado do servidor</button>
-          <button class="chip" type="button" data-prompt="Liste os projetos que existem no VPS e o que cada um faz.">Listar projetos</button>
-          <button class="chip" type="button" data-prompt="Crie a estrutura inicial de um novo projeto Python com FastAPI.">Novo projeto Python</button>
+    <div class="chat-card">
+      <header class="chat-top">
+        <button class="icon-btn conv-toggle" id="conv-toggle" type="button" data-side-open aria-controls="sidenav" aria-label="Abrir menu e threads">{{ ic("menu") }}</button>
+        <div class="conv-title-wrap">
+          <span class="chat-icon">{{ ic("threads") }}</span>
+          <h1 id="conv-title">Nova thread</h1>
+          <button class="icon-btn" id="conv-edit" type="button" aria-label="Organizar thread" title="Renomear, categoria ou excluir" hidden>{{ ic("more") }}</button>
         </div>
-      </div>
-    </section>
+        <button class="model-pill" id="model-btn" type="button" aria-haspopup="dialog" title="Provider, modelo e raciocínio desta thread">{{ ic("sliders") }}<span id="model-label">Carregando…</span></button>
+        <button class="icon-btn conv-new-m" id="new-conv-m" type="button" data-new-thread aria-label="Nova thread">{{ ic("plus") }}</button>
+      </header>
 
-    <div class="composer-wrap">
-      <form class="composer" id="composer">
-        <textarea id="input" rows="1" placeholder="Escreva uma mensagem…" required></textarea>
-        <button class="btn primary" id="send" type="submit">Enviar</button>
-      </form>
-      <div class="hint">Enter envia · Shift+Enter quebra linha · a IA executa o comum; o perigoso pede 2FA</div>
+      <div class="trash-bar" id="trash-bar" hidden>
+        <span>Esta thread está na lixeira (continua salva no banco).</span>
+        <button class="btn small" id="trash-restore" type="button">Restaurar</button>
+      </div>
+
+      <section class="messages" id="messages">
+        <div class="empty" id="empty">
+          <div class="orb" aria-hidden="true"><i></i></div>
+          <h2>O que vamos operar hoje?</h2>
+          <p>Peça para criar, analisar ou alterar algo no VPS. A IA planeja, executa os comandos e confere o resultado sozinha.
+          Só o que apaga dados, derruba serviços ou mexe em segredos pede o seu código 2FA.</p>
+          <div class="chips">
+            <button class="chip" type="button" data-prompt="Mostre o estado do servidor: disco, memória e containers rodando.">Estado do servidor</button>
+            <button class="chip" type="button" data-prompt="Liste os projetos que existem no VPS e o que cada um faz.">Listar projetos</button>
+            <button class="chip" type="button" data-prompt="Crie a estrutura inicial de um novo projeto Python com FastAPI.">Novo projeto Python</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="composer-wrap">
+        <form class="composer" id="composer">
+          <textarea id="input" rows="1" placeholder="Escreva para a IA…" required aria-label="Mensagem"></textarea>
+          <button class="send" id="send" type="submit" aria-label="Enviar" title="Enviar (Enter)">{{ ic("arrow") }}</button>
+        </form>
+        <div class="hint">Enter envia · Shift+Enter quebra linha · a IA executa o comum; o perigoso pede 2FA</div>
+      </div>
     </div>
   </main>
 </div>
@@ -92,7 +79,22 @@
   </form>
 </dialog>
 
+<dialog id="model-dialog" class="card">
+  <form method="dialog" id="model-form">
+    <h3>Modelo desta thread</h3>
+    <p class="muted small-print">Vale para as próximas mensagens desta thread, e ela lembra a escolha. O ponto de partida das threads novas fica em <a href="/settings">Modelos</a>.</p>
+    <div id="model-fields"></div>
+    <div class="row">
+      <button class="btn ghost" type="button" id="model-reset">Usar o padrão</button>
+      <span class="grow"></span>
+      <button class="btn ghost" type="button" id="model-cancel">Cancelar</button>
+      <button class="btn primary" type="submit">Aplicar</button>
+    </div>
+  </form>
+</dialog>
+
 {% include "_audit.html" %}
 
+<script src="/static/modelpick.js"></script>
 <script src="/static/app.js"></script>
 {% endblock %}

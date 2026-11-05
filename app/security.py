@@ -13,9 +13,13 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session as DB
 
 from .config import get_settings
-from .db import Session, User, get_db, utcnow
+from .db import LoginChallenge, Session, User, get_db, utcnow
 
 SESSION_COOKIE = "gos_session"
+# Cookie da etapa 2 do login: vale poucos minutos e só para /login.
+LOGIN_COOKIE = "gos_login"
+LOGIN_CHALLENGE_SECONDS = 300
+LOGIN_CHALLENGE_ATTEMPTS = 5
 _hasher = PasswordHasher()
 # Hash usado quando o usuário não existe, para o tempo de resposta não revelar isso.
 _DUMMY_HASH = _hasher.hash(secrets.token_hex(16))
@@ -68,24 +72,84 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def authenticate(db: DB, username: str, password: str, totp_code: str) -> tuple[User | None, str]:
-    """Retorna (usuário, motivo). Motivo só vai para o log de auditoria, nunca para a tela."""
+def _register_failure(db: DB, user: User) -> None:
     s = get_settings()
+    user.failed_logins += 1
+    if user.failed_logins >= s.max_login_failures:
+        user.locked_until = utcnow() + timedelta(minutes=s.lockout_minutes)
+        user.failed_logins = 0
+        # Bloqueou: nenhum desafio aberto sobrevive.
+        db.query(LoginChallenge).filter(LoginChallenge.user_id == user.id).delete()
+    db.commit()
+
+
+def _is_locked(user: User) -> bool:
+    return bool(user.locked_until and user.locked_until > utcnow())
+
+
+def check_password(db: DB, username: str, password: str) -> tuple[User | None, str]:
+    """Etapa 1 do login. Retorna (usuário, motivo). Motivo só vai para a auditoria, nunca para a tela.
+
+    Senha certa ainda não zera o contador de falhas: isso só acontece depois do 2FA.
+    """
     user = db.query(User).filter(User.username == username).one_or_none()
     if user is None:
         verify_password(_DUMMY_HASH, password)
         return None, "unknown_user"
-    now = utcnow()
-    if user.locked_until and user.locked_until > now:
+    if _is_locked(user):
         return None, "locked"
-    ok = verify_password(user.password_hash, password) and consume_totp(db, user, totp_code)
-    if not ok:
-        user.failed_logins += 1
-        if user.failed_logins >= s.max_login_failures:
-            user.locked_until = now + timedelta(minutes=s.lockout_minutes)
-            user.failed_logins = 0
+    if not verify_password(user.password_hash, password):
+        _register_failure(db, user)
+        return None, "bad_password"
+    return user, "ok"
+
+
+def create_login_challenge(db: DB, user: User) -> str:
+    """Abre a etapa 2 (2FA). Um desafio por usuário: abrir outro descarta o anterior."""
+    db.query(LoginChallenge).filter(LoginChallenge.user_id == user.id).delete()
+    token = secrets.token_urlsafe(32)
+    db.add(LoginChallenge(
+        token_hash=_hash_token(token), user_id=user.id,
+        expires_at=utcnow() + timedelta(seconds=LOGIN_CHALLENGE_SECONDS),
+    ))
+    db.commit()
+    return token
+
+
+def lookup_login_challenge(db: DB, token: str | None) -> LoginChallenge | None:
+    if not token:
+        return None
+    ch = db.get(LoginChallenge, _hash_token(token))
+    if ch is None:
+        return None
+    if ch.expires_at <= utcnow() or ch.attempts >= LOGIN_CHALLENGE_ATTEMPTS:
+        db.delete(ch)
         db.commit()
-        return None, "bad_credentials"
+        return None
+    return ch
+
+
+def complete_login_challenge(db: DB, token: str | None, code: str) -> tuple[User | None, str]:
+    """Etapa 2 do login: o mesmo TOTP anti-replay usado para confirmar comandos perigosos."""
+    ch = lookup_login_challenge(db, token)
+    if ch is None:
+        return None, "no_challenge"
+    user = db.get(User, ch.user_id)
+    if user is None:
+        db.delete(ch)
+        db.commit()
+        return None, "no_challenge"
+    if _is_locked(user):
+        db.delete(ch)
+        db.commit()
+        return None, "locked"
+    if not consume_totp(db, user, code):
+        ch.attempts += 1
+        if ch.attempts >= LOGIN_CHALLENGE_ATTEMPTS:
+            db.delete(ch)
+        _register_failure(db, user)
+        return None, "bad_totp"
+    db.delete(ch)
     user.failed_logins = 0
     user.locked_until = None
     db.commit()

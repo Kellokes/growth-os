@@ -55,6 +55,8 @@ main() {
   fi
 
   echo "==> Build e subida (${NEW:0:7})"
+  export GROWTH_OS_COMMIT="$NEW"
+  export CLI_REFRESH="$(date +%G-W%V)"
   docker compose up -d --build
 
   wait_healthy() {
@@ -75,6 +77,7 @@ main() {
   echo "!! Container não ficou saudável. Voltando para ${PREV:0:7}" >&2
   docker compose logs --tail 40 growth-os >&2 || true
   git reset --hard "$PREV"
+  export GROWTH_OS_COMMIT="$PREV"
   docker compose up -d --build
   wait_healthy && echo "==> Rollback ok" >&2 || echo "!! Rollback também falhou, verifique o VPS" >&2
   exit 1

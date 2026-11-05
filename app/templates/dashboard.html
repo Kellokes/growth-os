@@ -1,20 +1,19 @@
 {% extends "base.html" %}
+{% from "_icons.html" import ic %}
 {% block body %}
-<div class="shell" id="app" data-csrf="{{ csrf }}">
-  <aside class="sidebar">
-    {% include "_nav.html" %}
-    <div class="side-note muted">Cada projeto tem os seus KPIs. Os agentes daquele projeto leem estes números todo dia antes de propor o plano.</div>
-    <div class="grow"></div>
-    {% include "_side_foot.html" %}
-  </aside>
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
   <main class="main">
-    <header class="topbar">
-      <h1 id="page-title">Dashboard</h1>
-      <div class="actions">
-        <div class="seg" id="range" role="group" aria-label="Período">
-          <button type="button" data-days="30">30d</button><button type="button" data-days="90" class="on">90d</button><button type="button" data-days="365">1 ano</button>
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Dashboard</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1 id="page-title">Dashboard</h1><p class="lede muted">Cada projeto tem os seus KPIs. Os agentes daquele projeto leem estes números todo dia antes de propor o plano.</p></div>
+        <div class="actions">
+          <div class="seg" id="range" role="group" aria-label="Período">
+            <button type="button" data-days="30">30d</button><button type="button" data-days="90" class="on">90d</button><button type="button" data-days="365">1 ano</button>
+          </div>
+          <button class="btn primary" id="add-point" type="button">{{ ic("plus") }} Lançar número</button>
         </div>
-        <button class="btn small primary" id="add-point" type="button">+ Lançar número</button>
       </div>
     </header>
     {% include "_project_switch.html" %}

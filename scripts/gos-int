@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Integrações do projeto da tarefa em andamento. A chave fica com o Growth OS; você só recebe o resultado.
+
+  gos-int list                              integrações prontas e as operações de cada uma
+  gos-int run INTEGRAÇÃO OPERAÇÃO [JSON]    executa. Leitura responde na hora; ação externa (publicar,
+                                            enviar) vira um pedido em Aprovações e NÃO roda sozinha.
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+BASE = os.environ.get("INTERNAL_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
+def call(path: str, body: dict) -> dict:
+    ticket = os.environ.get("TASK_TICKET", "")
+    if not ticket:
+        sys.exit("gos-int só funciona dentro de uma tarefa de agente em execução (não há ticket nesta thread).")
+    req = urllib.request.Request(
+        BASE + path, data=json.dumps({"ticket": ticket, **body}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        sys.exit(f"erro {e.code}: {e.read().decode(errors='replace')[:500]}")
+    except OSError as e:
+        sys.exit(f"Growth OS indisponível ({e})")
+
+
+def main(argv: list[str]) -> None:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    if argv[0] == "list":
+        for c in call("/internal/integrations", {})["integracoes"]:
+            print(f"{c['integracao']}  ({c['nome']})")
+            for o in c["operacoes"]:
+                print(f"  {o['operacao']}({o['parametros']}) [{o['efeito']}]  {o['sobre']}")
+        return
+    if argv[0] == "run" and len(argv) >= 3:
+        try:
+            params = json.loads(argv[3]) if len(argv) > 3 else {}
+        except json.JSONDecodeError as e:
+            sys.exit(f"JSON inválido: {e}")
+        res = call("/internal/actions", {"integracao": argv[1], "operacao": argv[2], "parametros": params})
+        if res["status"] == "done":
+            print(json.dumps(res["result"], ensure_ascii=False, indent=2))
+        elif res["status"] == "awaiting_approval":
+            print(res["message"])
+        else:
+            sys.exit(res["message"])
+        return
+    sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

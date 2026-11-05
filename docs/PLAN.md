@@ -51,3 +51,9 @@ roda em Docker no VPS da Hostinger atrás do Caddy que já está lá.
 - APIs das redes sociais e plataformas de anúncios (Meta, Google Ads, TikTok, etc.).
 - Monitoramento de concorrentes e de posts/campanhas que estão funcionando.
 - APIs dos próprios projetos (pedidos, uso, logs de clientes) alimentando agentes e dashboard.
+
+## Próximo: reorganização e orquestração
+
+As cinco áreas viram três (Aprovações, Kanban, Automações), os agentes passam a se chamar em missões e
+as integrações executam de verdade pelo app. Desenho completo em
+[REORGANIZACAO-E-ORQUESTRACAO.md](REORGANIZACAO-E-ORQUESTRACAO.md).

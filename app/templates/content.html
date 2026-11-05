@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Conteúdo · Growth OS{% endblock %}
+{% block body %}
+<div class="shell page-shell" id="app" data-csrf="{{ csrf }}">
+  {% include "_nav.html" %}
+  <main class="main">
+    <header class="page-head">
+      <div class="crumbs">{{ ic("folder") }}<span>Growth OS</span>{{ ic("arrow") }}{{ ic("folder") }}<span id="page-crumb">Conteúdo</span></div>
+      <div class="head-row">
+        <div class="title-stack"><h1 id="page-title">Conteúdo</h1><p class="lede muted">Tudo que os agentes deste projeto preparam para sair: posts, e-mails de contato e parceria, artigos. Nada é publicado nem enviado sem a sua aprovação.</p></div>
+        <div class="actions">
+          <div class="seg" id="tabs" role="tablist" aria-label="Seções">
+            <button type="button" role="tab" data-tab="pecas">{{ ic("send") }} Peças</button><button type="button" role="tab" data-tab="agenda">{{ ic("calendar") }} Agenda</button><button type="button" role="tab" data-tab="saidas">{{ ic("agents") }} Saídas</button><button type="button" role="tab" data-tab="ativos">{{ ic("folder") }} Ativos</button>
+          </div>
+          <button class="btn primary" type="button" id="new-content">{{ ic("plus") }} Novo</button>
+        </div>
+      </div>
+    </header>
+    {% include "_project_switch.html" %}
+    <section class="page">
+      <div class="tab-panel" data-panel="pecas" hidden>
+        <div class="cstats" id="cstats"></div>
+        <div class="board-filters" id="group-filter"></div>
+        <div class="ctiles" id="pieces" aria-live="polite"><div class="muted pad">Carregando…</div></div>
+      </div>
+
+      <div class="tab-panel" data-panel="agenda" hidden>
+        <div class="panel-head">
+          <p class="muted">O que está programado: peças com data e as <a href="/automations#rotinas">rotinas</a> dos agentes. A hora é a de Brasília.</p>
+          <div class="seg" id="agenda-days" role="group" aria-label="Período">
+            <button type="button" data-adays="7" class="on">7 dias</button><button type="button" data-adays="14">14 dias</button><button type="button" data-adays="30">30 dias</button>
+          </div>
+        </div>
+        <div id="agenda" class="agenda" aria-live="polite"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="saidas" hidden>
+        <div class="panel-head">
+          <p class="muted">O que cada agente entregou: o resultado das tarefas concluídas (ou que falharam) e as peças que saíram delas.</p>
+          <div class="seg" id="out-days" role="group" aria-label="Período">
+            <button type="button" data-odays="7">7 dias</button><button type="button" data-odays="14" class="on">14 dias</button><button type="button" data-odays="30">30 dias</button>
+          </div>
+        </div>
+        <div class="board-filters" id="out-agents"></div>
+        <div id="outputs" class="outputs" aria-live="polite"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="ativos" hidden>
+        <div class="panel-head">
+          <p class="muted">A biblioteca deste projeto: logo, artefatos, cartas do jogo, personagens, vídeos do site. Diga o que é cada um e quando usar: na hora de gerar a arte, os ativos certos vão junto do prompt como referência, e os agentes enxergam a lista.</p>
+        </div>
+        <div class="alert" id="as-pick" hidden>Escolha um projeto acima: os ativos são de cada projeto.</div>
+        <div id="as-body">
+          <div class="card lay-card">
+            <h3>Adicionar ativo</h3>
+            <div class="seg" id="as-kind" role="group" aria-label="Tipo"><button type="button" data-ak="img" class="on">Imagem</button><button type="button" data-ak="link">Link de vídeo</button><button type="button" data-ak="text">Texto</button></div>
+            <div class="two">
+              <label>Nome<input id="as-name" maxlength="80" placeholder="Ex.: Carta Zumbi Rei"></label>
+              <label id="as-cat-wrap">Tipo<select id="as-cat"></select></label>
+            </div>
+            <label>O que é<input id="as-note" maxlength="500" placeholder="Ex.: carta lendária do jogo, borda dourada, zumbi de coroa"></label>
+            <label>Quando usar<input id="as-when" maxlength="500" placeholder="Ex.: quando o post falar do jogo de cartas ou de lançamento de expansão"></label>
+            <label id="as-link-wrap" hidden>Link do vídeo (https, de preferência o arquivo direto .mp4 do site)<input id="as-link" type="url" maxlength="1000" placeholder="https://…/video.mp4"></label>
+            <label id="as-text-wrap" hidden>Texto (cite com @Nome no prompt e ele entra inteiro naquele ponto)<textarea id="as-text" rows="4" maxlength="4000" placeholder="Ex.: tom de voz, regra da marca, frase fixa, briefing da campanha"></textarea></label>
+            <label class="check" id="as-always-wrap"><input type="checkbox" id="as-always"> Vai em toda arte (ex.: a logo)</label>
+            <div class="row"><label class="btn primary" for="as-file" id="as-file-btn">{{ ic("plus") }} Escolher imagem</label><input id="as-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+              <button class="btn primary" type="button" id="as-add-link" hidden>{{ ic("plus") }} Salvar link</button><span class="muted" id="as-msg" aria-live="polite"></span></div>
+          </div>
+          <div class="board-filters" id="as-filter"></div>
+          <div class="lay-grid as-grid" id="as-list" aria-live="polite"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="content-dialog" class="card wide-ish">
+  <form method="dialog" id="content-form">
+    <div class="dialog-head"><h3 id="cf-title">Conteúdo</h3><button class="icon-btn" type="button" id="cf-close" aria-label="Fechar">{{ ic("close") }}</button></div>
+    <div class="task-tags" id="cf-tags"></div>
+    <div class="secret-note" id="cf-note" hidden></div>
+    <div class="two">
+      <label id="cf-project-wrap">Projeto<select id="cf-project"></select></label>
+      <label>Canal<select id="cf-channel"></select></label>
+    </div>
+    <label><span id="cf-title-label">Título</span><input id="cf-head" maxlength="200" placeholder="Opcional"></label>
+    <div class="two">
+      <label><span id="cf-to-label">Público</span><input id="cf-to" maxlength="300"></label>
+      <label>Objetivo<input id="cf-purpose" maxlength="60" placeholder="parceria, contato, lançamento…"></label>
+    </div>
+    <label>Texto<textarea id="cf-body" rows="9" required maxlength="20000"></textarea></label>
+    <label>Mídia (o que a imagem deve mostrar)<textarea id="cf-media" rows="2" maxlength="4000" placeholder="Descrição do criativo, se tiver"></textarea></label>
+    <div class="cf-image" id="cf-image-box">
+      <label>Formato da imagem<select id="cf-format"><option value="">Sem imagem (só texto)</option><option value="story">Story · 9:16</option><option value="carrossel">Carrossel · 4:5 (capa, páginas e CTA)</option><option value="reel">Reel · 9:16</option></select></label>
+      <div id="cf-visual" class="cf-image" hidden>
+        <div class="cf-step">
+          <b>1. Layout</b>
+          <label>Base<select id="cf-mode">
+            <option value="template">Layout do projeto (recomendado)</option>
+            <option value="reference">Sem layout: imagem livre a partir das referências</option>
+            <option value="prompt">Sem layout: imagem livre só do prompt</option>
+          </select></label>
+          <div class="cf-tpls" id="cf-tpls"></div>
+          <label id="cf-ref-wrap">Referência<select id="cf-ref"></select></label>
+          <label id="cf-iprompt-wrap"><span>Prompt da imagem</span><textarea id="cf-iprompt" rows="4" maxlength="4000" placeholder="Vazio = o sistema propõe um prompt a partir da mídia e do estilo do projeto. Digite @ para citar um ativo: imagem, texto ou vídeo (ex.: use @Cartas na mesa)"></textarea>
+            <div class="cf-mention" id="cf-mention" hidden role="listbox"></div></label>
+          <small class="muted" id="cf-modehint"></small>
+        </div>
+        <div class="cf-step" id="cf-src-step">
+          <b>2. Foto ou vídeo que entra no layout</b>
+          <div class="cf-src" id="cf-src" role="group" aria-label="De onde vem a mídia"></div>
+          <label id="cf-vid-wrap">Vídeo da biblioteca<select id="cf-vidlib"></select></label>
+          <label id="cf-url-wrap">Link do arquivo (https, direto para a foto ou o vídeo)<input id="cf-url" type="url" maxlength="1000" placeholder="https://…/foto.jpg ou …/video.mp4"></label>
+          <small class="muted" id="cf-srchint"></small>
+        </div>
+        <div class="cf-step" id="cf-assets-step">
+          <b>Ativos do projeto nesta arte</b>
+          <div class="cf-src" id="cf-assets"></div>
+          <small class="muted" id="cf-assets-hint"></small>
+        </div>
+        <div class="cf-step" id="cf-imgtext">
+          <b>3. Texto no layout</b>
+          <div class="two">
+            <label><span id="cf-imgtitle-label">Título na imagem</span><input id="cf-imgtitle" maxlength="200" placeholder="Até 6 palavras"></label>
+            <label>Frase de apoio<input id="cf-imgtext-in" maxlength="400" placeholder="Opcional"></label>
+          </div>
+          <small class="muted" id="cf-limits" hidden></small>
+          <div id="cf-carousel" hidden>
+            <div id="cf-pages"></div>
+            <button class="btn small ghost" type="button" id="cf-add-page">{{ ic("plus") }} Adicionar página</button>
+            <div class="two">
+              <label>CTA final · título<input id="cf-cta-title" maxlength="120" placeholder="Ex.: Salve e compartilhe"></label>
+              <label>CTA final · frase<input id="cf-cta-text" maxlength="300" placeholder="Opcional"></label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="cf-image" aria-live="polite"></div>
+      <input id="cf-image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <input id="cf-media-file" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime" hidden>
+    </div>
+    <label>Quando sai<input id="cf-when" type="datetime-local"><small class="muted">Vazio = sai quando você publicar. Hora de Brasília.</small></label>
+    <div class="sent-box" id="cf-sent-box" hidden>
+      <label>Link de onde saiu (opcional)<input id="cf-link" type="url" maxlength="500" placeholder="https://…"></label>
+      <div class="row"><button class="btn ghost" type="button" id="cf-sent-cancel">Voltar</button><button class="btn primary" type="button" id="cf-sent-ok">{{ ic("check") }} Confirmar envio</button></div>
+    </div>
+    <div class="row cf-actions" id="cf-actions"></div>
+  </form>
+</dialog>
+
+{% include "_audit.html" %}
+<script src="/static/content.js"></script>
+{% endblock %}

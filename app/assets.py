@@ -24,24 +24,41 @@ CATEGORIES: dict[str, str] = {
     "produto": "Produto",
     "estilo": "Estilo / paleta",
     "video": "Vídeo (link)",
+    "texto": "Texto",
     "outro": "Outro",
 }
 MAX_ASSETS = 60  # por projeto
 MAX_SENT = 5  # ativos que vão junto de cada imagem (além da arte do layout)
 LINK_MIME = "text/uri-list"
+TEXT_MIME = "text/plain"  # ativo de texto: briefing, regra da marca, frase fixa... (o conteúdo fica em data)
+MAX_TEXT = 4000
 _STOP = {"para", "com", "sobre", "quando", "falar", "usar", "use", "isso", "este", "esta", "como", "mais", "jogo", "post",
          "posts", "sempre", "qualquer", "deve", "pode", "the", "and", "with", "from", "that", "this"}
 
 
-def norm_category(raw, is_link: bool = False) -> str:
+def norm_category(raw, is_link: bool = False, is_text: bool = False) -> str:
     c = str(raw or "").strip().lower()
     if is_link:
         return "video"
-    return c if c in CATEGORIES and c != "video" else "outro"
+    if is_text:
+        return "texto"
+    return c if c in CATEGORIES and c not in ("video", "texto") else "outro"
 
 
 def is_link(a: LayoutAsset) -> bool:
     return a.mime == LINK_MIME or bool(a.url)
+
+
+def is_text(a: LayoutAsset) -> bool:
+    return a.mime == TEXT_MIME
+
+
+def is_image(a: LayoutAsset) -> bool:
+    return not is_link(a) and not is_text(a)
+
+
+def text_of(a: LayoutAsset) -> str:
+    return bytes(a.data or b"").decode("utf-8", "replace").strip()
 
 
 def label(a: LayoutAsset) -> str:
@@ -50,11 +67,13 @@ def label(a: LayoutAsset) -> str:
 
 def asset_json(a: LayoutAsset) -> dict:
     link = is_link(a)
+    txt = is_text(a)
     return {
-        "id": a.id, "name": a.name or "", "category": a.category or ("video" if link else "estilo"),
-        "category_name": CATEGORIES.get(a.category or ("video" if link else "estilo"), "Outro"),
+        "id": a.id, "name": a.name or "", "category": a.category or ("video" if link else "texto" if txt else "estilo"),
+        "category_name": CATEGORIES.get(a.category or ("video" if link else "texto" if txt else "estilo"), "Outro"),
         "note": a.note or "", "use_when": a.use_when or "", "always": bool(a.always),
-        "link": a.url if link else "", "url": "" if link else f"/api/layouts/assets/{a.id}", "is_link": link,
+        "link": a.url if link else "", "url": "" if link or txt else f"/api/layouts/assets/{a.id}", "is_link": link, "is_text": txt,
+        "text": text_of(a) if txt else "",
         "created_at": a.created_at.isoformat(),
     }
 
@@ -82,18 +101,87 @@ def chosen_ids(c: ContentItem) -> list[int]:
     return [int(x) for x in v if isinstance(x, int)] if isinstance(v, list) else []
 
 
+def _fold_map(text: str) -> tuple[str, list[int]]:
+    """Texto sem acento e minúsculo, com o índice de cada letra no texto original (para trocar trechos sem perder o resto)."""
+    out, idx = [], []
+    for i, ch in enumerate(text or ""):
+        for f in unicodedata.normalize("NFKD", ch.lower()):
+            if not unicodedata.combining(f):
+                out.append(f)
+                idx.append(i)
+    return "".join(out), idx
+
+
+def find_mentions(db, project_id: int, text: str) -> list[tuple[int, int, LayoutAsset]]:
+    """@Nome no texto -> (início, fim, ativo) neste projeto, em ordem de aparição. O nome pode ter espaços (acha o mais longo)."""
+    folded, idx = _fold_map(text)
+    named = sorted((a for a in project_assets(db, project_id) if a.name.strip()), key=lambda a: -len(a.name.strip()))
+    found: list[tuple[int, int, LayoutAsset]] = []
+    pos = 0
+    while True:
+        at = folded.find("@", pos)
+        if at < 0:
+            break
+        pos = at + 1
+        if at and (folded[at - 1].isalnum() or folded[at - 1] == "."):  # e-mail, não menção
+            continue
+        for a in named:
+            n = _fold_map(a.name.strip())[0]
+            end = at + 1 + len(n)
+            if folded[at + 1:end] == n and not (end < len(folded) and folded[end].isalnum()):
+                found.append((idx[at], idx[end - 1] + 1, a))
+                pos = end
+                break
+    return found
+
+
+def mentioned(db, c: ContentItem) -> list[LayoutAsset]:
+    """Ativos de imagem citados com @ no prompt da peça, sem repetir, na ordem em que aparecem (máx. MAX_SENT)."""
+    out: list[LayoutAsset] = []
+    for _, _, a in find_mentions(db, c.project_id, c.image_prompt or ""):
+        if is_image(a) and a not in out:
+            out.append(a)
+    return out[:MAX_SENT]
+
+
+def rewrite_mentions(db, c: ContentItem, prompt: str, assets: list[LayoutAsset], first_index: int = 1) -> str:
+    """Troca @Nome por "Nome (image N)", o N da imagem de referência que de fato vai junto; sem imagem, só tira o @."""
+    spots = find_mentions(db, c.project_id, prompt)
+    if not spots:
+        return prompt
+    pos = {a.id: first_index + i for i, a in enumerate(assets)}
+    out, last = [], 0
+    for start, end, a in spots:
+        out.append(prompt[last:start])
+        shown = prompt[start + 1:end]
+        if a.id in pos:
+            out.append(f"{shown} (image {pos[a.id]})")
+        elif is_text(a):  # texto: entra inteiro, no ponto citado
+            out.append(f"{shown} (\"{text_of(a)[:MAX_TEXT]}\")")
+        elif is_link(a):
+            out.append(f"{shown} (video: {a.url})")
+        else:
+            out.append(shown)
+        last = end
+    out.append(prompt[last:])
+    return "".join(out)
+
+
 def for_piece(db, c: ContentItem, limit: int = MAX_SENT) -> list[LayoutAsset]:
-    """Ativos de imagem que entram na arte desta peça (escolhidos, ou "sempre" + os que combinam com o assunto)."""
-    rows = [a for a in project_assets(db, c.project_id) if not is_link(a)]
+    """Ativos de imagem que entram na arte desta peça: os citados com @ no prompt (na ordem), depois os escolhidos,
+    ou, sem escolha, "sempre" + os que combinam com o assunto."""
+    rows = [a for a in project_assets(db, c.project_id) if is_image(a)]
+    first = mentioned(db, c)
     ids = chosen_ids(c)
     if ids:
         by_id = {a.id: a for a in rows}
-        return [by_id[i] for i in ids if i in by_id][:limit]
+        rest = [by_id[i] for i in ids if i in by_id]
+        return (first + [a for a in rest if a not in first])[:limit]
     subject = _fold(" ".join([c.title, c.body, c.media, c.img_title, c.img_text, c.image_prompt]))
     words = set(re.findall(r"[a-z0-9]{4,}", subject))
     picked = [a for a in rows if a.always]
     picked += [a for a in rows if not a.always and _keywords(a) & words]
-    return picked[:limit]
+    return (first + [a for a in picked if a not in first])[:limit]
 
 
 def prompt_lines(assets: list[LayoutAsset], first_index: int = 1) -> str:
@@ -137,6 +225,8 @@ def catalog(db, project_id: int) -> str:
     lines = []
     for a in rows[:40]:
         extra = f" · link: {a.url}" if is_link(a) else ""
+        if is_text(a):
+            extra = f" · texto: {text_of(a)[:160]}"
         when = f" · quando usar: {a.use_when.strip()[:160]}" if a.use_when.strip() else ""
         always = " · vai em toda arte" if a.always else ""
         lines.append(f"- {label(a)} [{CATEGORIES.get(a.category, 'Outro')}]: {a.note.strip()[:160]}{when}{always}{extra}")

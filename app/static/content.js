@@ -389,11 +389,11 @@
     renderAssets();
   }
   function renderAssets() {
-    $("#as-cat").innerHTML = assetCats.filter((c) => c.key !== "video").map((c) => `<option value="${esc(c.key)}">${esc(c.name)}</option>`).join("");
+    $("#as-cat").innerHTML = assetCats.filter((c) => c.key !== "video" && c.key !== "texto").map((c) => `<option value="${esc(c.key)}">${esc(c.name)}</option>`).join("");
     document.querySelectorAll("#as-kind [data-ak]").forEach((b) => b.classList.toggle("on", b.dataset.ak === asKind));
-    const link = asKind === "link";
-    $("#as-cat-wrap").hidden = link; $("#as-link-wrap").hidden = !link; $("#as-always-wrap").hidden = link;
-    $("#as-file-btn").hidden = link; $("#as-add-link").hidden = !link;
+    const link = asKind === "link"; const txt = asKind === "text"; const img = !link && !txt;
+    $("#as-cat-wrap").hidden = !img; $("#as-link-wrap").hidden = !link; $("#as-always-wrap").hidden = !img; $("#as-text-wrap").hidden = !txt;
+    $("#as-file-btn").hidden = !img; $("#as-add-link").hidden = img;
     const counts = {};
     for (const a of assets) counts[a.category] = (counts[a.category] || 0) + 1;
     if (asFilter && !counts[asFilter]) asFilter = "";
@@ -403,15 +403,16 @@
     $("#as-list").innerHTML = list.map((a) => a.id === asEdit ? `
       <div class="as-card" data-aid="${a.id}">
         <label>Nome<input data-ae="name" maxlength="80" value="${esc(a.name)}"></label>
-        ${a.is_link ? `<label>Link<input data-ae="link" maxlength="1000" value="${esc(a.link)}"></label>`
-          : `<label>Tipo<select data-ae="category">${assetCats.filter((c) => c.key !== "video").map((c) => `<option value="${esc(c.key)}" ${c.key === a.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>`}
+        ${a.is_text ? `<label>Texto<textarea data-ae="text" rows="5" maxlength="4000">${esc(a.text)}</textarea></label>`
+          : a.is_link ? `<label>Link<input data-ae="link" maxlength="1000" value="${esc(a.link)}"></label>`
+          : `<label>Tipo<select data-ae="category">${assetCats.filter((c) => c.key !== "video" && c.key !== "texto").map((c) => `<option value="${esc(c.key)}" ${c.key === a.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>`}
         <label>O que é<textarea data-ae="note" rows="2" maxlength="500">${esc(a.note)}</textarea></label>
         <label>Quando usar<textarea data-ae="use_when" rows="2" maxlength="500">${esc(a.use_when)}</textarea></label>
-        ${a.is_link ? "" : `<label class="check"><input type="checkbox" data-ae="always" ${a.always ? "checked" : ""}> Vai em toda arte</label>`}
+        ${a.is_link || a.is_text ? "" : `<label class="check"><input type="checkbox" data-ae="always" ${a.always ? "checked" : ""}> Vai em toda arte</label>`}
         <div class="row"><button class="btn small primary" type="button" data-asave="${a.id}">Salvar</button><button class="btn small ghost" type="button" data-acancel="1">Cancelar</button></div>
       </div>` : `
       <figure class="as-card" data-aid="${a.id}">
-        ${a.is_link ? `<a class="as-vid" href="${esc(a.link)}" target="_blank" rel="noopener noreferrer" title="abrir o vídeo">▶</a>` : `<img src="${esc(a.url)}" alt="${esc(a.name)}" loading="lazy">`}
+        ${a.is_text ? `<p class="as-txt">${esc(a.text.slice(0, 160))}${a.text.length > 160 ? "…" : ""}</p>` : a.is_link ? `<a class="as-vid" href="${esc(a.link)}" target="_blank" rel="noopener noreferrer" title="abrir o vídeo">▶</a>` : `<img src="${esc(a.url)}" alt="${esc(a.name)}" loading="lazy">`}
         <b>${esc(a.name || "sem nome")}</b>
         <small>${esc(a.category_name)}${a.always ? " · vai em toda arte" : ""}</small>
         ${a.note ? `<small>${esc(a.note)}</small>` : ""}
@@ -423,7 +424,7 @@
   $("#as-filter").addEventListener("click", (ev) => { const b = ev.target.closest("[data-afilter]"); if (b) { asFilter = b.dataset.afilter; renderAssets(); } });
   const assetForm = () => ({ project, name: $("#as-name").value, category: $("#as-cat").value, note: $("#as-note").value,
     use_when: $("#as-when").value, always: $("#as-always").checked });
-  const clearAssetForm = () => { ["#as-name", "#as-note", "#as-when", "#as-link"].forEach((s) => { $(s).value = ""; }); $("#as-always").checked = false; };
+  const clearAssetForm = () => { ["#as-name", "#as-note", "#as-when", "#as-link", "#as-text"].forEach((s) => { $(s).value = ""; }); $("#as-always").checked = false; };
   $("#as-file").onchange = async (ev) => {
     const files = [...ev.target.files]; ev.target.value = ""; const msg = $("#as-msg");
     for (const f of files) {
@@ -435,7 +436,8 @@
     msg.textContent = files.length ? "Salvo." : ""; clearAssetForm(); loadAssets();
   };
   $("#as-add-link").onclick = async () => {
-    try { await api("/api/assets", { method: "POST", body: JSON.stringify({ ...assetForm(), category: "video", always: false, link: $("#as-link").value }) }); $("#as-msg").textContent = "Salvo."; clearAssetForm(); }
+    const extra = asKind === "text" ? { category: "texto", text: $("#as-text").value } : { category: "video", link: $("#as-link").value };
+    try { await api("/api/assets", { method: "POST", body: JSON.stringify({ ...assetForm(), always: false, ...extra }) }); $("#as-msg").textContent = "Salvo."; clearAssetForm(); }
     catch (e) { alert(e.message); }
     loadAssets();
   };
@@ -461,7 +463,7 @@
   async function renderPieceAssets() {
     const slug = current ? current.project : $("#cf-project").value;
     const list = await projectAssets(slug);
-    const imgs = list.filter((a) => !a.is_link); const vids = list.filter((a) => a.is_link);
+    const imgs = list.filter((a) => !a.is_link && !a.is_text); const vids = list.filter((a) => a.is_link);
     $("#cf-assets-step").hidden = $("#cf-visual").hidden || (!imgs.length && !vids.length);
     $("#cf-assets").innerHTML = imgs.map((a) => {
       const on = assetSel.includes(a.id); const auto = !assetSel.length && a.always;
@@ -479,6 +481,41 @@
     assetSel = assetSel.includes(id) ? assetSel.filter((x) => x !== id) : assetSel.length >= 5 ? assetSel : [...assetSel, id];
     renderPieceAssets();
   });
+  // @ no prompt da imagem: lista os ativos do projeto; o servidor manda a imagem como referência e troca @Nome por "Nome (image N)"
+  const mention = { open: false, items: [], at: -1, sel: 0 };
+  function closeMention() { mention.open = false; $("#cf-mention").hidden = true; }
+  async function updateMention() {
+    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+    const m = /(^|[\s(])@([^\s@]*)$/.exec(ta.value.slice(0, pos));
+    if (!m || ro()) return closeMention();
+    const q = m[2].toLowerCase();
+    const slug = current ? current.project : $("#cf-project").value;
+    const list = (await projectAssets(slug)).filter((a) => a.name && a.name.toLowerCase().includes(q));
+    if (!list.length) return closeMention();
+    Object.assign(mention, { open: true, items: list.slice(0, 8), at: pos - m[2].length - 1, sel: 0 });
+    const box = $("#cf-mention");
+    box.innerHTML = mention.items.map((a, i) => `<button type="button" data-m="${i}" class="${i === 0 ? "on" : ""}">${a.is_text ? `<i class="m-ico">T</i>` : a.is_link ? `<i class="m-ico">▶</i>` : `<img src="${esc(a.url)}" alt="" loading="lazy">`}<span>${esc(a.name)}</span><small>${esc(a.category_name)}</small></button>`).join("");
+    box.hidden = false;
+  }
+  function pickMention(i) {
+    const a = mention.items[i]; if (!a) return;
+    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+    const ins = `@${a.name} `;
+    ta.value = ta.value.slice(0, mention.at) + ins + ta.value.slice(pos);
+    ta.selectionStart = ta.selectionEnd = mention.at + ins.length;
+    closeMention(); ta.focus();
+  }
+  $("#cf-iprompt").addEventListener("input", updateMention);
+  $("#cf-iprompt").addEventListener("blur", () => setTimeout(closeMention, 150));
+  $("#cf-iprompt").addEventListener("keydown", (ev) => {
+    if (!mention.open) return;
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault(); mention.sel = (mention.sel + (ev.key === "ArrowDown" ? 1 : -1) + mention.items.length) % mention.items.length;
+      $("#cf-mention").querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", i === mention.sel));
+    } else if (ev.key === "Enter" || ev.key === "Tab") { ev.preventDefault(); pickMention(mention.sel); }
+    else if (ev.key === "Escape") { ev.preventDefault(); closeMention(); }
+  });
+  $("#cf-mention").addEventListener("mousedown", (ev) => { const b = ev.target.closest("[data-m]"); if (b) { ev.preventDefault(); pickMention(Number(b.dataset.m)); } });
   $("#cf-vidlib").addEventListener("change", () => { if ($("#cf-vidlib").value) $("#cf-url").value = $("#cf-vidlib").value; });
 
   function renderActions() {

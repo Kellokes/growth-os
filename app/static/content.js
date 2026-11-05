@@ -265,11 +265,12 @@
     const role = fmt === "carrossel" ? "capa" : "";
     const rows = limitTpls.filter((t) => t.format === fmt && (fmt !== "carrossel" || (t.role || "capa") === "capa"));
     const t = rows.find((x) => x.id === tplSel[role]) || rows.find((x) => x.is_default) || rows.find((x) => x.status === "approved");
-    const b = t && t.boxes && t.boxes.titulo ? t.boxes : null;
+    const b = t && t.boxes && (t.boxes.titulo || t.boxes.texto) ? t.boxes : null;
     el.hidden = !b; if (!b) return;
     const nt = $("#cf-imgtitle").value.trim().length; const ns = $("#cf-imgtext-in").value.trim().length;
-    const over = nt > b.titulo.max || ns > b.texto.max;
-    el.textContent = `Cabe na arte: título ${nt}/${b.titulo.max} · frase ${ns}/${b.texto.max} caracteres${over ? ". Acima disso o texto é cortado no fim da palavra." : ""}`;
+    const over = (b.titulo && nt > b.titulo.max) || (b.texto && ns > b.texto.max);
+    const parts = [b.titulo ? `título ${nt}/${b.titulo.max}` : "sem caixa de título", b.texto ? `frase ${ns}/${b.texto.max}` : "sem caixa de frase"];
+    el.textContent = `Cabe na arte: ${parts.join(" · ")} caracteres${over ? ". Acima disso o texto é cortado no fim da palavra." : ""}`;
     el.classList.toggle("warn-text", over);
   }
   $("#cf-imgtitle").addEventListener("input", drawLimits);

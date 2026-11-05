@@ -3,6 +3,7 @@ import os
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import close_all_sessions
 
 from app import db as dbmod
 from app.config import get_settings
@@ -24,6 +25,8 @@ def client(tmp_path, monkeypatch):
     # Nunca o arquivo real: os testes também rodam dentro do container (gos-self test).
     monkeypatch.setenv("GOS_GITHUB_TOKEN_FILE", str(tmp_path / "gh-token"))
     get_settings.cache_clear()
+    # Sessão que um teste anterior deixou aberta segura uma transação: no Postgres o DROP TABLE abaixo esperaria para sempre.
+    close_all_sessions()
     engine = dbmod.init_db()
     dbmod.Base.metadata.drop_all(engine)
     dbmod.Base.metadata.create_all(engine)
@@ -34,6 +37,7 @@ def client(tmp_path, monkeypatch):
 
     with TestClient(app) as c:
         yield c
+    close_all_sessions()
     get_settings.cache_clear()
 
 

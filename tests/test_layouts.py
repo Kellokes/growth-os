@@ -142,3 +142,42 @@ def test_request_image_retries_image_only_models(monkeypatch):
 async def _ok(tried, body, ok):
     tried.append(body["modalities"])
     return 200, ok
+
+
+def test_request_image_retries_with_https_links_when_data_url_refused(monkeypatch, client):
+    """O Seed (Seedream) às vezes recusa data URL: a chamada é refeita com links HTTPS temporários, que somem depois."""
+    import asyncio
+
+    sent = []
+    ok = {"choices": [{"message": {"images": [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + B64}}]}}]}
+    err = {"error": {"code": 400, "message": "Unsupported image URL scheme. Seedream requires base64 data URLs or HTTP/HTTPS URLs."}}
+    seen = {}
+
+    async def fake_post(key, body):
+        url = body["messages"][0]["content"][1]["image_url"]["url"]
+        sent.append(url)
+        if url.startswith("data:"):
+            return 400, err
+        token = url.rsplit("/", 1)[-1]
+        r = client.get(f"/api/public/ref/{token}")  # o provedor baixa a imagem sem login
+        seen["status"], seen["body"], seen["type"] = r.status_code, r.content, r.headers["content-type"]
+        return 200, ok
+
+    monkeypatch.setattr(lay, "_post_chat", fake_post)
+    monkeypatch.setattr(lay, "_api_key", lambda: "k")
+    monkeypatch.setattr(lay, "_public_base", lambda: "https://os.exemplo.com")
+    assert asyncio.run(lay.request_image("bytedance-seed/seedream-4.5", "p", [(PNG, "image/png")], "9:16")) == (PNG, "image/png")
+    assert sent[0].startswith("data:image/png;base64,") and sent[1].startswith("https://os.exemplo.com/api/public/ref/")
+    assert seen == {"status": 200, "body": PNG, "type": "image/png"}
+    assert client.get(f"/api/public/ref/{sent[1].rsplit('/', 1)[-1]}").status_code == 404  # link apagado depois da chamada
+    assert client.get("/api/public/ref/curto").status_code == 404
+
+    monkeypatch.setattr(lay, "_public_base", lambda: "")  # sem GOS_PUBLIC_URL: erro claro, sem nova chamada
+    sent.clear()
+    try:
+        asyncio.run(lay.request_image("bytedance-seed/seedream-4.5", "p", [(PNG, "image/png")], "9:16"))
+    except ProviderError as e:
+        assert "GOS_PUBLIC_URL" in str(e)
+    else:
+        raise AssertionError("deveria falhar")
+    assert len(sent) == 1

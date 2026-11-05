@@ -9,11 +9,14 @@ import asyncio
 import base64
 import json
 import re
+import secrets
+import time
 
 import httpx
 
 from . import assets as ast
 from . import calllog, modelcfg
+from .config import get_settings
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
 from .providers.base import ProviderError
@@ -167,29 +170,90 @@ async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], 
         return data, mime
 
 
+# Alguns provedores (o Seed, do Seedream) recusam as referências em data URL com 400 "Unsupported image URL scheme". Aí a
+# chamada é refeita com links HTTPS de uso único para as mesmas imagens, servidos por /api/public/ref/{token} por 10 minutos.
+SHARE_TTL = 600.0
+_SHARED: dict[str, tuple[bytes, str, float]] = {}
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{40,64}")
+
+
+def _public_base() -> str:
+    base = (get_settings().public_url or "").strip().rstrip("/")
+    return base if base.startswith("https://") else ""
+
+
+def share_image(data: bytes, mime: str) -> str:
+    """Link HTTPS temporário para uma referência (precisa de GOS_PUBLIC_URL). "" se não houver URL pública."""
+    base = _public_base()
+    if not base:
+        return ""
+    now = time.monotonic()
+    for t in [t for t, (_, _, exp) in _SHARED.items() if exp <= now]:
+        _SHARED.pop(t, None)
+    token = secrets.token_urlsafe(32)
+    _SHARED[token] = (data, mime, now + SHARE_TTL)
+    return f"{base}/api/public/ref/{token}"
+
+
+def shared_image(token: str) -> tuple[bytes, str] | None:
+    if not _TOKEN_RE.fullmatch(token or ""):
+        return None
+    item = _SHARED.get(token)
+    if item is None or item[2] <= time.monotonic():
+        _SHARED.pop(token, None)
+        return None
+    return item[0], item[1]
+
+
+def unshare(urls: list[str]) -> None:
+    for u in urls:
+        _SHARED.pop(u.rsplit("/", 1)[-1], None)
+
+
+def _is_scheme_error(status: int, msg: str) -> bool:
+    m = msg.lower()
+    return status == 400 and ("url scheme" in m or "data url" in m)
+
+
 async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
     key = _api_key()
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
-    content: list[dict] = [{"type": "text", "text": prompt}]
-    content += [{"type": "image_url", "image_url": {"url": data_url(d, m)}} for d, m in refs[:MAX_REFS_SENT]]
-    for i, modalities in enumerate(MODALITY_TRIES):
-        body = {
-            "model": model,
-            "messages": [{"role": "user", "content": content}],
-            "modalities": modalities,
-            "image_config": {"aspect_ratio": ratio},
-            "usage": {"include": True},
-        }
-        status, payload = await _post_chat(key, body)
-        if status == 200:
-            calllog.note_usage(payload.get("usage"))
-            return extract_image(payload)
-        _, msg = _error_detail(payload)
-        if i + 1 < len(MODALITY_TRIES) and _is_modality_error(status, msg):
-            continue
-        raise _explain(status, msg, model)
-    raise ProviderError("o OpenRouter recusou o pedido de imagem")  # inalcançável: o laço sempre retorna ou levanta
+    refs = refs[:MAX_REFS_SENT]
+    urls = [data_url(d, m) for d, m in refs]
+    links: list[str] = []
+    try:
+        i = 0
+        while i < len(MODALITY_TRIES):
+            content: list[dict] = [{"type": "text", "text": prompt}]
+            content += [{"type": "image_url", "image_url": {"url": u}} for u in urls]
+            body = {
+                "model": model,
+                "messages": [{"role": "user", "content": content}],
+                "modalities": MODALITY_TRIES[i],
+                "image_config": {"aspect_ratio": ratio},
+                "usage": {"include": True},
+            }
+            status, payload = await _post_chat(key, body)
+            if status == 200:
+                calllog.note_usage(payload.get("usage"))
+                return extract_image(payload)
+            _, msg = _error_detail(payload)
+            if i + 1 < len(MODALITY_TRIES) and _is_modality_error(status, msg):
+                i += 1
+                continue
+            if refs and not links and _is_scheme_error(status, msg):
+                links = [share_image(d, m) for d, m in refs]
+                if not all(links):
+                    raise ProviderError(f"{model} não aceita as imagens de referência embutidas e pede links HTTPS: defina "
+                                        "GOS_PUBLIC_URL=https://os.takeonestudio.io no .env do VPS (ou escolha outro modelo de "
+                                        "imagem em /settings)")
+                urls = links
+                continue
+            raise _explain(status, msg, model)
+        raise ProviderError("o OpenRouter recusou o pedido de imagem")  # inalcançável: o laço sempre retorna ou levanta
+    finally:
+        unshare(links)
 
 
 def image_choice(db, log: bool = False, project_id: int | None = None) -> modelcfg.Choice:

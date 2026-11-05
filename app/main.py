@@ -2281,6 +2281,15 @@ def layouts_state(project: str, auth: Auth = Depends(current_auth), db: DB = Dep
     }
 
 
+@app.get("/api/public/ref/{token}")
+def public_reference(token: str):
+    """Referência de imagem por link de uso único (10 min), para provedores que não aceitam data URL. Sem login: o token é o acesso."""
+    item = lay.shared_image(token)
+    if item is None:
+        raise HTTPException(404, "link expirado")
+    return Response(item[0], media_type=item[1], headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/layouts/assets/{aid}")
 def layout_asset_file(aid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     a = _asset_or_404(db, aid)

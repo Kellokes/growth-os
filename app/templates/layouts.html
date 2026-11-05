@@ -76,6 +76,38 @@
     </section>
   </main>
 </div>
+<dialog id="bx-dlg" class="wide" aria-labelledby="bx-title">
+  <div class="dialog-head"><h3 id="bx-title">Editor de caixas</h3><button class="icon-btn" type="button" id="bx-close" aria-label="Fechar">{{ ic("close") }}</button></div>
+  <p class="muted bx-help">Arraste as caixas para onde o título, o texto e a imagem devem ficar na arte. Puxe o canto para mudar o tamanho. O texto de exemplo mostra o limite de caracteres de cada caixa.</p>
+  <div class="bx-wrap">
+    <div class="bx-stage" id="bx-stage"></div>
+    <div class="bx-side">
+      <div class="seg bx-tabs" id="bx-tabs" role="tablist">
+        <button type="button" data-bx="titulo" class="on">Título</button><button type="button" data-bx="texto">Texto</button><button type="button" data-bx="midia">Imagem</button>
+      </div>
+      <div id="bx-text-opts">
+        <div class="two">
+          <label>Limite de caracteres<input type="number" id="bx-max" min="5" max="400"></label>
+          <label>Tamanho da letra (px)<input type="number" id="bx-size" min="16" max="180"></label>
+        </div>
+        <div class="two">
+          <label>Alinhamento<select id="bx-align"><option value="left">esquerda</option><option value="center">centro</option><option value="right">direita</option></select></label>
+          <label>Na caixa<select id="bx-valign"><option value="top">em cima</option><option value="middle">no meio</option><option value="bottom">embaixo</option></select></label>
+        </div>
+        <div class="two">
+          <label>Cor<input type="color" id="bx-color"></label>
+          <label class="check"><input type="checkbox" id="bx-bold"> Negrito</label>
+        </div>
+      </div>
+      <div id="bx-img-opts" hidden>
+        <label class="check"><input type="checkbox" id="bx-img-on"> Usar caixa de imagem</label>
+        <p class="muted">Com a fonte "gerar imagem", a IA cria uma foto só para esta caixa, sem mexer na arte. Uploads, links e vídeos também entram aqui.</p>
+        <label>Cantos arredondados (px)<input type="number" id="bx-radius" min="0" max="200"></label>
+      </div>
+      <div class="row bx-actions"><button class="btn primary" type="button" id="bx-save">Salvar template</button><span class="muted" id="bx-msg"></span></div>
+    </div>
+  </div>
+</dialog>
 {% include "_audit.html" %}
 <script src="/static/layouts.js"></script>
 {% endblock %}

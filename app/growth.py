@@ -677,8 +677,9 @@ def conversation_text(db: DB, cid: int) -> str:
 
 def asset_catalog(db: DB, project_id: int) -> str:
     from .assets import catalog  # import tardio: o módulo de ativos importa o banco
+    from .layouts import limits_brief
 
-    return catalog(db, project_id)
+    return "\n\n".join(x for x in (catalog(db, project_id), limits_brief(db, project_id)) if x)
 
 
 def task_brief(project: GrowthProject, agent: Agent, pa: ProjectAgent | None, task: Task, team: str = "",

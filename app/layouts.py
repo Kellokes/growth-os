@@ -274,6 +274,8 @@ def asset_json(a: LayoutAsset) -> dict:
         "mime": a.mime, "url": f"/api/layouts/assets/{a.id}", "created_at": a.created_at.isoformat(),
         "name": a.name or "", "role": a.role or "", "is_default": bool(a.is_default),
         "media_slot": "{{midia}}" in (a.html or ""), "uploaded": a.model == "upload",
+        "boxes": template_boxes(a) if a.kind == "template" else {}, "has_art": bool(a.plate_id) if a.kind == "template" else False,
+        "art_url": f"/api/layouts/assets/{a.plate_id}" if a.kind == "template" and a.plate_id else "",
     }
 
 
@@ -491,6 +493,163 @@ html, body {{ margin: 0; width: {w}px; height: {h}px; overflow: hidden; }}
 <div class="box"><div class="t">{{{{titulo}}}}</div><div class="s">{{{{texto}}}}</div></div></body></html>"""
 
 
+# ---------- editor de caixas: o owner marca na arte onde vão o título, o texto e a imagem da IA ----------
+
+BOX_KEYS = ("titulo", "texto", "midia")
+BOX_DEFAULTS = {
+    "titulo": {"x": 8, "y": 55, "w": 84, "h": 14, "max": 60, "size": 72, "align": "center", "color": "#ffffff", "weight": 800},
+    "texto": {"x": 8, "y": 70, "w": 84, "h": 14, "max": 140, "size": 38, "align": "center", "color": "#ffffff", "weight": 500},
+}
+DEFAULT_LIMITS = (80, 140)
+_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+IMAGE_RATIOS = {"1:1": 1.0, "2:3": 2 / 3, "3:2": 1.5, "3:4": 0.75, "4:3": 4 / 3, "4:5": 0.8, "5:4": 1.25, "9:16": 9 / 16,
+                "16:9": 16 / 9, "21:9": 21 / 9}
+
+
+def _num(v, lo: float, hi: float, default: float) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    return round(min(max(x, lo), hi), 2) if x == x else default
+
+
+def clean_boxes(raw) -> dict:
+    """Caixas do editor, em % da arte (x, y, w, h). Título e texto são obrigatórios; a imagem é opcional. ValueError se inválido."""
+    if not isinstance(raw, dict):
+        raise ValueError("caixas inválidas")
+    out: dict = {}
+    for key in BOX_KEYS:
+        b = raw.get(key)
+        if not isinstance(b, dict):
+            if key == "midia":
+                continue
+            raise ValueError(f"falta a caixa de {key}")
+        x, y = _num(b.get("x"), 0, 95, 8), _num(b.get("y"), 0, 95, 50)
+        box = {"x": x, "y": y, "w": _num(b.get("w"), 5, 100 - x, 50), "h": _num(b.get("h"), 3, 100 - y, 10)}
+        if key == "midia":
+            box["radius"] = int(_num(b.get("radius"), 0, 200, 0))
+        else:
+            d = BOX_DEFAULTS[key]
+            box["max"] = int(_num(b.get("max"), 5, 400, d["max"]))
+            box["size"] = int(_num(b.get("size"), 16, 180, d["size"]))
+            box["align"] = b.get("align") if b.get("align") in ("left", "center", "right") else d["align"]
+            box["valign"] = b.get("valign") if b.get("valign") in ("top", "middle", "bottom") else "middle"
+            box["color"] = b.get("color") if isinstance(b.get("color"), str) and _COLOR.fullmatch(b["color"]) else d["color"]
+            box["weight"] = 800 if int(_num(b.get("weight"), 100, 900, d["weight"])) >= 650 else 500
+        out[key] = box
+    return out
+
+
+def template_boxes(t: LayoutAsset | None) -> dict:
+    if t is None or not t.boxes:
+        return {}
+    try:
+        return clean_boxes(json.loads(t.boxes))
+    except (ValueError, TypeError):
+        return {}
+
+
+def box_template(fmt: str, boxes: dict) -> str:
+    """HTML do template feito no editor: a arte em tela cheia, a imagem na caixa dela e o texto nas caixas, sem sair delas."""
+    w, h = CANVAS[fmt]
+    css = [f"html, body {{ margin: 0; width: {w}px; height: {h}px; overflow: hidden; }}",
+           ".art { position: absolute; inset: 0; background-image: {{bg}}; background-size: cover; background-position: center; }",
+           ".bx { position: absolute; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box; }"]
+    parts = ['<div class="art"></div>']
+    m = boxes.get("midia")
+    if m:
+        css.append(f".photo {{ position: absolute; left: {m['x']}%; top: {m['y']}%; width: {m['w']}%; height: {m['h']}%; "
+                   f"overflow: hidden; border-radius: {m['radius']}px; }}")
+        parts.append('<div class="photo">{{midia}}</div>')
+    flex = {"top": "flex-start", "middle": "center", "bottom": "flex-end"}
+    for key, cls in (("titulo", "t"), ("texto", "s")):
+        b = boxes[key]
+        lh = 1.12 if key == "titulo" else 1.28
+        css.append(f".{cls} {{ left: {b['x']}%; top: {b['y']}%; width: {b['w']}%; height: {b['h']}%; "
+                   f"justify-content: {flex[b['valign']]}; text-align: {b['align']}; color: {b['color']}; "
+                   f"font-family: 'Montserrat', sans-serif; font-weight: {b['weight']}; font-size: {b['size']}px; "
+                   f"line-height: {lh}; overflow-wrap: break-word; }}")
+        parts.append(f'<div class="bx {cls}">{{{{{key}}}}}</div>')
+    return "<html><head><style>\n" + "\n".join(css) + "\n</style></head><body>" + "".join(parts) + "</body></html>"
+
+
+def text_limits(t: LayoutAsset | None) -> tuple[int, int]:
+    """Máximo de caracteres do título e do texto no template (os do editor, ou os de sempre)."""
+    b = template_boxes(t)
+    return (b["titulo"]["max"], b["texto"]["max"]) if b else DEFAULT_LIMITS
+
+
+def fit_text(text: str, limit: int) -> str:
+    """Corta no limite sem partir palavra, com reticências."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    if text[limit - 1] != " ":  # a palavra continua depois do corte: volta até o espaço anterior
+        cut = cut.rsplit(" ", 1)[0]
+    cut = cut.rstrip(" ,;:.-")
+    return (cut or text[: limit - 1]) + "…"
+
+
+def nearest_ratio(w: float, h: float) -> str:
+    """Proporção aceita pelos modelos de imagem mais perto da caixa da imagem."""
+    r = w / h if h else 1.0
+    return min(IMAGE_RATIOS, key=lambda k: abs(IMAGE_RATIOS[k] - r))
+
+
+def limits_brief(db, project_id: int) -> str:
+    """Para os agentes: quantos caracteres cabem no título e no texto da arte de cada formato (template padrão)."""
+    parts = []
+    for fmt in FORMATS:
+        for role in (["capa", "pagina", "cta"] if fmt == "carrossel" else [""]):
+            t = approved_template(db, project_id, fmt, role)
+            if t is not None and t.boxes:
+                lt, ls = text_limits(t)
+                parts.append(f"{FORMATS[fmt][0]}{(' · ' + role_label(fmt, role)) if role else ''}: título até {lt}, texto até {ls}")
+    if not parts:
+        return ""
+    return ("LIMITES DE TEXTO NA ARTE (\"titulo_imagem\"/\"texto_imagem\", páginas e CTA; acima disso o texto é cortado): "
+            + "; ".join(parts) + ".")
+
+
+def save_box_template(db, src: LayoutAsset, boxes: dict) -> LayoutAsset:
+    """Editor -> template. Em um template que já existe, troca as caixas no lugar (mantém nome, padrão e a arte); numa arte
+    aprovada, cria um template novo, já aprovado (foi o owner que montou)."""
+    from . import motion
+
+    boxes = clean_boxes(boxes)
+    html = box_template(src.format, boxes)
+    if src.kind == "template":
+        plate = _plate(db, src)
+        if plate is None:
+            raise ValueError("este template não tem a arte guardada: monte a partir da arte em Artes")
+        art = (plate.data, plate.mime)
+    elif src.kind == "layout" and src.status == "approved":
+        art = (src.data, src.mime)
+    else:
+        raise ValueError("aprove a arte antes de montar o template")
+    project = db.get(GrowthProject, src.project_id)
+    sample_t = fit_text("Título do post com o tamanho máximo que esta caixa aceita", boxes["titulo"]["max"])
+    sample_s = fit_text("Frase de apoio do post, ocupando o espaço que você reservou para o texto nesta arte, até o limite "
+                        "de caracteres definido no editor de caixas.", boxes["texto"]["max"])
+    preview = motion.render_still(html, src.format, art, sample_t, sample_s, project.name if project else "")
+    if src.kind == "template":
+        src.html, src.data, src.mime, src.boxes, src.model = html, preview, "image/png", json.dumps(boxes), "editor"
+        src.note = "caixas do editor"
+        db.commit()
+        return src
+    t = _save_template(db, src, html, preview, "caixas do editor", "", "editor")
+    t.boxes = json.dumps(boxes)
+    t.status = "approved"
+    if (plate := _plate(db, t)) is not None:
+        plate.status = "approved"
+    db.commit()
+    ensure_default(db, t.project_id, t.format, t.role or "")
+    db.commit()
+    return t
+
+
 def approved_asset(db, project_id: int, kind: str, fmt: str) -> LayoutAsset | None:
     return (db.query(LayoutAsset).filter(LayoutAsset.project_id == project_id, LayoutAsset.kind == kind,
                                          LayoutAsset.format == fmt, LayoutAsset.status == "approved")
@@ -597,13 +756,16 @@ def delete_template(db, t: LayoutAsset) -> None:
 AUTOGEN_PER_TICK = 3  # imagens automáticas por passada do agendador (limita o custo)
 
 
-def piece_texts(c: ContentItem) -> tuple[str, str]:
-    """O que vai escrito NA imagem: o que o agente pediu ou, na falta, o título e o começo do texto."""
+def piece_texts(c: ContentItem, limits: tuple[int, int] = DEFAULT_LIMITS) -> tuple[str, str]:
+    """O que vai escrito NA imagem: o que o agente pediu ou, na falta, o título e o começo do texto. Corta no limite do
+    template sem partir palavra."""
     body = c.body.strip()
     if c.img_title or c.title:
-        return (c.img_title or c.title)[:80], (c.img_text or body)[:140]
-    first, _, rest = body.partition("\n")
-    return (c.img_title or first)[:80], (c.img_text or rest.strip())[:140]
+        title, text = (c.img_title or c.title), (c.img_text or body)
+    else:
+        first, _, rest = body.partition("\n")
+        title, text = (c.img_title or first), (c.img_text or rest.strip())
+    return fit_text(title, limits[0]), fit_text(text, limits[1])
 
 
 def build_background_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
@@ -629,6 +791,9 @@ def build_scenery_prompt(project_name: str, brief: str, c: ContentItem, feedback
         "Put the new photo ONLY in the photo window(s) of the artwork. The panel reserved for text must stay EXACTLY as it is in the "
         "attached artwork: empty, plain and dark, with no photo, people, objects, texture or scenery inside it. Do not extend the "
         "photo into the text panel.",
+        "Make ONE single new scene and combine the attached references into it. Do NOT add new frames, picture boxes, cards, "
+        "panels, collages or several separate images: if the artwork has no photo window, only change the background "
+        "scenery behind the existing elements.",
         "ABSOLUTELY NO text, letters or numbers anywhere; keep the text area clean.",
         f"Brand style brief: {brief.strip()[:1000]}" if brief.strip() else "",
         f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
@@ -829,7 +994,8 @@ def cover_layers(db, c: ContentItem, template: LayoutAsset) -> tuple[tuple[bytes
     plate = _plate(db, template)
     art = (plate.data, plate.mime) if plate is not None else None
     src = med.norm_source(c.media_source)
-    m = med.piece_media(db, c) if src in ("gerar_video", "upload", "link") else None
+    photo_box = "midia" in template_boxes(template)
+    m = med.piece_media(db, c) if src in ("gerar_video", "upload", "link") or (src == "gerar_imagem" and photo_box) else None
     if m is None:
         return art, None
     layer = (m.data, m.mime)
@@ -850,7 +1016,7 @@ def _render(db, c: ContentItem, template: LayoutAsset, bg, media, title: str, te
 
 def render_piece(db, c: ContentItem, bg: LayoutAsset | None, template: LayoutAsset) -> bytes:
     """Capa com um fundo explícito (compatível com o fluxo antigo) ou com as camadas da peça."""
-    title, text = piece_texts(c)
+    title, text = piece_texts(c, text_limits(template))
     if bg is not None:
         return _render(db, c, template, (bg.data, bg.mime), None, title, text)
     layers = cover_layers(db, c, template)
@@ -869,7 +1035,8 @@ def render_slides(db, c: ContentItem, cover_bg: tuple[bytes, str] | None) -> str
                 raise ProviderError(f"defina o template de {role_label('carrossel', s['role'])} em Layouts")
             plate = _plate(db, t)
             bg = (plate.data, plate.mime) if plate is not None else cover_bg
-            png = _render(db, c, t, bg, None, s["title"], s["text"])
+            lt, ls = text_limits(t)
+            png = _render(db, c, t, bg, None, fit_text(s["title"], lt), fit_text(s["text"], ls))
         except ProviderError as e:
             errors.append(f"{role_label('carrossel', s['role'])}: {e}")
             continue
@@ -934,6 +1101,9 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
     project = db.get(GrowthProject, c.project_id)
     name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
     plate = _plate(db, template)
+    boxes = template_boxes(template)
+    if src == "gerar_imagem" and boxes:
+        return await _generate_box_photo(db, c, template, boxes, name, brief, feedback)
     if src == "gerar_imagem":
         choice = image_choice(db, log=True, project_id=c.project_id)
         picked = ast.for_piece(db, c)
@@ -991,6 +1161,50 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
         with calllog.context("piece_render", c.project_id):
             final = await asyncio.to_thread(render_piece, db, c, None, template)
     await asyncio.to_thread(_finish, db, c, template, final, model, prompt)
+
+
+def build_photo_prompt(project_name: str, brief: str, c: ContentItem, ratio: str, feedback: str = "") -> str:
+    """Foto para a caixa de imagem do template: só a foto, sem arte, moldura nem texto (a arte e o texto já estão no layout)."""
+    lines = [
+        f"Create ONE photograph ({ratio}) for a social media post of the brand \"{project_name}\". It goes inside a picture "
+        "box of an existing layout, so deliver ONLY the photo, edge to edge.",
+        f"Subject: {(c.image_prompt.strip() or c.media.strip() or c.title or c.body)[:800]}",
+        "ONE single continuous scene: combine every attached reference INTO that one scene. Never show them as separate "
+        "pictures, panels, frames, cards, collage, grid or split screen; no logos or user interface around it.",
+        "ABSOLUTELY NO text, letters or numbers anywhere in the image.",
+        f"Brand style brief (mood and palette only): {brief.strip()[:800]}" if brief.strip() else "",
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+async def _generate_box_photo(db, c: ContentItem, template: LayoutAsset, boxes: dict, name: str, brief: str,
+                              feedback: str) -> None:
+    """Template do editor: a IA não mexe na arte. Só cria a foto da caixa de imagem (se houver) e o texto entra nas caixas."""
+    from . import media as med
+
+    drop_bg(db, c)
+    drop_video(db, c)
+    box = boxes.get("midia")
+    if box is None:  # template sem caixa de imagem: só a arte e o texto, sem custo
+        with calllog.context("piece_render", c.project_id):
+            final = await asyncio.to_thread(render_piece, db, c, None, template)
+        return await asyncio.to_thread(_finish, db, c, template, final, "template", "")
+    choice = image_choice(db, log=True, project_id=c.project_id)
+    w, h = CANVAS[c.visual_format]
+    ratio = nearest_ratio(box["w"] * w, box["h"] * h)
+    picked = ast.for_piece(db, c)
+    prompt = build_photo_prompt(name, brief, c, ratio, feedback)
+    if picked:
+        prompt += "\n" + ast.prompt_lines(picked, 1).replace("reproduce them faithfully when they appear",
+                                                             "use them only as reference for the real objects; never draw "
+                                                             "their text")
+    with calllog.context("image", c.project_id):
+        data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
+    med.set_media(db, c, data, mime, "gerar_imagem", prompt)
+    with calllog.context("piece_render", c.project_id):
+        final = await asyncio.to_thread(render_piece, db, c, None, template)
+    await asyncio.to_thread(_finish, db, c, template, final, choice.model, prompt)
 
 
 async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = "") -> None:

@@ -228,6 +228,7 @@
     const slug = current ? current.project : $("#cf-project").value;
     const lay = await projectLayouts(slug);
     const ok = (lay.templates || []).filter((t) => t.format === fmt && ["approved", "proposed"].includes(t.status));
+    limitTpls = ok;
     const roles = carousel ? ROLES : [["", "Template"]];
     $("#cf-tpls").innerHTML = roles.map(([r, label]) => {
       const rows = ok.filter((t) => !carousel || (t.role || "capa") === r);
@@ -245,6 +246,7 @@
     $("#cf-iprompt-wrap").hidden = tplMode;
     $("#cf-modehint").textContent = MODE_HINT[mode];
     $("#cf-src-step").hidden = !tplMode; $("#cf-imgtext").hidden = !tplMode;
+    drawLimits();
     $("#cf-src").innerHTML = SOURCES.map(([k, label]) => `<button type="button" data-src="${k}" class="${k === src ? "on" : ""}" aria-pressed="${k === src}" ${ro() ? "disabled" : ""}>${esc(label)}</button>`).join("");
     $("#cf-srchint").textContent = (SOURCES.find((x) => x[0] === src) || SOURCES[0])[2];
     $("#cf-url-wrap").hidden = src !== "link";
@@ -254,7 +256,24 @@
     renderPieceAssets();
   }
   const ro = () => !!current && ["sent", "rejected"].includes(current.status);
-  $("#cf-tpls").addEventListener("change", (ev) => { const s = ev.target.closest("[data-trole]"); if (s) tplSel[s.dataset.trole] = Number(s.value) || 0; });
+  $("#cf-tpls").addEventListener("change", (ev) => { const s = ev.target.closest("[data-trole]"); if (s) { tplSel[s.dataset.trole] = Number(s.value) || 0; drawLimits(); } });
+
+  // Limite de caracteres das caixas do template da capa (feito no editor de Layouts): mostra quanto cabe e se vai cortar.
+  let limitTpls = [];
+  function drawLimits() {
+    const fmt = $("#cf-format").value; const el = $("#cf-limits");
+    const role = fmt === "carrossel" ? "capa" : "";
+    const rows = limitTpls.filter((t) => t.format === fmt && (fmt !== "carrossel" || (t.role || "capa") === "capa"));
+    const t = rows.find((x) => x.id === tplSel[role]) || rows.find((x) => x.is_default) || rows.find((x) => x.status === "approved");
+    const b = t && t.boxes && t.boxes.titulo ? t.boxes : null;
+    el.hidden = !b; if (!b) return;
+    const nt = $("#cf-imgtitle").value.trim().length; const ns = $("#cf-imgtext-in").value.trim().length;
+    const over = nt > b.titulo.max || ns > b.texto.max;
+    el.textContent = `Cabe na arte: título ${nt}/${b.titulo.max} · frase ${ns}/${b.texto.max} caracteres${over ? ". Acima disso o texto é cortado no fim da palavra." : ""}`;
+    el.classList.toggle("warn-text", over);
+  }
+  $("#cf-imgtitle").addEventListener("input", drawLimits);
+  $("#cf-imgtext-in").addEventListener("input", drawLimits);
   $("#cf-src").addEventListener("click", (ev) => { const b = ev.target.closest("[data-src]"); if (!b) return; src = b.dataset.src; renderMode(); renderImage(false); });
 
   const slidesBody = () => [...pages.filter((p) => p.title.trim() || p.text.trim()).map((p) => ({ role: "pagina", title: p.title, text: p.text })),

@@ -2472,6 +2472,28 @@ async def layouts_make_template(aid: int, body: TemplateIn, request: Request, au
     return lay.asset_json(t)
 
 
+class BoxesIn(BaseModel):
+    boxes: dict
+
+
+@app.post("/api/layouts/{aid}/boxes")
+async def layouts_boxes(aid: int, body: BoxesIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Editor de caixas: numa arte aprovada cria um template (já aprovado); num template, troca as caixas no lugar. Sem IA."""
+    a = _asset_or_404(db, aid)
+    if a.kind not in ("layout", "template"):
+        raise HTTPException(409, "o editor é para artes e templates")
+    if len(json.dumps(body.boxes)) > 4000:
+        raise HTTPException(422, "caixas grandes demais")
+    try:
+        t = await asyncio.to_thread(lay.save_box_template, db, a, body.boxes)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except ProviderError as e:
+        raise HTTPException(422, str(e)) from e
+    audit(db, auth.user.username, "layout_boxes", f"#{a.id} -> #{t.id} {t.format}", client_ip(request))
+    return lay.asset_json(t)
+
+
 @app.post("/api/layouts/{aid}/decide")
 def layouts_decide(aid: int, body: LayoutDecideIn, request: Request, auth: Auth = Depends(current_auth),
                    db: DB = Depends(get_db)):

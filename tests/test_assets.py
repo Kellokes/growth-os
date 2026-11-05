@@ -94,3 +94,26 @@ def test_agents_see_catalog_and_pick_assets_by_name(studio):
     assert len(json.loads(c.asset_ids)) == 1
     assert '"ativos"' in cnt.guide()
     s.close()
+
+
+def test_at_mentions_send_the_asset_where_the_prompt_says(studio, monkeypatch):
+    ai_template(studio, monkeypatch, PLAIN)
+    add(studio, name="Logo", category="logo", note="logo verde", always=True)
+    cartas = add(studio, name="Cartas", category="carta", note="cartas do jogo")
+    s = dbmod.new_session()
+    c = dbmod.ContentItem(project_id=pid("zombie-party"), channel="instagram", body="x", visual_format="story",
+                          status="pending", image_mode="prompt",
+                          image_prompt="Mesa de bar com @cartas espalhadas e @Logo no canto, fale com a@cartas.com e @Nada")
+    s.add(c)
+    s.commit()
+    cid = c.id
+    assert [a.name for a in ast.mentioned(s, c)] == ["Cartas", "Logo"]
+    assert [a.name for a in ast.for_piece(s, c)] == ["Cartas", "Logo"]
+    out = ast.rewrite_mentions(s, c, c.image_prompt, ast.for_piece(s, c), 1)
+    assert "cartas (image 1) espalhadas" in out and "Logo (image 2) no canto" in out
+    assert "a@cartas.com" in out and "@Nada" in out
+    s.close()
+    AI.clear()
+    assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
+    assert AI[-1]["refs"] == 2 and "cartas (image 1)" in AI[-1]["prompt"] and "image 1 = Cartas" in AI[-1]["prompt"]
+    assert cartas["id"]

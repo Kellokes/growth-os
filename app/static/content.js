@@ -479,6 +479,41 @@
     assetSel = assetSel.includes(id) ? assetSel.filter((x) => x !== id) : assetSel.length >= 5 ? assetSel : [...assetSel, id];
     renderPieceAssets();
   });
+  // @ no prompt da imagem: lista os ativos do projeto; o servidor manda a imagem como referência e troca @Nome por "Nome (image N)"
+  const mention = { open: false, items: [], at: -1, sel: 0 };
+  function closeMention() { mention.open = false; $("#cf-mention").hidden = true; }
+  async function updateMention() {
+    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+    const m = /(^|[\s(])@([^\s@]*)$/.exec(ta.value.slice(0, pos));
+    if (!m || ro()) return closeMention();
+    const q = m[2].toLowerCase();
+    const slug = current ? current.project : $("#cf-project").value;
+    const list = (await projectAssets(slug)).filter((a) => !a.is_link && a.name && a.name.toLowerCase().includes(q));
+    if (!list.length) return closeMention();
+    Object.assign(mention, { open: true, items: list.slice(0, 8), at: pos - m[2].length - 1, sel: 0 });
+    const box = $("#cf-mention");
+    box.innerHTML = mention.items.map((a, i) => `<button type="button" data-m="${i}" class="${i === 0 ? "on" : ""}"><img src="${esc(a.url)}" alt="" loading="lazy"><span>${esc(a.name)}</span><small>${esc(a.category_name)}</small></button>`).join("");
+    box.hidden = false;
+  }
+  function pickMention(i) {
+    const a = mention.items[i]; if (!a) return;
+    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+    const ins = `@${a.name} `;
+    ta.value = ta.value.slice(0, mention.at) + ins + ta.value.slice(pos);
+    ta.selectionStart = ta.selectionEnd = mention.at + ins.length;
+    closeMention(); ta.focus();
+  }
+  $("#cf-iprompt").addEventListener("input", updateMention);
+  $("#cf-iprompt").addEventListener("blur", () => setTimeout(closeMention, 150));
+  $("#cf-iprompt").addEventListener("keydown", (ev) => {
+    if (!mention.open) return;
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault(); mention.sel = (mention.sel + (ev.key === "ArrowDown" ? 1 : -1) + mention.items.length) % mention.items.length;
+      $("#cf-mention").querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", i === mention.sel));
+    } else if (ev.key === "Enter" || ev.key === "Tab") { ev.preventDefault(); pickMention(mention.sel); }
+    else if (ev.key === "Escape") { ev.preventDefault(); closeMention(); }
+  });
+  $("#cf-mention").addEventListener("mousedown", (ev) => { const b = ev.target.closest("[data-m]"); if (b) { ev.preventDefault(); pickMention(Number(b.dataset.m)); } });
   $("#cf-vidlib").addEventListener("change", () => { if ($("#cf-vidlib").value) $("#cf-url").value = $("#cf-vidlib").value; });
 
   function renderActions() {

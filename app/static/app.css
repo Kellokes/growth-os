@@ -1324,3 +1324,9 @@ label.check input { width: auto; }
   .bx-wrap { grid-template-columns: minmax(0, 1fr); }
   .bx-stage { max-width: 320px; justify-self: center; }
 }
+#cf-iprompt-wrap { position: relative; }
+.cf-mention { position: absolute; left: 0; right: 0; z-index: 20; margin-top: 2px; background: var(--card, var(--bg)); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); overflow: hidden; }
+.cf-mention button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border: 0; background: none; color: var(--text); text-align: left; cursor: pointer; font-size: 14px; }
+.cf-mention button.on, .cf-mention button:hover { background: var(--ink); color: var(--on-ink); }
+.cf-mention img { width: 28px; height: 28px; object-fit: cover; border-radius: 6px; }
+.cf-mention small { margin-left: auto; opacity: .7; }

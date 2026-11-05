@@ -52,6 +52,15 @@ def studio(logged, monkeypatch):
     return logged
 
 
+def html_of(aid: int) -> str:
+    """HTML de um template, lendo numa sessão que fecha na hora (sessão aberta trava o DROP TABLE do próximo teste no Postgres)."""
+    s = dbmod.new_session()
+    try:
+        return s.get(dbmod.LayoutAsset, aid).html
+    finally:
+        s.close()
+
+
 def upload_template(logged, fmt="story", role="", name="", text="embaixo", data=B64):
     r = logged.post("/api/layouts/upload", json={"project": "zombie-party", "format": fmt, "role": role, "name": name,
                                                  "data": data, "text": text})
@@ -113,7 +122,7 @@ def test_carousel_runs_cover_pages_and_cta_templates(studio):
     capa = upload_template(studio, "carrossel", "capa", "Capa")["template"]["id"]
     pagina = upload_template(studio, "carrossel", "pagina", "Página", text="topo")["template"]["id"]
     cta = upload_template(studio, "carrossel", "cta", "CTA", text="meio")["template"]["id"]
-    tpl = {t: dbmod.new_session().get(dbmod.LayoutAsset, t).html for t in (capa, pagina, cta)}
+    tpl = {t: html_of(t) for t in (capa, pagina, cta)}
     cid = new_piece("carrossel", media_source="nenhuma")
     RENDERS.clear()
     r = studio.post(f"/api/content/{cid}/image", json={})
@@ -138,7 +147,7 @@ def test_carousel_runs_cover_pages_and_cta_templates(studio):
     assert item["template_ids"] == {"pagina": outra}
     RENDERS.clear()
     studio.post(f"/api/content/{cid}/image", json={})
-    assert RENDERS[1]["tpl"] == dbmod.new_session().get(dbmod.LayoutAsset, outra).html
+    assert RENDERS[1]["tpl"] == html_of(outra)
     assert studio.patch(f"/api/content/{cid}", json={"template_ids": {"cta": 99999}}).status_code == 422
 
 
@@ -147,7 +156,7 @@ def test_carousel_without_page_templates_falls_back_to_cover(studio):
     cid = new_piece("carrossel", media_source="nenhuma")
     RENDERS.clear()
     assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
-    html = dbmod.new_session().get(dbmod.LayoutAsset, capa).html
+    html = html_of(capa)
     assert {x["tpl"] for x in RENDERS} == {html}
 
 
@@ -258,7 +267,10 @@ def test_autogen_waits_for_owner_media(studio, monkeypatch):
     none = new_piece(media_source="nenhuma")
     assert asyncio.run(lay.autogen_pending()) == 1
     s = dbmod.new_session()
-    assert s.get(dbmod.ContentItem, up).image_id is None and s.get(dbmod.ContentItem, none).image_id
+    try:
+        assert s.get(dbmod.ContentItem, up).image_id is None and s.get(dbmod.ContentItem, none).image_id
+    finally:
+        s.close()
 
 
 def test_agent_block_with_pages_cta_and_link(logged):

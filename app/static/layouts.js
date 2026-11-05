@@ -51,12 +51,13 @@
       <figure class="lay-thumb ${ratioCls()} ${t.is_default ? "official" : ""}">
         <img src="${esc(t.url)}" alt="template ${esc(t.name)}" loading="lazy">
         <figcaption><span class="lay-name">${esc(t.name || `Template #${t.id}`)}</span>${t.is_default ? '<span class="lay-badge def">padrão</span>' : `<span class="lay-badge">${STATUS[t.status] || t.status}</span>`}
-          <br>${t.model === "texto-padrao" ? "texto padrão" : "texto pela IA"}${t.media_slot ? " · com espaço para foto/vídeo" : ""}</figcaption>
+          <br>${t.model === "editor" ? `caixas do editor · título ${t.boxes.titulo.max} / texto ${t.boxes.texto.max} caracteres` : t.model === "texto-padrao" ? "texto padrão" : "texto pela IA"}${t.media_slot ? " · com caixa de imagem" : ""}</figcaption>
         <div class="row">
           ${t.status !== "approved" ? `<button class="btn small primary" type="button" data-ok="${t.id}">Aprovar</button>` : ""}
           ${t.status === "approved" && !t.is_default ? `<button class="btn small" type="button" data-def="${t.id}">Tornar padrão</button>` : ""}
           ${t.status === "proposed" ? `<button class="btn small" type="button" data-no="${t.id}">Rejeitar</button>` : ""}
           <button class="btn small ghost" type="button" data-ren="${t.id}">Renomear</button>
+          ${t.has_art ? `<button class="btn small" type="button" data-edit-tpl="${t.id}">Editar caixas</button>` : ""}
           ${fmt === "carrossel" ? `<button class="btn small ghost" type="button" data-move="${t.id}">Mover</button>` : ""}
           <button class="btn small danger" type="button" data-del="${t.id}">Apagar</button></div>
       </figure>`).join("") : `<div class="muted">Nenhum template de ${esc(partName())} ainda. Suba uma arte ou gere com a IA logo abaixo.</div>`;
@@ -70,7 +71,8 @@
         <img src="${esc(l.url)}" alt="arte ${esc(l.name)}" loading="lazy">
         <figcaption><span class="lay-name">${esc(l.name || `Arte #${l.id}`)}</span><span class="lay-badge">${l.uploaded ? "sua" : "IA"} · ${STATUS[l.status] || l.status}</span>${l.note ? `<br>${esc(l.note)}` : ""}</figcaption>
         <div class="row">${l.status === "approved"
-          ? `<button class="btn small primary" type="button" data-html="${l.id}">Texto com IA</button>
+          ? `<button class="btn small primary" type="button" data-edit-art="${l.id}">Montar no editor</button>
+             <button class="btn small" type="button" data-html="${l.id}">Texto com IA</button>
              <select class="small" data-simple-pos="${l.id}" aria-label="Onde vai o texto">${Object.entries(pos).map(([k, v]) => `<option value="${k}">texto ${v}</option>`).join("")}</select>
              <button class="btn small" type="button" data-simple="${l.id}">Texto padrão</button>`
           : `<button class="btn small primary" type="button" data-ok="${l.id}">Aprovar</button>`}
@@ -86,7 +88,117 @@
   const act = async (fn) => { try { await fn(); await load(); } catch (e) { alert(e.message); } };
   const remember = () => { try { localStorage.setItem("lay-fmt", fmt); localStorage.setItem("lay-role", role); } catch { /* sem storage */ } };
 
+  // ---------- editor de caixas: título, texto e imagem arrastáveis sobre a arte (posições em % da arte) ----------
+  const CANVAS = { story: [1080, 1920], reel: [1080, 1920], carrossel: [1080, 1350] };
+  const BX_NAME = { titulo: "Título", texto: "Texto", midia: "Imagem" };
+  const BX_DEF = {
+    titulo: { x: 8, y: 55, w: 84, h: 14, max: 60, size: 72, align: "center", valign: "middle", color: "#ffffff", weight: 800 },
+    texto: { x: 8, y: 70, w: 84, h: 14, max: 140, size: 38, align: "center", valign: "middle", color: "#ffffff", weight: 500 },
+    midia: { x: 10, y: 20, w: 80, h: 30, radius: 0 },
+  };
+  const SAMPLE = {
+    titulo: "Título do post com o tamanho máximo que esta caixa aceita",
+    texto: "Frase de apoio do post, ocupando o espaço que você reservou para o texto nesta arte, até o limite de caracteres definido aqui no editor de caixas.",
+  };
+  const fit = (t, n) => { if (t.length <= n) return t; let c = t.slice(0, n - 1); if (t[n - 1] !== " ") c = c.replace(/\s+\S*$/, ""); return c.replace(/[\s,;:.-]+$/, "") + "…"; };
+  let ed = null; // { id, fmt, boxes, sel, imgOn }
+
+  function openEditor(id, artUrl, format, boxes) {
+    const b = JSON.parse(JSON.stringify(boxes && boxes.titulo ? boxes : { titulo: BX_DEF.titulo, texto: BX_DEF.texto }));
+    ed = { id, fmt: format, sel: "titulo", imgOn: !!b.midia, boxes: { titulo: b.titulo, texto: b.texto, midia: b.midia || { ...BX_DEF.midia } } };
+    const stage = $("#bx-stage");
+    const [w, h] = CANVAS[format] || CANVAS.story;
+    stage.style.aspectRatio = `${w} / ${h}`;
+    stage.style.backgroundImage = `url("${artUrl}")`;
+    stage.innerHTML = ["midia", "titulo", "texto"].map((k) => `<div class="bx-box bx-${k}" data-box="${k}" tabindex="0" aria-label="${BX_NAME[k]}"><span class="bx-label">${BX_NAME[k]}</span><div class="bx-sample"></div><span class="bx-handle" data-handle="${k}" aria-hidden="true"></span></div>`).join("");
+    $("#bx-msg").textContent = "";
+    $("#bx-dlg").showModal();
+    drawEditor();
+  }
+
+  function drawEditor() {
+    if (!ed) return;
+    const stage = $("#bx-stage");
+    const scale = stage.clientWidth / (CANVAS[ed.fmt] || CANVAS.story)[0];
+    for (const k of ["titulo", "texto", "midia"]) {
+      const el = stage.querySelector(`[data-box="${k}"]`); const b = ed.boxes[k];
+      el.hidden = k === "midia" && !ed.imgOn;
+      el.classList.toggle("sel", ed.sel === k);
+      Object.assign(el.style, { left: `${b.x}%`, top: `${b.y}%`, width: `${b.w}%`, height: `${b.h}%` });
+      const sm = el.querySelector(".bx-sample");
+      if (k === "midia") { el.style.borderRadius = `${(b.radius || 0) * scale}px`; sm.textContent = ""; continue; }
+      sm.textContent = fit(SAMPLE[k], b.max);
+      Object.assign(sm.style, { fontSize: `${b.size * scale}px`, fontWeight: String(b.weight), color: b.color, textAlign: b.align,
+        justifyContent: { top: "flex-start", middle: "center", bottom: "flex-end" }[b.valign || "middle"], lineHeight: k === "titulo" ? "1.12" : "1.28" });
+    }
+    document.querySelectorAll("#bx-tabs [data-bx]").forEach((t) => { t.classList.toggle("on", t.dataset.bx === ed.sel); t.setAttribute("aria-selected", t.dataset.bx === ed.sel); });
+    const isImg = ed.sel === "midia";
+    $("#bx-text-opts").hidden = isImg; $("#bx-img-opts").hidden = !isImg;
+    const b = ed.boxes[ed.sel];
+    if (isImg) { $("#bx-img-on").checked = ed.imgOn; $("#bx-radius").value = b.radius || 0; $("#bx-radius").disabled = !ed.imgOn; }
+    else {
+      $("#bx-max").value = b.max; $("#bx-size").value = b.size; $("#bx-align").value = b.align;
+      $("#bx-valign").value = b.valign || "middle"; $("#bx-color").value = b.color; $("#bx-bold").checked = b.weight >= 650;
+    }
+  }
+
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  $("#bx-stage").addEventListener("pointerdown", (ev) => {
+    const box = ev.target.closest("[data-box]"); if (!box || !ed) return;
+    ev.preventDefault();
+    const k = box.dataset.box; ed.sel = k;
+    const resize = !!ev.target.closest("[data-handle]");
+    const r = $("#bx-stage").getBoundingClientRect(); const b = ed.boxes[k];
+    const start = { x: ev.clientX, y: ev.clientY, bx: b.x, by: b.y, bw: b.w, bh: b.h };
+    box.setPointerCapture(ev.pointerId);
+    const move = (e) => {
+      const dx = ((e.clientX - start.x) / r.width) * 100; const dy = ((e.clientY - start.y) / r.height) * 100;
+      if (resize) { b.w = +clamp(start.bw + dx, 5, 100 - b.x).toFixed(1); b.h = +clamp(start.bh + dy, 3, 100 - b.y).toFixed(1); }
+      else { b.x = +clamp(start.bx + dx, 0, 100 - b.w).toFixed(1); b.y = +clamp(start.by + dy, 0, 100 - b.h).toFixed(1); }
+      drawEditor();
+    };
+    const up = () => { box.removeEventListener("pointermove", move); box.removeEventListener("pointerup", up); box.removeEventListener("pointercancel", up); };
+    box.addEventListener("pointermove", move); box.addEventListener("pointerup", up); box.addEventListener("pointercancel", up);
+    drawEditor();
+  });
+  $("#bx-stage").addEventListener("keydown", (ev) => { // setas movem a caixa selecionada (Shift: muda o tamanho)
+    const box = ev.target.closest("[data-box]"); if (!box || !ed) return;
+    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[ev.key]; if (!d) return;
+    ev.preventDefault(); const b = ed.boxes[box.dataset.box]; ed.sel = box.dataset.box;
+    if (ev.shiftKey) { b.w = clamp(b.w + d[0], 5, 100 - b.x); b.h = clamp(b.h + d[1], 3, 100 - b.y); }
+    else { b.x = clamp(b.x + d[0], 0, 100 - b.w); b.y = clamp(b.y + d[1], 0, 100 - b.h); }
+    drawEditor(); box.focus();
+  });
+  $("#bx-tabs").addEventListener("click", (ev) => { const t = ev.target.closest("[data-bx]"); if (t && ed) { ed.sel = t.dataset.bx; drawEditor(); } });
+  const setOpt = (fn) => () => { if (ed) { fn(ed.boxes[ed.sel]); drawEditor(); } };
+  $("#bx-max").oninput = setOpt((b) => { b.max = clamp(Number($("#bx-max").value) || b.max, 5, 400); });
+  $("#bx-size").oninput = setOpt((b) => { b.size = clamp(Number($("#bx-size").value) || b.size, 16, 180); });
+  $("#bx-align").onchange = setOpt((b) => { b.align = $("#bx-align").value; });
+  $("#bx-valign").onchange = setOpt((b) => { b.valign = $("#bx-valign").value; });
+  $("#bx-color").oninput = setOpt((b) => { b.color = $("#bx-color").value; });
+  $("#bx-bold").onchange = setOpt((b) => { b.weight = $("#bx-bold").checked ? 800 : 500; });
+  $("#bx-radius").oninput = setOpt((b) => { b.radius = clamp(Number($("#bx-radius").value) || 0, 0, 200); });
+  $("#bx-img-on").onchange = () => { if (ed) { ed.imgOn = $("#bx-img-on").checked; drawEditor(); } };
+  $("#bx-close").onclick = () => { $("#bx-dlg").close(); ed = null; };
+  window.addEventListener("resize", drawEditor);
+  $("#bx-save").onclick = async () => {
+    if (!ed) return;
+    const boxes = { titulo: ed.boxes.titulo, texto: ed.boxes.texto, ...(ed.imgOn ? { midia: ed.boxes.midia } : {}) };
+    const btn = $("#bx-save"); btn.disabled = true; $("#bx-msg").textContent = "Montando a prévia…";
+    try {
+      await api(`/api/layouts/${ed.id}/boxes`, { method: "POST", body: JSON.stringify({ boxes }) });
+      $("#bx-dlg").close(); ed = null; await load();
+    } catch (e) { $("#bx-msg").textContent = e.message; }
+    btn.disabled = false;
+  };
+
   document.addEventListener("click", (ev) => {
+    const edit = ev.target.closest("button[data-edit-art],button[data-edit-tpl]");
+    if (edit) {
+      if (edit.dataset.editArt) { const l = (state.layouts || []).find((x) => String(x.id) === edit.dataset.editArt); if (l) openEditor(l.id, l.url, l.format, null); }
+      else { const t = (state.templates || []).find((x) => String(x.id) === edit.dataset.editTpl); if (t) openEditor(t.id, t.art_url, t.format, t.boxes); }
+      return;
+    }
     const tab = ev.target.closest("[data-fmt],[data-role]");
     if (tab) { if (tab.dataset.fmt) fmt = tab.dataset.fmt; else role = tab.dataset.role; remember(); draw(); return; }
     const b = ev.target.closest("button[data-ok],button[data-no],button[data-del],button[data-html],button[data-simple],button[data-def],button[data-ren],button[data-move]");

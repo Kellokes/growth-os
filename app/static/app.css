@@ -1294,8 +1294,33 @@ body { padding-bottom: var(--foot-h); }
 .as-card .row { flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
 label.check { display: flex; align-items: center; gap: 8px; }
 label.check input { width: auto; }
+#bx-color { width: 64px; height: 42px; padding: 3px; cursor: pointer; }
+.bx-box.sel { z-index: 1; }
 .cf-src button.auto { border-style: dashed; }
 label.check { flex-direction: row; justify-content: flex-start; text-align: left; grid-template-columns: none; }
 #as-kind { justify-self: start; }
 #as-body .lay-card .row { justify-content: flex-start; }
 @media (max-width: 560px) { .as-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* editor de caixas do template */
+.bx-help { margin: 0 0 14px; }
+.bx-wrap { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 22px; align-items: start; }
+.bx-stage { position: relative; width: 100%; background-size: cover; background-position: center; border-radius: 12px; overflow: hidden; touch-action: none; user-select: none; box-shadow: var(--shadow); background-color: #111; }
+.bx-box { position: absolute; box-sizing: border-box; border: 2px dashed rgba(255,255,255,.85); background: rgba(20, 120, 255, .14); cursor: move; outline: none; }
+.bx-box.bx-midia { background: rgba(255, 170, 0, .22); border-color: rgba(255, 200, 80, .95); }
+.bx-box.sel { border-style: solid; box-shadow: 0 0 0 2px rgba(0,0,0,.55); }
+.bx-box:focus-visible { box-shadow: 0 0 0 3px var(--ink); }
+.bx-label { white-space: nowrap; z-index: 2; position: absolute; bottom: 100%; left: -2px; margin-bottom: 2px; font: 600 10px/1 system-ui, sans-serif; background: rgba(0,0,0,.7); color: #fff; padding: 3px 5px; border-radius: 4px; pointer-events: none; }
+.bx-sample { position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden; font-family: 'Montserrat', sans-serif; overflow-wrap: break-word; pointer-events: none; text-shadow: 0 1px 4px rgba(0,0,0,.6); }
+.bx-handle { position: absolute; right: -7px; bottom: -7px; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid #111; cursor: nwse-resize; }
+.bx-side { display: grid; gap: 14px; min-width: 0; }
+.bx-tabs { justify-self: start; }
+.bx-actions { align-items: center; gap: 12px; flex-wrap: wrap; }
+label.check { display: flex; align-items: center; gap: 8px; }
+label.check input { width: auto; }
+#bx-color { width: 64px; height: 42px; padding: 3px; cursor: pointer; }
+.bx-box.sel { z-index: 1; }
+@media (max-width: 720px) {
+  .bx-wrap { grid-template-columns: minmax(0, 1fr); }
+  .bx-stage { max-width: 320px; justify-self: center; }
+}

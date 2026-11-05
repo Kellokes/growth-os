@@ -400,6 +400,7 @@ class LayoutAsset(Base):
     use_when: Mapped[str] = mapped_column(Text, default="")  # "quando falar do jogo, use isto"
     always: Mapped[int] = mapped_column(Integer, default=0)  # 1 = vai em toda arte (ex.: a logo)
     url: Mapped[str] = mapped_column(String(1000), default="")  # ativo que é um link (vídeo do site); data fica vazio
+    boxes: Mapped[str] = mapped_column(Text, default="")  # kind=template feito no editor: caixas de título, texto e imagem (JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
@@ -537,6 +538,7 @@ _NEW_COLUMNS = {
         "is_default": "INTEGER NOT NULL DEFAULT 0",
         "category": "VARCHAR(20) NOT NULL DEFAULT ''", "use_when": "TEXT NOT NULL DEFAULT ''",
         "always": "INTEGER NOT NULL DEFAULT 0", "url": "VARCHAR(1000) NOT NULL DEFAULT ''",
+        "boxes": "TEXT NOT NULL DEFAULT ''",
     },
 }
 

@@ -322,7 +322,7 @@
       ${!it && $("#cf-format").value ? `<small class="muted">Salve a peça para gerar ou subir a mídia.</small>` : ""}
       ${can ? `<div class="row"><button class="btn small primary" type="button" data-img="gen" ${it.media_generating ? "disabled" : ""}>${esc(again)}</button>
         ${action === "upload" && it.media_file_url ? '<button class="btn small" type="button" data-img="compose">Montar de novo</button>' : ""}
-        <button class="btn small ghost" type="button" data-img="up" title="Substitui tudo: a imagem final vai como está">Subir imagem final pronta</button></div>` : ""}
+        <button class="btn small ghost" type="button" data-img="up" title="${tplMode ? "A imagem entra no layout escolhido. Sem layout, ela substitui a imagem final como está." : "Sem layout: a imagem vai como está e substitui a final."}">Subir imagem</button></div>` : ""}
       ${it?.video_url ? `<video class="cimg big" src="${esc(it.video_url)}" controls playsinline preload="metadata"></video>` : ""}
       ${can && it.can_video ? `<div class="row"><button class="btn small" type="button" data-vid="gen">${it.video_url ? "Montar o vídeo de novo" : "Montar vídeo animado"}</button>
         ${it.video_url ? '<button class="btn small ghost" type="button" data-vid="del">Apagar vídeo</button>' : ""}</div>
@@ -358,6 +358,7 @@
   const readFile = (f) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
   $("#cf-image-file").onchange = async (ev) => {
     const f = ev.target.files[0]; ev.target.value = ""; if (!f || !current) return;
+    $("#cf-image").insertAdjacentHTML("afterbegin", `<small class="muted">Enviando ${esc(f.name)}…</small>`);
     try { current = await api(`/api/content/${current.id}/image/upload`, { method: "POST", body: JSON.stringify({ data: await readFile(f) }) }); }
     catch (e) { alert(e.message); }
     refresh();

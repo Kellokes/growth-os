@@ -4,7 +4,7 @@ from app import growth
 from app import layouts as lay
 
 from .test_growth import pid  # noqa: F401 - fixtures
-from .test_layout_variants import AI, RENDERS, new_piece, studio, upload_template  # noqa: F401 - fixtures
+from .test_layout_variants import AI, B64, RENDERS, new_piece, studio, upload_template  # noqa: F401 - fixtures
 
 BOXES = {
     "titulo": {"x": 6, "y": 20, "w": 88, "h": 10, "max": 30, "size": 64, "align": "center", "color": "#f5d27a", "weight": 800},
@@ -110,3 +110,18 @@ def test_agents_get_text_limits(studio):
     finally:
         s.close()
     assert "Story: título até 30, texto até 50" in brief
+
+
+def test_upload_goes_into_layout_or_replaces_without_one(studio):
+    cid = new_piece()
+    r = studio.post(f"/api/content/{cid}/image/upload", json={"data": B64})  # sem template: substitui como está
+    assert r.status_code == 200 and r.json()["image_url"] and not r.json()["media_file_url"]
+
+    aid = art_id(studio)
+    tid = studio.post(f"/api/layouts/{aid}/boxes", json={"boxes": BOXES}).json()["id"]
+    studio.post(f"/api/layouts/{tid}/default")
+    AI.clear()
+    RENDERS.clear()
+    item = studio.post(f"/api/content/{cid}/image/upload", json={"data": B64}).json()
+    assert item["media_source"] == "upload" and item["media_file_url"] and item["image_url"]
+    assert not AI and RENDERS[-1]["media"] and '<div class="photo"><img class="m-media"' in RENDERS[-1]["html"]

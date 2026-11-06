@@ -109,10 +109,20 @@ def parse_when(raw) -> datetime | None:
 
 
 def stage(c: ContentItem, now: datetime | None = None) -> str:
-    """Status que a tela mostra. 'approved' se divide em agendado (data no futuro) e pronto para sair."""
+    """Status que a tela mostra.
+
+    Rede social aprovada já deveria ter ido ao Postiz: se ainda está aprovada (ou falhou), é "attention" (precisa de você).
+    Enviada com data futura é "postiz" (agendada lá, ainda não saiu). E-mail e canais manuais seguem
+    agendado (data no futuro) / pronto para sair.
+    """
+    now = now or local_now()
+    social = CHANNELS.get(c.channel, ("", "", ""))[1] == "social"
+    if c.status == "sent":
+        return "postiz" if social and c.scheduled_at and c.scheduled_at > now else "sent"
+    if social and c.status in ("approved", "failed"):
+        return "attention"
     if c.status != "approved":
         return c.status
-    now = now or local_now()
     if c.scheduled_at and c.scheduled_at > now:
         return "scheduled"
     return "ready"

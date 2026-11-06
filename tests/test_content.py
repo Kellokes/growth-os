@@ -69,13 +69,13 @@ def test_agent_blocks_become_pending_pieces_of_the_task_project(logged, fake):
 def test_lifecycle_approve_schedule_send(logged):
     make_projects("Zombie Party")
     r = logged.post("/api/content", json={"project": "zombie-party", "channel": "linkedin", "body": "Post do owner"})
-    assert r.status_code == 200 and r.json()["status"] == "approved" and r.json()["stage"] == "ready"
+    assert r.status_code == 200 and r.json()["status"] == "approved" and r.json()["stage"] == "attention"  # social aprovada devia ter ido ao Postiz
     cid = r.json()["id"]
     assert logged.post("/api/content", json={"project": "zombie-party", "body": "  "}).status_code == 422
 
     soon = (cnt.local_now() + timedelta(days=2)).replace(hour=10, minute=0)
     r = logged.patch(f"/api/content/{cid}", json={"scheduled_at": soon.strftime("%Y-%m-%dT%H:%M")})
-    assert r.json()["stage"] == "scheduled"
+    assert r.json()["stage"] == "attention"
     assert logged.patch(f"/api/content/{cid}", json={"scheduled_at": "depois"}).status_code == 422
     agenda = logged.get("/api/content/agenda?project=zombie-party&days=7").json()
     assert [e["item"]["id"] for e in agenda["events"] if e["kind"] == "content"] == [cid]
@@ -83,7 +83,7 @@ def test_lifecycle_approve_schedule_send(logged):
     assert logged.post(f"/api/content/{cid}/decide", json={"approve": True}).status_code == 409  # já aprovada
     assert logged.post(f"/api/content/{cid}/sent", json={"link": "javascript:alert(1)"}).status_code == 422
     r = logged.post(f"/api/content/{cid}/sent", json={"link": "https://linkedin.com/p/1"})
-    assert r.json()["stage"] == "sent" and r.json()["link"].startswith("https://")
+    assert r.json()["stage"] == "postiz" and r.json()["link"].startswith("https://")  # data futura: agendada lá
     assert logged.patch(f"/api/content/{cid}", json={"body": "mudou"}).status_code == 409
     assert logged.delete(f"/api/content/{cid}").status_code == 409  # enviado fica no histórico
     assert logged.post(f"/api/content/{cid}/reopen").status_code == 409
@@ -103,7 +103,7 @@ def test_reject_and_reopen_pending_piece(logged):
     assert logged.post(f"/api/content/{cid}/reopen").json()["status"] == "pending"
     assert logged.patch(f"/api/content/{cid}", json={"body": "versão 2", "project": "outro"}).status_code == 422
     assert logged.patch(f"/api/content/{cid}", json={"body": "versão 2"}).json()["body"] == "versão 2"
-    assert logged.post(f"/api/content/{cid}/decide", json={"approve": True}).json()["stage"] == "ready"
+    assert logged.post(f"/api/content/{cid}/decide", json={"approve": True}).json()["stage"] == "attention"
     assert logged.delete(f"/api/content/{cid}").status_code == 200
     actions = [r["action"] for r in logged.get("/api/audit").json()]
     assert "content_reject" in actions and "content_approve" in actions and "content_delete" in actions
@@ -119,3 +119,15 @@ def test_agenda_lists_routine_runs(logged):
     assert 6 <= len(routines_) <= 7 and routines_[0]["routine"]["title"] == "Post diário"
     make_projects("Outro")
     assert logged.get("/api/content/agenda?project=outro").json()["events"] == []
+
+
+def test_stage_manual_channels_and_postiz():
+    now = cnt.local_now()
+    mk = lambda ch, st, at=None: dbmod.ContentItem(channel=ch, status=st, scheduled_at=at, body="x")
+    future = now + timedelta(days=1)
+    assert cnt.stage(mk("email", "approved"), now) == "ready"
+    assert cnt.stage(mk("email", "approved", future), now) == "scheduled"
+    assert cnt.stage(mk("instagram", "failed"), now) == "attention"
+    assert cnt.stage(mk("instagram", "sent", future), now) == "postiz"
+    assert cnt.stage(mk("instagram", "sent", now - timedelta(days=1)), now) == "sent"
+    assert cnt.stage(mk("email", "sent", future), now) == "sent"

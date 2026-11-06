@@ -87,7 +87,7 @@ def test_visual_piece_cannot_be_approved_or_scheduled_without_image(logged, monk
     r = logged.patch(f"/api/content/{other}", json={"scheduled_at": "2030-01-10T10:00"})
     assert r.status_code == 409
     assert logged.patch(f"/api/content/{other}", json={"visual_format": ""}).status_code == 200
-    assert logged.patch(f"/api/content/{other}", json={"scheduled_at": "2030-01-10T10:00"}).json()["stage"] == "scheduled"
+    assert logged.patch(f"/api/content/{other}", json={"scheduled_at": "2030-01-10T10:00"}).json()["stage"] == "attention"
     assert logged.patch(f"/api/content/{other}", json={"visual_format": "tiktok"}).status_code == 422
     assert logged.post(f"/api/content/{other}/image/upload", json={"data": B64}).status_code == 422  # peça sem formato visual
 

@@ -433,3 +433,40 @@ def test_failed_publish_marks_content_failed_and_can_retry(logged, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
     again = logged.post(f"/api/content/{mid}/publish", json={"totp": code()})
     assert again.json()["status"] == "sent"
+
+
+def test_several_channels_of_one_network_pick_by_project(logged, monkeypatch):
+    """Vários Instagram no Postiz: vai o que leva o nome do projeto; sem pista, a tela recebe as opções e lembra a escolha."""
+    from app import content as cnt
+    (ilha,) = make_projects("A Ilha")
+    connect(ilha, "postiz", POSTIZ, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "t1", "nome": "Take One", "rede": "instagram"},
+                                       {"id": "z1", "nome": "Zombie Party", "rede": "instagram-standalone"},
+                                       {"id": "a1", "nome": "A Ilha Jogo", "rede": "instagram"}])
+    future = cnt.local_now() + timedelta(days=1)
+    (one,) = _pieces(ilha, dict(channel="instagram", body="Ilha", status="pending", scheduled_at=future))
+    r = logged.post(f"/api/content/{one}/decide", json={"approve": True}).json()
+    assert r["status"] == "sent" and r["auto"]["state"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["a1"]
+
+    # Sem nome que combine: pede a escolha (opções na resposta); publicar lembrando vale para as próximas.
+    (zp,) = make_projects("Outro")
+    calls.clear()
+    connect(zp, "postiz", POSTIZ, monkeypatch)
+    p1, p2 = _pieces(zp, dict(channel="instagram", body="1", status="pending"), dict(channel="instagram", body="2", status="pending"))
+    r = logged.post(f"/api/content/{p1}/decide", json={"approve": True}).json()
+    assert r["status"] == "approved" and r["auto"]["state"] == "pick" and len(r["auto"]["pick"]) == 3
+    assert not calls or all(c[0] == "listar_canais" for c in calls)
+    assert logged.post(f"/api/content/{p1}/publish", json={"canal_id": "z1", "lembrar": True}).json()["status"] == "sent"
+    r2 = logged.post(f"/api/content/{p2}/decide", json={"approve": True}).json()
+    assert r2["status"] == "sent" and [c[1]["canal_id"] for c in calls if c[0] == "publicar_post"] == ["z1", "z1"]
+
+
+def test_postiz_canal_field_wins_over_name(logged, monkeypatch):
+    from app import content as cnt
+    (a,) = make_projects("A Ilha")
+    connect(a, "postiz", {**POSTIZ, "canal": "take one"}, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "t", "nome": "Take One", "rede": "instagram"}, {"id": "i", "nome": "A Ilha Jogo", "rede": "instagram"}])
+    (p,) = _pieces(a, dict(channel="instagram", body="x", status="pending", scheduled_at=cnt.local_now() + timedelta(days=1)))
+    assert logged.post(f"/api/content/{p}/decide", json={"approve": True}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["t"]

@@ -266,6 +266,7 @@ def save_integration(db: DB, project: GrowthProject, kind: str, config: dict, en
     allowed = {k for k, *_ in meta["fields"]}
     clean = {k: str(v).strip()[:300] for k, v in (config or {}).items() if k in allowed and str(v or "").strip()}
     row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == kind).one_or_none()
+    clean.update({k: v for k, v in _config(row).items() if k.startswith("padrao_")})  # escolhas guardadas pelo OS
     if row is None:
         row = Integration(project_id=project.id, kind=kind)
         db.add(row)

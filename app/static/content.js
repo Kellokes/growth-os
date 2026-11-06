@@ -1,6 +1,6 @@
 // Central de conteúdo: peças (posts, e-mails...), agenda e saídas dos agentes, por projeto (ou todos).
 (() => {
-  const { $, esc, api, icon, initProjects } = window.GOS;
+  const { $, esc, api, icon, initProjects, toast, working, flash } = window.GOS;
   const TABS = ["pecas", "agenda", "saidas", "ativos"];
   const STAGES = [
     ["pending", "Aguardando você", "aprovar ou rejeitar"],
@@ -115,49 +115,78 @@
     catch (e) { $("#pieces").innerHTML = `<div class="alert">${esc(e.message)}</div>`; }
   }
 
-  // Estado "processando": a peça ganha uma faixa de luz correndo, o botão vira spinner e a frase troca a cada etapa.
-  async function busy(id, steps, fn) {
-    const card = document.querySelector(`.cpiece[data-id="${id}"]`);
-    const dlg = $("#content-dialog")?.open ? $("#content-dialog") : null;
-    const btns = [...(card ? card.querySelectorAll("button") : []), ...(dlg ? dlg.querySelectorAll("#cf-actions button") : [])];
-    const was = btns.map((b) => b.disabled);
-    let line = null, timers = [];
-    btns.forEach((b) => { b.disabled = true; });
-    if (card) {
-      card.classList.add("busy");
-      line = document.createElement("div");
-      line.className = "cbusy"; line.setAttribute("role", "status");
-      line.innerHTML = `<i class="cspin"></i><span></span>`;
-      card.querySelector(".cpiece-foot")?.before(line);
-    }
-    const say = (t) => { if (line) line.querySelector("span").textContent = t; const m = dlg?.querySelector("#cf-busy"); if (m) m.textContent = t; };
-    if (dlg && !dlg.querySelector("#cf-busy")) dlg.querySelector("#cf-actions")?.insertAdjacentHTML("beforebegin", `<div class="cbusy" id="cf-busy" role="status"><i class="cspin"></i><span></span></div>`);
-    dlg?.querySelector("#cf-busy")?.removeAttribute("hidden");
-    say(steps[0]);
-    steps.slice(1).forEach((t, i) => timers.push(setTimeout(() => say(t), 900 * (i + 1))));
-    try { return await fn(); }
-    finally {
-      timers.forEach(clearTimeout);
-      card?.classList.remove("busy"); line?.remove();
-      dlg?.querySelector("#cf-busy")?.setAttribute("hidden", "");
-      btns.forEach((b, i) => { b.disabled = was[i]; });
-    }
-  }
-  const stepsFor = (id, approve) => {
-    if (!approve) return ["Rejeitando…"];
-    const it = items.find((x) => x.id === id);
-    if (it && it.group === "social") return ["Aprovando…", "Conferindo o canal no Postiz…", it.scheduled_at ? "Agendando no Postiz…" : "Publicando no Postiz…"];
-    return ["Aprovando…"];
-  };
-
-  async function act(fn) {
-    try { await fn(); } catch (e) { alert(e.message); return false; }
+  const refreshAll = async () => {
     await loadPieces(); loaded.agenda = false; loaded.saidas = false;
     if (activeTab() === "agenda") loadAgenda();
+  };
+  async function act(fn) {
+    try { await fn(); } catch (e) { toast(e.message, "err"); return false; }
+    await refreshAll();
     return true;
   }
-  const decide = (id, approve, note = "") => act(() => busy(id, stepsFor(id, approve), () => api(`/api/content/${id}/decide`, { method: "POST", body: JSON.stringify({ approve, note }) })));
-  const markSent = (id, link = "") => act(() => api(`/api/content/${id}/sent`, { method: "POST", body: JSON.stringify({ link }) }));
+  const cardOf = (id) => document.querySelector(`.cpiece[data-id="${id}"]`);
+  const stageName = (k) => (STAGES.find((x) => x[0] === k) || [k, k])[1];
+  // Depois de decidir, a peça pode sair desta aba: o aviso leva até onde ela foi parar.
+  const goTo = (d) => ({ label: `Ver em ${stageName(d.stage)}`, run: () => { stageF = d.stage; renderPieces(); cardOf(d.id)?.scrollIntoView({ block: "center", behavior: "smooth" }); flash(cardOf(d.id)); } });
+  const PH_APPROVE = (it) => it?.group === "social"
+    ? [[0, "Aprovando…"], [1100, "Preparando o envio…"], [2600, "Enviando ao Postiz…"], [9000, "O Postiz está demorando, segura aí…"]]
+    : [[0, "Aprovando…"]];
+
+  // Aprovar: botão e cartão respondem na hora; o desfecho (enviada, agendada, segurada, erro) vem num aviso.
+  async function approveFlow(id, btn, scope = null) {
+    const it = items.find((x) => x.id === id) || current;
+    const r = await working({ btn, scope, phases: PH_APPROVE(it) }, () => api(`/api/content/${id}/decide`, { method: "POST", body: JSON.stringify({ approve: true, note: "" }) }));
+    await refreshAll();
+    if (!r.ok) { toast(r.error.message, "err"); flash(cardOf(id), "err"); return false; }
+    const d = r.value; const a = d.auto || { state: "skipped" };
+    if (a.state === "sent") toast(`Aprovada. ${a.message || "Enviada."}`, "ok", { action: goTo(d) });
+    else if (a.state === "pick") { toast("Aprovada. Falta escolher o canal para sair.", "info"); pickChannel(d, a.pick); }
+    else if (a.state === "held") toast(`Aprovada, mas não saiu: ${a.message}`, "info", { action: goTo(d), ms: 12000 });
+    else if (a.state === "failed") toast(`Aprovada, mas o envio falhou: ${a.message || "erro no Postiz"}`, "err", { action: goTo(d) });
+    else toast("Aprovada.", "ok", { action: goTo(d) });
+    flash(cardOf(id), a.state === "failed" ? "err" : "ok");
+    return true;
+  }
+  async function rejectFlow(id, btn, scope = null) {
+    const note = prompt("Motivo (opcional):", ""); if (note === null) return false;
+    const r = await working({ btn, scope, phases: [[0, "Rejeitando…"]] }, () => api(`/api/content/${id}/decide`, { method: "POST", body: JSON.stringify({ approve: false, note }) }));
+    await refreshAll();
+    if (!r.ok) { toast(r.error.message, "err"); return false; }
+    toast("Peça rejeitada.", "info", { action: goTo(r.value) });
+    return true;
+  }
+  // Escolha do canal do Postiz (quando há vários da mesma rede e o OS não sabe qual): vale também para o botão Publicar.
+  function pickChannel(it, list) {
+    let dlg = $("#pick-dialog");
+    if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "pick-dialog"; dlg.className = "card"; document.body.append(dlg); }
+    const net = chan(it.channel).name;
+    dlg.innerHTML = `<form method="dialog"><h2>Em qual canal publicar?</h2>
+      <p class="muted">${esc(pinfo(it.project).name)} · ${esc(net)}. ${it.scheduled_at && parseLocal(it.scheduled_at) > new Date() ? "Fica agendada para " + esc(when(it.scheduled_at)) + "." : "Sai agora."}</p>
+      <div class="pick-list">${list.map((c, i) => `<label><input type="radio" name="pick" value="${esc(c.id)}" ${i === 0 ? "checked" : ""}><span>${esc(c.nome)}</span><small class="muted">${esc(c.rede)}</small></label>`).join("")}</div>
+      <label class="pick-remember"><input type="checkbox" id="pick-mem" checked> Usar sempre este para ${esc(net)} em ${esc(pinfo(it.project).name)}</label>
+      <div class="cf-actions"><button class="btn ghost" type="button" data-pk="no">Agora não</button><button class="btn primary" type="button" data-pk="go">${icon("send")} Publicar</button></div></form>`;
+    dlg.querySelector('[data-pk="no"]').onclick = () => dlg.close();
+    dlg.querySelector('[data-pk="go"]').onclick = async (ev) => {
+      const canal = dlg.querySelector("input[name=pick]:checked")?.value; if (!canal) return;
+      const mem = $("#pick-mem").checked;
+      const ok = await publishNow(it.id, { canal_id: canal, lembrar: mem }, ev.currentTarget, dlg.querySelector("form"));
+      if (ok) dlg.close();
+    };
+    dlg.showModal();
+  }
+  async function publishNow(id, body, btn, scope = null) {
+    const it = items.find((x) => x.id === id);
+    const sched = it?.scheduled_at && parseLocal(it.scheduled_at) > new Date();
+    const r = await working({ btn, scope, phases: it?.group === "email" ? [[0, "Enviando o e-mail…"]] : [[0, sched ? "Agendando…" : "Publicando…"], [2500, "Falando com o Postiz…"], [9000, "Quase lá…"]] },
+      () => api(`/api/content/${id}/publish`, { method: "POST", body: JSON.stringify(body) }));
+    await refreshAll(); sw?.reload?.();
+    if (!r.ok) { toast(r.error.message, "err"); flash(cardOf(id), "err"); return false; }
+    const d = r.value;
+    if (d.status === "sent") { toast(it?.group === "email" ? "E-mail enviado." : sched ? "Agendada no Postiz." : "Publicada.", "ok", { action: goTo(d) }); flash(cardOf(id)); return true; }
+    toast(d.note || "O envio falhou.", "err", { action: goTo(d) }); flash(cardOf(id), "err");
+    return false;
+  }
+  const decide = (id, approve, note = "") => act(() => api(`/api/content/${id}/decide`, { method: "POST", body: JSON.stringify({ approve, note }) }));
 
   // ---------- diálogo: ver, editar, aprovar, agendar, marcar enviada ----------
   function fillChannels(sel) {
@@ -374,20 +403,23 @@
       await saveMode();
       const tplMode = $("#cf-mode").value === "template";
       if (what === "gen" && tplMode && src === "upload") return $("#cf-media-file").click();
-      b.disabled = true; b.textContent = src === "gerar_video" && tplMode ? "Pedindo o vídeo…" : "Montando… (até 1 min)";
-      if (what === "gen" && tplMode && src === "link") {
-        const url = $("#cf-url").value.trim(); if (!url) { alert("Cole o link do arquivo."); return refresh(); }
-        current = await api(`/api/content/${current.id}/media/link`, { method: "POST", body: JSON.stringify({ url }) });
-      } else current = await api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) });
-    } catch (e) { alert(e.message); }
+      const video = src === "gerar_video" && tplMode;
+      if (what === "gen" && tplMode && src === "link" && !$("#cf-url").value.trim()) { toast("Cole o link do arquivo.", "info"); return refresh(); }
+      const r = await working({ btn: b, scope: $("#cf-image"), phases: video ? [[0, "Pedindo o vídeo…"], [12000, "Renderizando o vídeo… (até 2 min)"]] : [[0, "Montando a arte…"], [15000, "Ainda montando… (até 1 min)"]] }, () => {
+        if (what === "gen" && tplMode && src === "link") return api(`/api/content/${current.id}/media/link`, { method: "POST", body: JSON.stringify({ url: $("#cf-url").value.trim() }) });
+        return api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) });
+      });
+      if (r.ok) { current = r.value; toast(video ? "Vídeo pronto." : "Arte pronta.", "ok"); } else toast(r.error.message, "err");
+    } catch (e) { toast(e.message, "err"); }
     refresh();
   });
   $("#cf-image").addEventListener("click", async (ev) => {
     const b = ev.target.closest("[data-vid]"); if (!b || !current) return;
     if (b.dataset.vid === "del" && !confirm("Apagar o vídeo desta peça?")) return;
-    b.disabled = true; if (b.dataset.vid === "gen") b.textContent = "Renderizando… (até 2 min)";
-    try { current = await api(`/api/content/${current.id}/video`, { method: b.dataset.vid === "del" ? "DELETE" : "POST" }); }
-    catch (e) { alert(e.message); }
+    const del = b.dataset.vid === "del";
+    const r = await working({ btn: b, scope: $("#cf-image"), phases: del ? [[0, "Apagando…"]] : [[0, "Pedindo o vídeo…"], [8000, "Renderizando… (até 2 min)"]] },
+      () => api(`/api/content/${current.id}/video`, { method: del ? "DELETE" : "POST" }));
+    if (r.ok) { current = r.value; if (!del) toast("Vídeo pronto.", "ok"); } else toast(r.error.message, "err");
     refresh();
   });
   const readFile = (f) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
@@ -600,8 +632,8 @@
     }
     if (what === "delete") { if (!confirm("Excluir esta peça?")) return; if (await act(() => api(`/api/content/${it.id}`, { method: "DELETE" }))) $("#content-dialog").close(); return; }
     if (what === "reopen") { if (await act(() => api(`/api/content/${it.id}/reopen`, { method: "POST" }))) $("#content-dialog").close(); return; }
-    if (what === "reject") { const note = prompt("Motivo (opcional):", ""); if (note === null) return; if (await decide(it.id, false, note)) $("#content-dialog").close(); return; }
-    if (what === "approve") { if (!(await save())) return; if (await decide(it.id, true)) $("#content-dialog").close(); return; }
+    if (what === "reject") { if (await rejectFlow(it.id, btn, $("#cf-actions"))) $("#content-dialog").close(); return; }
+    if (what === "approve") { if (!(await save())) return; if (await approveFlow(it.id, btn, $("#cf-actions"))) $("#content-dialog").close(); return; }
     if (what === "sent") { $("#cf-sent-box").hidden = false; $("#cf-actions").hidden = true; $("#cf-link").focus(); }
   });
   $("#cf-sent-cancel").onclick = () => { $("#cf-sent-box").hidden = true; $("#cf-actions").hidden = false; };
@@ -609,7 +641,10 @@
     const link = $("#cf-link").value.trim();
     if (link && !/^https?:\/\/\S+$/.test(link)) return alert("O link precisa começar com http:// ou https://");
     if (!(await save())) return;
-    if (await markSent(current.id, link)) $("#content-dialog").close();
+    const r = await working({ btn: $("#cf-sent-ok"), scope: $("#cf-sent-box"), phases: [[0, "Marcando…"]] }, () => api(`/api/content/${current.id}/sent`, { method: "POST", body: JSON.stringify({ link }) }));
+    await refreshAll();
+    if (!r.ok) return toast(r.error.message, "err");
+    toast("Marcada como enviada.", "ok", { action: goTo(r.value) }); $("#content-dialog").close();
   };
   $("#content-dialog").addEventListener("close", () => { $("#cf-actions").hidden = false; });
   $("#new-content").onclick = () => {
@@ -684,32 +719,25 @@
 
   // ---------- eventos ----------
   // Publicar pelo OS: e-mail (SMTP, pede 2FA) ou rede social (Postiz, escolhe o canal).
-  async function publish(id) {
+  async function publish(id, btn) {
     const it = items.find((x) => x.id === id); if (!it) return;
-    const send = (body) => busy(id, [it.group === "email" ? "Enviando o e-mail…" : "Enviando ao Postiz…"],
-      () => api(`/api/content/${id}/publish`, { method: "POST", body: JSON.stringify(body) }));
-    try {
-      if (it.group === "email") {
-        const t = prompt(`Enviar este e-mail para ${it.recipient || "?"} agora?\nDigite o código 2FA para confirmar:`, "");
-        if (!t) return;
-        await send({ totp: t });
-      } else {
-        // o servidor já sabe o canal do projeto; só pergunta se não houver como escolher sozinho
-        try { await send({}); }
-        catch (e) {
-          if (!/escolha o canal/i.test(e.message)) throw e;
-          const list = await api(`/api/gprojects/${it.project}/postiz/canais`);
-          if (!list.length) return alert("Nenhum canal conectado no Postiz deste projeto.");
-          let pick = list[0];
-          if (list.length > 1) {
-            const n = prompt(`${e.message}\n\nEm qual canal publicar?\n` + list.map((c, i) => `${i + 1}) ${c.nome} (${c.rede})`).join("\n"), "1");
-            pick = list[Number(n) - 1]; if (!pick) return;
-          } else if (!confirm(`Publicar agora em ${pick.nome} (${pick.rede})?`)) return;
-          await send({ canal_id: pick.id });
-        }
-      }
-    } catch (e) { alert(e.message); }
-    await loadPieces(); sw?.reload?.();
+    if (it.group === "email") {
+      const t = prompt(`Enviar este e-mail para ${it.recipient || "?"} agora?\nDigite o código 2FA para confirmar:`, "");
+      if (!t) return;
+      return publishNow(id, { totp: t }, btn);
+    }
+    // o servidor já sabe o canal do projeto (campo Canal, nome citando o projeto, escolha lembrada); só pergunta se não souber
+    const sched = it.scheduled_at && parseLocal(it.scheduled_at) > new Date();
+    const r = await working({ btn, phases: [[0, "Conferindo o canal…"], [1200, sched ? "Agendando no Postiz…" : "Publicando no Postiz…"], [9000, "Quase lá…"]] },
+      () => api(`/api/content/${id}/publish`, { method: "POST", body: "{}" }));
+    if (r.ok) { await refreshAll(); sw?.reload?.(); toast(r.value.status === "sent" ? (sched ? "Agendada no Postiz." : "Publicada.") : (r.value.note || "O envio falhou."), r.value.status === "sent" ? "ok" : "err", { action: goTo(r.value) }); flash(cardOf(id), r.value.status === "sent" ? "ok" : "err"); return; }
+    if (!/escolha o canal/i.test(r.error.message)) { await refreshAll(); flash(cardOf(id), "err"); return toast(r.error.message, "err"); }
+    let list;
+    try { list = await api(`/api/gprojects/${it.project}/postiz/canais`); } catch (e) { return toast(e.message, "err"); }
+    const canais = list.filter((c) => !c.desativado && (c.rede || "").split("-")[0] === it.channel);
+    const pool = canais.length ? canais : list;
+    if (!pool.length) return toast("Nenhum canal conectado no Postiz deste projeto.", "err");
+    pickChannel(it, pool);
   }
   const findPiece = async (id) => {
     let it = items.find((x) => x.id === id);
@@ -717,10 +745,10 @@
     return it;
   };
   document.addEventListener("click", async (ev) => {
-    const a = ev.target.closest("[data-approve]"); if (a) return decide(Number(a.dataset.approve), true);
+    const a = ev.target.closest("[data-approve]"); if (a) return approveFlow(Number(a.dataset.approve), a);
     const r = ev.target.closest("[data-reject]");
-    if (r) { const note = prompt("Motivo (opcional):", ""); if (note !== null) decide(Number(r.dataset.reject), false, note); return; }
-    const pb = ev.target.closest("[data-publish]"); if (pb) return publish(Number(pb.dataset.publish));
+    if (r) return rejectFlow(Number(r.dataset.reject), r);
+    const pb = ev.target.closest("[data-publish]"); if (pb) return publish(Number(pb.dataset.publish), pb);
     const s = ev.target.closest("[data-sent]"); if (s) { const it = items.find((x) => x.id === Number(s.dataset.sent)); if (it) { openPiece(it); $("#cf-actions [data-cf=sent]")?.click(); } return; }
     const st = ev.target.closest("[data-stage]"); if (st) { stageF = st.dataset.stage; return renderPieces(); }
     const g = ev.target.closest("[data-group]"); if (g) { groupF = g.dataset.group; return renderPieces(); }

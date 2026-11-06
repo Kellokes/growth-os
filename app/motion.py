@@ -138,9 +138,39 @@ tl.seek(0);
     return doc
 
 
+INLINE_LIMIT = 1_500_000  # o HyperFrames só embute no HTML imagem de até 2 MB; acima disso o render demora minutos ou cai (500)
+
+
+def shrink_image(data: bytes, mime: str, fmt: str) -> tuple[bytes, str]:
+    """Foto/fundo grande (os modelos de imagem devolvem PNG de 2 a 4 MB) é reduzida ao tamanho do quadro antes de ir ao serviço
+    motion: foto vira JPEG, arte com transparência continua PNG. Menor que o limite ou qualquer falha: segue como veio."""
+    if not mime.startswith("image/") or len(data) <= INLINE_LIMIT:
+        return data, mime
+    try:
+        import io
+
+        from PIL import Image
+
+        w, h = CANVAS[fmt]
+        im = Image.open(io.BytesIO(data))
+        im.thumbnail((w, h))
+        out = io.BytesIO()
+        if im.mode in ("RGBA", "LA") or "transparency" in im.info:
+            im.convert("RGBA").save(out, "PNG", optimize=True)
+            res = (out.getvalue(), "image/png")
+        else:
+            im.convert("RGB").save(out, "JPEG", quality=88, optimize=True)
+            res = (out.getvalue(), "image/jpeg")
+        return res if len(res[0]) < len(data) else (data, mime)
+    except Exception:  # noqa: BLE001 - sem Pillow ou imagem estranha: o serviço tenta com o original
+        return data, mime
+
+
 def _payload(template: str, fmt: str, bg: tuple[bytes, str] | None, title: str, text: str, brand: str, zoom: bool = True,
              media: tuple[bytes, str] | None = None, duration: float = DURATION) -> dict:
     binary: dict[str, str] = {}
+    bg = shrink_image(*bg, fmt) if bg is not None else None
+    media = shrink_image(*media, fmt) if media is not None else None
     if bg is None:
         # sem arte: com vídeo atrás, o fundo fica transparente para o vídeo aparecer; sem nada, um gradiente de prévia
         value = "none" if media is not None and media[1].startswith("video/") else SAMPLE_BG

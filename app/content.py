@@ -293,8 +293,43 @@ def slides_json(c: ContentItem) -> list[dict]:
     """Páginas e CTA do carrossel, com a imagem de cada um (se já renderizada)."""
     from .layouts import piece_slides
 
-    return [{"role": s["role"], "title": s["title"], "text": s["text"],
-             "image_url": f"/api/layouts/assets/{s['image_id']}" if s.get("image_id") else ""} for s in piece_slides(c)]
+    return [{"role": s["role"], "title": s["title"], "text": s["text"], "media": s.get("media", ""),
+             "prompt": s.get("prompt", ""), "assets": s.get("assets", []), "manual_assets": bool(s.get("manual_assets")),
+             "image_url": f"/api/layouts/assets/{s['image_id']}" if s.get("image_id") else "",
+             "photo_url": f"/api/layouts/assets/{s['photo_id']}" if s.get("photo_id") else ""} for s in piece_slides(c)]
+
+
+def slides_detail(db: DB, c: ContentItem) -> list[dict]:
+    """Cada página do carrossel com tudo que o formulário mostra: estado, o que está faltando, o prompt (montado e o do owner),
+    o prompt usado na última imagem e as referências (automáticas ou escolhidas). Sem chamar nenhum modelo."""
+    from . import assets as ast
+    from . import pipeline
+    from .db import LayoutAsset
+    from .layouts import piece_slides, slide_plan
+
+    errors = pipeline._state(c)["errors"]
+    out = []
+    for i, s in enumerate(piece_slides(c)):
+        plan = slide_plan(db, c, s)
+        kind = plan["kind"]
+        img = db.get(LayoutAsset, s["image_id"]) if s.get("image_id") else None
+        photo = db.get(LayoutAsset, s["photo_id"]) if s.get("photo_id") else None
+        used = (img.prompt if kind == "livre" and img is not None else photo.prompt if photo is not None else "") or ""
+        key = pipeline._slide_key(i, s["role"])
+        made = bool(img) and (kind == "livre" or not kind or photo is not None)
+        status = "ok" if made else "erro" if errors.get(key) else "falta"
+        forced = set(ast.slide_ids(s))
+        out.append({
+            "index": i, "role": s["role"], "title": s["title"], "text": s["text"], "media": s.get("media", ""),
+            "kind": kind, "status": status, "error": errors.get(key, ""), "reason": plan["reason"],
+            "image_url": f"/api/layouts/assets/{img.id}" if img is not None else "",
+            "photo_url": f"/api/layouts/assets/{photo.id}" if photo is not None else "",
+            "prompt": s.get("prompt", ""), "default_prompt": plan["prompt"], "used_prompt": used,
+            "manual_assets": bool(s.get("manual_assets")),
+            "refs": [{"id": a.id, "name": ast.label(a), "url": f"/api/layouts/assets/{a.id}",
+                      "auto": a.id not in forced} for a in plan["picked"]],
+        })
+    return out
 
 
 def _slide_assets(p: dict, db, project_id) -> dict:

@@ -2145,6 +2145,97 @@ async def content_generate_image(cid: int, body: PieceImageIn, request: Request,
     return _content_json(db, c)
 
 
+class SlideIn(BaseModel):
+    prompt: str | None = Field(default=None, max_length=6000)  # prompt da imagem desta página ("" = volta ao montado)
+    media: str | None = Field(default=None, max_length=600)  # o que a imagem mostra
+    assets: list[int] | None = Field(default=None, max_length=5)  # referências escolhidas (ids de ativos do projeto)
+    auto_assets: bool | None = None  # True = referências automáticas; False = só as de "assets"
+    feedback: str = Field(default="", max_length=500)
+
+
+def _slide_or_404(db: DB, cid: int, i: int) -> tuple[ContentItem, list[dict]]:
+    c = _content_or_404(db, cid)
+    if c.status not in cnt.EDITABLE:
+        raise HTTPException(409, "só dá para mudar a imagem de uma peça em aprovação ou aprovada")
+    slides = lay.piece_slides(c)
+    if c.visual_format != "carrossel" or not 0 <= i < len(slides):
+        raise HTTPException(404, "página não encontrada")
+    return c, slides
+
+
+def _apply_slide(db: DB, c: ContentItem, slides: list[dict], i: int, body: SlideIn) -> None:
+    s = slides[i]
+    if body.media is not None:
+        if body.media.strip():
+            s["media"] = body.media.strip()
+        else:
+            s.pop("media", None)
+    if body.assets is not None:
+        ok = {a.id for a in ast.project_assets(db, c.project_id)}
+        ids = [x for x in dict.fromkeys(body.assets) if x in ok]
+        if len(ids) != len(set(body.assets)):
+            raise HTTPException(422, "ativo não encontrado neste projeto")
+        s["assets"] = ids
+        if not ids:
+            s.pop("assets", None)
+    if body.auto_assets is not None:
+        if body.auto_assets:
+            s.pop("manual_assets", None)
+        else:
+            s["manual_assets"] = True
+    if body.prompt is not None:
+        text = body.prompt.strip()
+        shown = lay.slide_plan(db, c, s)["prompt"].strip()  # igual ao montado = o owner não mudou nada
+        if text and text != shown:
+            s["prompt"] = text
+        else:
+            s.pop("prompt", None)
+    c.slides = json.dumps(slides, ensure_ascii=False)
+    cnt.touch(c)
+    db.commit()
+
+
+@app.get("/api/content/{cid}/slides")
+def content_slides(cid: int, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Cada página do carrossel com estado, prompt, referências e o que falta (tudo que o formulário mostra)."""
+    c = _content_or_404(db, cid)
+    return {"slides": cnt.slides_detail(db, c) if c.visual_format == "carrossel" else []}
+
+
+@app.put("/api/content/{cid}/slides/{i}")
+def content_slide_settings(cid: int, i: int, body: SlideIn, request: Request, auth: Auth = Depends(current_auth),
+                           db: DB = Depends(get_db)):
+    """Grava o prompt, a descrição e as referências de UMA página, sem gerar nada."""
+    c, slides = _slide_or_404(db, cid, i)
+    _apply_slide(db, c, slides, i, body)
+    audit(db, auth.user.username, "content_slide_edit", f"#{c.id} página {i}", client_ip(request))
+    return {"slides": cnt.slides_detail(db, c)}
+
+
+@app.post("/api/content/{cid}/slides/{i}/image")
+async def content_slide_image(cid: int, i: int, body: SlideIn, request: Request, auth: Auth = Depends(current_auth),
+                              db: DB = Depends(get_db)):
+    """Gera de novo SÓ a imagem desta página (1 imagem paga), com o prompt e as referências dela, e a monta no template."""
+    c, slides = _slide_or_404(db, cid, i)
+    if not c.image_id:
+        raise HTTPException(409, "gere a capa primeiro: as páginas seguem o mesmo cenário")
+    _apply_slide(db, c, slides, i, body)
+    key = pipeline._slide_key(i, slides[i]["role"])
+    try:
+        await lay.build_slide(db, c, i, body.feedback, force=True)
+    except ProviderError as e:
+        db.rollback()
+        st = pipeline._state(c)
+        st["errors"][key] = str(e)[:400]
+        pipeline._save(c, st)
+        db.commit()
+        raise HTTPException(422, str(e)) from e
+    pipeline._record_ok(c, key)
+    db.commit()
+    audit(db, auth.user.username, "content_slide_image", f"#{c.id} página {i}", client_ip(request))
+    return {"item": _content_json(db, c), "slides": cnt.slides_detail(db, c)}
+
+
 @app.post("/api/content/{cid}/complete")
 async def content_complete(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     """O owner manda completar a peça agora: refaz só as partes que faltam (texto, capa, páginas, CTA), zerando as tentativas."""

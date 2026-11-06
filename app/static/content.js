@@ -240,6 +240,7 @@
     $("#cf-sent-box").hidden = true; $("#cf-link").value = "";
     renderActions(); renderImage();
     $("#content-dialog").showModal();
+    loadDetail();
   }
 
   // ---------- visual da peça: layout (templates do projeto), mídia que entra nele e texto ----------
@@ -262,14 +263,14 @@
     ["nenhuma", "Só o layout", "Sem foto nem vídeo: a arte do layout com o texto. Sem custo de IA."],
   ];
   const ROLES = [["capa", "Capa"], ["pagina", "Páginas"], ["cta", "CTA final"]];
-  let src = "gerar_imagem"; let pages = []; let tplSel = {};
+  let src = "gerar_imagem"; let pages = []; let tplSel = {}; let cta = { title: "", text: "" }; let detail = []; let tab = 0; let slideAssets = [];
 
   function initVisual(it) {
     src = it?.media_source || "gerar_imagem";
     const slides = it?.slides || [];
     pages = slides.filter((s) => s.role === "pagina").map((s) => ({ title: s.title, text: s.text }));
-    const cta = slides.find((s) => s.role === "cta");
-    $("#cf-cta-title").value = cta ? cta.title : ""; $("#cf-cta-text").value = cta ? cta.text : "";
+    const c0 = slides.find((s) => s.role === "cta");
+    cta = { title: c0 ? c0.title : "", text: c0 ? c0.text : "" }; detail = []; tab = 0;
     $("#cf-imgtitle").value = it?.img_title || ""; $("#cf-imgtext-in").value = it?.img_text || "";
     $("#cf-url").value = it?.media_url || "";
     assetSel = [...(it?.asset_ids || [])];
@@ -277,23 +278,111 @@
     delete $("#cf-ref").dataset.sel;
   }
 
+  // ---------- carrossel: uma aba por página (capa, páginas, CTA) com título, texto, imagem, prompt e referências ----------
+  const STATUS = { ok: ["✓", "Imagem pronta", "ok"], falta: ["•", "Sem imagem", "todo"], erro: ["!", "Erro", "err"] };
+  const KIND_HINT = { livre: "A imagem inteira sai do modelo de imagem (modo sem layout).", janela: "A foto vai na janela de imagem do template desta página.",
+    cenario: "A IA refaz o cenário dentro da arte desta página (mantém moldura e logo).", fundo: "A foto vira o fundo desta página." };
+  const slideAt = (i) => (detail.length === pages.length + 1 ? detail[i] : null);  // i: 0..pages-1 = páginas, pages.length = CTA
+  const tabItems = () => [{ k: "capa", label: "Capa" }, ...pages.map((p, i) => ({ k: i, label: `Pág. ${i + 2}` })), { k: "cta", label: "CTA" }];
+  const tabIndex = (k) => (k === "cta" ? pages.length : k);
   function drawPages() {
-    $("#cf-pages").innerHTML = pages.map((p, i) => `<div class="cf-page" data-page="${i}">
-      <label>Página ${i + 2} · título<input data-pf="title" maxlength="120" value="${esc(p.title)}"></label>
-      <label>Texto<input data-pf="text" maxlength="300" value="${esc(p.text)}"></label>
-      <button class="btn small ghost" type="button" data-pdel="${i}" aria-label="Tirar página">✕</button></div>`).join("")
-      || `<small class="muted">Sem páginas definidas: cada parágrafo do texto vira uma página.</small>`;
-    $("#cf-add-page").hidden = pages.length >= 8;
+    const items = tabItems(); if (tab >= items.length) tab = items.length - 1;
+    $("#cf-tabs").innerHTML = items.map((it, n) => {
+      const d = it.k === "capa" ? null : slideAt(tabIndex(it.k));
+      const st = it.k === "capa" ? (current?.image_url ? "ok" : current?.image_error ? "erro" : "falta") : d ? d.status : "falta";
+      const url = it.k === "capa" ? current?.image_url : d?.image_url;
+      return `<button type="button" role="tab" class="cf-tab st-${st} ${n === tab ? "on" : ""}" data-tab="${n}" aria-selected="${n === tab}" title="${esc(STATUS[st][1])}">
+        ${url ? `<img src="${esc(url)}" alt="" loading="lazy">` : `<span class="ph"></span>`}<span>${esc(it.label)}</span><i aria-hidden="true">${STATUS[st][0]}</i></button>`;
+    }).join("") + (pages.length < 8 && !ro() ? `<button type="button" class="cf-tab add" data-tab="add" aria-label="Adicionar página">+</button>` : "");
+    drawPanel();
   }
-  $("#cf-pages").addEventListener("input", (ev) => {
-    const row = ev.target.closest("[data-page]"); if (!row || !ev.target.dataset.pf) return;
-    pages[Number(row.dataset.page)][ev.target.dataset.pf] = ev.target.value;
+  function drawPanel() {
+    const it = tabItems()[tab]; const box = $("#cf-tabpanel"); const dis = ro() ? "disabled" : "";
+    if (!it) { box.innerHTML = ""; return; }
+    if (it.k === "capa") {
+      box.innerHTML = `<div class="cf-pan-head"><b>Capa</b><span class="muted">O título e a frase da capa ficam em "Texto no layout", acima. O prompt da capa fica em "Imagem da peça", logo abaixo.</span></div>
+        ${current?.image_url ? `<img class="cimg" src="${esc(current.image_url)}" alt="capa">` : `<small class="muted">A capa ainda não tem imagem.</small>`}
+        ${current?.assets_auto?.length ? `<small class="muted">Referências escolhidas sozinhas para a capa: ${esc(current.assets_auto.join(", "))}</small>` : ""}`;
+      return;
+    }
+    const i = tabIndex(it.k); const isCta = it.k === "cta"; const row = isCta ? cta : pages[i]; const d = slideAt(i);
+    const st = d ? d.status : "falta";
+    const shown = d ? (d.prompt || d.default_prompt) : "";
+    box.innerHTML = `<div class="cf-pan-head"><b>${isCta ? "CTA final" : `Página ${i + 2}`}</b>
+        <span class="badge ${st === "ok" ? "ok" : st === "erro" ? "failed" : ""}">${esc(STATUS[st][1])}</span>
+        ${isCta || ro() ? "" : `<button class="btn small ghost" type="button" data-pdel="${i}" aria-label="Tirar página">Tirar página</button>`}</div>
+      <div class="cf-pan-grid">
+        <div class="cf-pan-fields">
+          <label>Título<input data-pf="title" maxlength="120" value="${esc(row.title)}" ${dis}></label>
+          <label>Texto<textarea data-pf="text" rows="3" maxlength="300" ${dis}>${esc(row.text)}</textarea></label>
+        </div>
+        <div class="cf-pan-img">${d?.image_url ? `<img class="cimg" src="${esc(d.image_url)}" alt="imagem da página">` : `<div class="cf-noimg">Sem imagem</div>`}</div>
+      </div>
+      ${!d ? `<small class="muted">Salve a peça (ou gere a imagem) para esta página poder ter imagem, prompt e referências.</small>` : `
+      ${d.error ? `<div class="alert">${esc(d.error)}</div>` : ""}
+      ${!d.kind ? `<div class="secret-note">Esta página não leva foto da IA${d.reason ? `: ${esc(d.reason)}` : ""}.</div>` : `
+      <label>O que a imagem mostra<textarea data-pm rows="2" maxlength="600" placeholder="Ex.: close no tabuleiro com as cartas viradas. Vazio = a IA usa o título e o texto da página" ${dis}>${esc(d.media)}</textarea></label>
+      <label>Prompt desta imagem <small class="muted">(é o que vai ao modelo; pode editar. Vale só para esta página)</small>
+        <textarea data-pp rows="7" maxlength="6000" ${dis}>${esc(shown)}</textarea></label>
+      <div class="row">${d.prompt ? `<button class="btn small ghost" type="button" data-preset>Voltar ao prompt montado</button>` : ""}
+        ${d.used_prompt && d.used_prompt !== shown ? `<details class="cf-lastprompt"><summary>Prompt da última imagem</summary><pre class="cf-pre">${esc(d.used_prompt)}</pre></details>` : ""}</div>
+      <div class="cf-refs"><b>Referências</b> <small class="muted">${d.manual_assets ? "escolhidas por você" : "escolhidas sozinhas pelo assunto da página"}</small>
+        <div class="cf-chips">${d.refs.map((r) => `<span class="cf-chip"><img src="${esc(r.url)}" alt="" loading="lazy">${esc(r.name)}${ro() ? "" : `<button type="button" data-rmref="${r.id}" aria-label="Tirar ${esc(r.name)}">✕</button>`}</span>`).join("") || `<small class="muted">Nenhuma referência para esta página.</small>`}</div>
+        ${ro() ? "" : `<div class="row"><select data-addref aria-label="Adicionar referência"><option value="">+ Adicionar referência…</option>${slideAssets.filter((a) => !d.refs.some((r) => r.id === a.id)).map((a) => `<option value="${a.id}">${esc(a.name || "sem nome")}</option>`).join("")}</select>
+          ${d.manual_assets ? `<button class="btn small ghost" type="button" data-autoref>Voltar ao automático</button>` : ""}</div>`}</div>
+      ${ro() || !current || !["pending", "approved", "failed"].includes(current.status) ? "" : `<div class="row"><button class="btn small primary" type="button" data-gen="${i}" ${current.image_url ? "" : "disabled title='Gere a capa primeiro'"}>${d.image_url ? "Refazer a imagem desta página" : "Gerar a imagem desta página"}</button></div>
+      <small class="muted">${esc(KIND_HINT[d.kind] || "")} Cobra 1 imagem. ${current.image_url ? "" : "Gere a capa primeiro: as páginas seguem o mesmo cenário."}</small>`}`}`}`;
+  }
+  async function loadDetail() {
+    detail = []; slideAssets = [];
+    if (!current || $("#cf-format").value !== "carrossel") return drawPages();
+    try {
+      detail = (await api(`/api/content/${current.id}/slides`)).slides;
+      slideAssets = (await projectAssets(current.project)).filter((a) => !a.is_text && !a.is_link);
+    } catch (e) { detail = []; }
+    drawPages();
+  }
+  const setDetail = (r) => { if (r?.slides) detail = r.slides; drawPages(); };
+  $("#cf-tabs").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-tab]"); if (!b) return;
+    if (b.dataset.tab === "add") { pages.push({ title: "", text: "" }); tab = pages.length; drawPages(); return; }
+    tab = Number(b.dataset.tab); drawPages();
   });
-  $("#cf-pages").addEventListener("click", (ev) => {
-    const b = ev.target.closest("[data-pdel]"); if (!b) return;
-    pages.splice(Number(b.dataset.pdel), 1); drawPages();
+  $("#cf-tabpanel").addEventListener("input", (ev) => {
+    const f = ev.target.dataset.pf; if (!f) return;
+    const it = tabItems()[tab]; (it.k === "cta" ? cta : pages[it.k])[f] = ev.target.value;
+    const t = $("#cf-tabs").querySelector(`[data-tab="${tab}"]`); if (t && f === "title") t.title = ev.target.value || t.title;
   });
-  $("#cf-add-page").onclick = () => { pages.push({ title: "", text: "" }); drawPages(); };
+  const slideCall = async (path, method, body) => api(`/api/content/${current.id}/slides/${path}`, { method, body: JSON.stringify(body) });
+  $("#cf-tabpanel").addEventListener("change", async (ev) => {
+    const el = ev.target; if (!current || !slideAt(tabIndex(tabItems()[tab].k))) return;
+    const i = tabIndex(tabItems()[tab].k);
+    try {
+      if (el.matches("[data-pm]")) setDetail(await slideCall(i, "PUT", { media: el.value }));
+      else if (el.matches("[data-pp]")) setDetail(await slideCall(i, "PUT", { prompt: el.value }));
+      else if (el.matches("[data-addref]") && el.value) {
+        const d = slideAt(i); setDetail(await slideCall(i, "PUT", { assets: [...d.refs.map((r) => r.id), Number(el.value)].slice(0, 5), auto_assets: false }));
+      }
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $("#cf-tabpanel").addEventListener("click", async (ev) => {
+    const b = ev.target.closest("button"); if (!b || !current) return;
+    const idx = tabIndex(tabItems()[tab].k);
+    try {
+      if (b.dataset.pdel !== undefined) { if (!confirm("Tirar esta página?")) return; pages.splice(Number(b.dataset.pdel), 1); detail = []; tab = Math.max(0, tab - 1); drawPages(); return; }
+      if (b.dataset.rmref) { const d = slideAt(idx); return setDetail(await slideCall(idx, "PUT", { assets: d.refs.map((r) => r.id).filter((x) => x !== Number(b.dataset.rmref)), auto_assets: false })); }
+      if (b.hasAttribute("data-autoref")) return setDetail(await slideCall(idx, "PUT", { assets: [], auto_assets: true }));
+      if (b.hasAttribute("data-preset")) return setDetail(await slideCall(idx, "PUT", { prompt: "" }));
+      if (b.dataset.gen !== undefined) {
+        await saveMode();  // título e texto novos da página entram antes de gerar
+        const d = slideAt(idx);
+        const r = await working({ btn: b, scope: $("#cf-tabpanel"), phases: [[0, "Gerando a imagem da página…"], [20000, "Ainda gerando… (até 1 min)"]] },
+          () => slideCall(`${idx}/image`, "POST", { prompt: $("#cf-tabpanel [data-pp]")?.value ?? "", media: $("#cf-tabpanel [data-pm]")?.value ?? d?.media ?? "" }));
+        if (r.ok) { current = r.value.item; detail = r.value.slides; toast("Imagem da página pronta.", "ok"); } else { toast(r.error.message, "err"); await loadDetail(); }
+        refresh();
+      }
+    } catch (e) { toast(e.message, "err"); }
+  });
 
   async function renderMode() {
     const fmt = $("#cf-format").value; const mode = $("#cf-mode").value;
@@ -354,14 +443,14 @@
   $("#cf-src").addEventListener("click", (ev) => { const b = ev.target.closest("[data-src]"); if (!b) return; src = b.dataset.src; renderMode(); renderImage(false); });
 
   const slidesBody = () => [...pages.filter((p) => p.title.trim() || p.text.trim()).map((p) => ({ role: "pagina", title: p.title, text: p.text })),
-    { role: "cta", title: $("#cf-cta-title").value, text: $("#cf-cta-text").value }];
+    { role: "cta", title: cta.title, text: cta.text }];
   function modeBody() {
     const fmt = $("#cf-format").value;
     const b = { image_mode: $("#cf-mode").value, ref_id: Number($("#cf-ref").value) || 0, image_prompt: $("#cf-iprompt").value,
       media_source: src, media_url: $("#cf-url").value.trim(), asset_ids: assetSel };
     if (fmt === "carrossel") {
       b.template_ids = Object.fromEntries(ROLES.map(([r]) => [r, tplSel[r] || 0]).filter(([, v]) => v));
-      if (!pages.length && !current?.slides?.some((s) => s.role === "pagina") && !$("#cf-cta-title").value && !$("#cf-cta-text").value) { /* nada a salvar */ } else b.slides = slidesBody();
+      if (!pages.length && !current?.slides?.some((s) => s.role === "pagina") && !cta.title && !cta.text) { /* nada a salvar */ } else b.slides = slidesBody();
     } else b.template_id = tplSel[""] || 0;
     return b;
   }
@@ -392,7 +481,6 @@
     const again = it?.image_url && action !== "upload" ? "Refazer" : GEN_LABEL[action];
     box.innerHTML = `${it ? pipeBadge(it) : ""}${it?.pipeline && it.status === "pending" && it.pipeline.state !== "ready" ? `<div class="row"><button class="btn small primary" type="button" data-img="complete">Completar agora</button></div><small class="muted">Refaz só o que falta (texto, capa, páginas, CTA). O sistema também tenta sozinho a cada minuto, até 3 vezes por parte.</small>` : ""}
       ${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça (capa)">` : ""}
-      ${slides.length && it.visual_format === "carrossel" ? `<div class="cf-strip">${slides.map((s, i) => `<figure><img src="${esc(s.image_url)}" alt="${s.role === "cta" ? "CTA final" : `página ${i + 2}`}" loading="lazy"><figcaption>${s.role === "cta" ? "CTA final" : `Página ${i + 2}`}</figcaption></figure>`).join("")}</div>` : ""}
       ${it?.media_file_url && tplMode && ["upload", "link", "gerar_video"].includes(src) ? `<small class="muted">Mídia da peça: <a href="${esc(it.media_file_url)}" target="_blank" rel="noopener">abrir</a> · <button class="btn small ghost" type="button" data-img="rmmedia">tirar</button></small>` : ""}
       ${it?.media_generating ? `<div class="secret-note">Gerando o vídeo com a IA… a imagem aparece aqui sozinha quando ficar pronto (alguns minutos).</div>` : ""}
       ${it?.image_error ? `<div class="alert">${esc(it.image_error)}</div>` : ""}
@@ -410,7 +498,7 @@
         <small class="muted">Anima o layout com o texto e a mídia desta peça (com vídeo de fonte, ele roda dentro do layout). Sem custo de IA.</small>` : ""}`;
   }
   $("#cf-format").onchange = () => { tplSel = {}; renderImage(); };
-  const refresh = async () => { await loadPieces(); renderImage(); renderActions(); };
+  const refresh = async () => { await loadPieces(); renderImage(); renderActions(); await loadDetail(); };
   $("#cf-image").addEventListener("click", async (ev) => {
     const b = ev.target.closest("[data-img]"); if (!b || !current) return;
     const what = b.dataset.img;

@@ -89,7 +89,7 @@ def test_postiz_flow_approve_publishes_once_with_raw_key(logged, monkeypatch):
     def handler(req: httpx.Request):
         calls.append((req.method, req.url.path, req.headers.get("authorization"), json.loads(req.content or b"null")))
         if req.url.path.endswith("/integrations"):
-            return httpx.Response(200, json=[{"id": "c1", "name": "Loja", "identifier": "instagram"}])
+            return httpx.Response(200, json=[{"id": "c1", "name": "Loja", "identifier": "linkedin"}])
         return httpx.Response(200, json=[{"postId": "p-9"}])
 
     assert run(a, "postiz", "listar_canais", transport=mock(handler))["result"]["canais"][0]["id"] == "c1"
@@ -107,29 +107,68 @@ def test_postiz_flow_approve_publishes_once_with_raw_key(logged, monkeypatch):
     assert len(posts) == 1 and posts[0][2] == "chave-secreta"  # sem "Bearer": o Postiz usa a chave direto
     body = posts[0][3]
     assert body["type"] == "now" and body["posts"][0]["integration"]["id"] == "c1"
-    assert body["posts"][0]["value"][0]["content"] == "Promo!" and body["posts"][0]["settings"]["__type"] == "instagram"
+    assert body["posts"][0]["value"][0]["content"] == "Promo!" and body["posts"][0]["settings"]["__type"] == "linkedin"
     s = dbmod.new_session()
     assert s.get(dbmod.Action, r["action_id"]).external_ref == "p-9"
     s.close()
 
 
-def test_postiz_instagram_payload_has_post_type_in_all_paths(logged, monkeypatch):
-    posts = []
+def _assets(project_slug, n):
+    s = dbmod.new_session()
+    pid_ = s.query(dbmod.GrowthProject).filter_by(slug=project_slug).one().id
+    ids = []
+    for i in range(n):
+        row = dbmod.LayoutAsset(project_id=pid_, kind="piece", mime="image/png", data=b"png%d" % i)
+        s.add(row)
+        s.flush()
+        ids.append(row.id)
+    s.commit()
+    s.close()
+    return pid_, ids
+
+
+def test_postiz_instagram_payload_has_post_type_and_media_in_all_paths(logged, monkeypatch):
+    (slug,) = make_projects("Zombie Party")
+    project_id, ids = _assets(slug, 2)
+    posts, uploads = [], []
 
     def handler(req: httpx.Request):
         if req.method == "GET":
             return httpx.Response(200, json=[{"id": "ig", "name": "IG", "identifier": "instagram"},
                                              {"id": "li", "name": "LI", "identifier": "linkedin"}])
+        if req.url.path.endswith("/upload"):
+            uploads.append(req.content)
+            n = len(uploads)
+            return httpx.Response(200, json={"id": f"m{n}", "path": f"https://cdn/{n}.png"})
         posts.append(json.loads(req.content))
         return httpx.Response(200, json=[{"postId": "p"}])
 
     conn = senders.Postiz()
-    ctx = senders.Ctx(config=POSTIZ, secret="k", transport=mock(handler))
+    ctx = senders.Ctx(config=POSTIZ, secret="k", transport=mock(handler), project_id=project_id)
+    midia = ",".join(map(str, ids))
     when = "2999-01-01T10:00:00Z"
     for op, extra in (("publicar_post", {}), ("agendar_post", {"quando": when}), ("criar_rascunho", {})):
-        asyncio.run(conn.run(ctx, op, {"canal_id": "ig", "texto": "x", **extra}))
+        asyncio.run(conn.run(ctx, op, {"canal_id": "ig", "texto": "x", "midia_ids": midia, **extra}))
     asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "li", "texto": "x"}))
     assert [p["posts"][0]["settings"].get("post_type") for p in posts] == ["post", "post", "post", None]
+    # as duas imagens sobem em ordem e vão no post (carrossel); sem mídia, o LinkedIn manda image vazio
+    assert [p["posts"][0]["value"][0]["image"] for p in posts[:1]] == [[{"id": "m1", "path": "https://cdn/1.png"},
+                                                                         {"id": "m2", "path": "https://cdn/2.png"}]]
+    assert b"png0" in uploads[0] and b"png1" in uploads[1]
+    assert posts[3]["posts"][0]["value"][0]["image"] == []
+
+
+def test_postiz_instagram_without_media_and_foreign_asset_are_refused(logged, monkeypatch):
+    a, b = make_projects("Zombie Party", "A Ilha")
+    _, mine = _assets(a, 1)
+    other_pid, theirs = _assets(b, 1)
+    handler = lambda req: httpx.Response(200, json=[{"id": "ig", "name": "IG", "identifier": "instagram"}])  # noqa: E731
+    conn = senders.Postiz()
+    ctx = senders.Ctx(config=POSTIZ, secret="k", transport=mock(handler), project_id=other_pid)
+    with pytest.raises(senders.ConnectorError, match="exige ao menos uma imagem"):
+        asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "ig", "texto": "x"}))
+    with pytest.raises(senders.ConnectorError, match="não existe neste projeto"):
+        asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "ig", "texto": "x", "midia_ids": str(mine[0])}))
 
 
 def test_postiz_rejects_unknown_channel_and_past_schedule(logged, monkeypatch):

@@ -1842,6 +1842,8 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
         if not body.canal_id.strip():
             raise HTTPException(422, "escolha o canal do Postiz")
         raw = {"canal_id": body.canal_id.strip(), "texto": c.body}
+        if media_ids := cnt.media_asset_ids(c):
+            raw["midia_ids"] = ",".join(map(str, media_ids))
         if c.scheduled_at and c.scheduled_at > cnt.local_now():
             operation = "agendar_post"
             when = c.scheduled_at.replace(tzinfo=ZoneInfo(get_settings().timezone)).astimezone(ZoneInfo("UTC"))

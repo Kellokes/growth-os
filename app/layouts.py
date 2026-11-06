@@ -578,16 +578,15 @@ def _num(v, lo: float, hi: float, default: float) -> float:
 
 
 def clean_boxes(raw) -> dict:
-    """Caixas do editor, em % da arte (x, y, w, h). Título e texto são obrigatórios; a imagem é opcional. ValueError se inválido."""
+    """Caixas do editor, em % da arte (x, y, w, h). Título, texto e imagem são todos opcionais (um Reels pode não ter texto),
+    mas precisa haver ao menos uma caixa. ValueError se inválido."""
     if not isinstance(raw, dict):
         raise ValueError("caixas inválidas")
     out: dict = {}
     for key in BOX_KEYS:
         b = raw.get(key)
         if not isinstance(b, dict):
-            if key == "midia":
-                continue
-            raise ValueError(f"falta a caixa de {key}")
+            continue
         x, y = _num(b.get("x"), 0, 95, 8), _num(b.get("y"), 0, 95, 50)
         box = {"x": x, "y": y, "w": _num(b.get("w"), 5, 100 - x, 50), "h": _num(b.get("h"), 3, 100 - y, 10)}
         if key == "midia":
@@ -601,6 +600,8 @@ def clean_boxes(raw) -> dict:
             box["color"] = b.get("color") if isinstance(b.get("color"), str) and _COLOR.fullmatch(b["color"]) else d["color"]
             box["weight"] = 800 if int(_num(b.get("weight"), 100, 900, d["weight"])) >= 650 else 500
         out[key] = box
+    if not out:
+        raise ValueError("adicione ao menos uma caixa (título, texto ou imagem)")
     return out
 
 
@@ -627,7 +628,9 @@ def box_template(fmt: str, boxes: dict) -> str:
         parts.append('<div class="photo">{{midia}}</div>')
     flex = {"top": "flex-start", "middle": "center", "bottom": "flex-end"}
     for key, cls in (("titulo", "t"), ("texto", "s")):
-        b = boxes[key]
+        b = boxes.get(key)
+        if b is None:
+            continue
         lh = 1.12 if key == "titulo" else 1.28
         css.append(f".{cls} {{ left: {b['x']}%; top: {b['y']}%; width: {b['w']}%; height: {b['h']}%; "
                    f"justify-content: {flex[b['valign']]}; text-align: {b['align']}; color: {b['color']}; "
@@ -640,7 +643,7 @@ def box_template(fmt: str, boxes: dict) -> str:
 def text_limits(t: LayoutAsset | None) -> tuple[int, int]:
     """Máximo de caracteres do título e do texto no template (os do editor, ou os de sempre)."""
     b = template_boxes(t)
-    return (b["titulo"]["max"], b["texto"]["max"]) if b else DEFAULT_LIMITS
+    return (b.get("titulo", {}).get("max", DEFAULT_LIMITS[0]), b.get("texto", {}).get("max", DEFAULT_LIMITS[1])) if b else DEFAULT_LIMITS
 
 
 def fit_text(text: str, limit: int) -> str:
@@ -669,7 +672,10 @@ def limits_brief(db, project_id: int) -> str:
             t = approved_template(db, project_id, fmt, role)
             if t is not None and t.boxes:
                 lt, ls = text_limits(t)
-                parts.append(f"{FORMATS[fmt][0]}{(' · ' + role_label(fmt, role)) if role else ''}: título até {lt}, texto até {ls}")
+                bx = template_boxes(t)
+                desc = ", ".join([f"título até {lt}" if "titulo" in bx else "sem título",
+                                  f"texto até {ls}" if "texto" in bx else "sem texto"])
+                parts.append(f"{FORMATS[fmt][0]}{(' · ' + role_label(fmt, role)) if role else ''}: {desc}")
     if not parts:
         return ""
     return ("LIMITES DE TEXTO NA ARTE (\"titulo_imagem\"/\"texto_imagem\", páginas e CTA; acima disso o texto é cortado): "
@@ -693,9 +699,9 @@ def save_box_template(db, src: LayoutAsset, boxes: dict) -> LayoutAsset:
     else:
         raise ValueError("aprove a arte antes de montar o template")
     project = db.get(GrowthProject, src.project_id)
-    sample_t = fit_text("Título do post com o tamanho máximo que esta caixa aceita", boxes["titulo"]["max"])
+    sample_t = fit_text("Título do post com o tamanho máximo que esta caixa aceita", boxes["titulo"]["max"]) if "titulo" in boxes else ""
     sample_s = fit_text("Frase de apoio do post, ocupando o espaço que você reservou para o texto nesta arte, até o limite "
-                        "de caracteres definido no editor de caixas.", boxes["texto"]["max"])
+                        "de caracteres definido no editor de caixas.", boxes["texto"]["max"]) if "texto" in boxes else ""
     preview = motion.render_still(html, src.format, art, sample_t, sample_s, project.name if project else "")
     if src.kind == "template":
         src.html, src.data, src.mime, src.boxes, src.model = html, preview, "image/png", json.dumps(boxes), "editor"

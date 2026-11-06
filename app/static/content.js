@@ -265,11 +265,12 @@
     const role = fmt === "carrossel" ? "capa" : "";
     const rows = limitTpls.filter((t) => t.format === fmt && (fmt !== "carrossel" || (t.role || "capa") === "capa"));
     const t = rows.find((x) => x.id === tplSel[role]) || rows.find((x) => x.is_default) || rows.find((x) => x.status === "approved");
-    const b = t && t.boxes && t.boxes.titulo ? t.boxes : null;
+    const b = t && t.boxes && (t.boxes.titulo || t.boxes.texto) ? t.boxes : null;
     el.hidden = !b; if (!b) return;
     const nt = $("#cf-imgtitle").value.trim().length; const ns = $("#cf-imgtext-in").value.trim().length;
-    const over = nt > b.titulo.max || ns > b.texto.max;
-    el.textContent = `Cabe na arte: título ${nt}/${b.titulo.max} · frase ${ns}/${b.texto.max} caracteres${over ? ". Acima disso o texto é cortado no fim da palavra." : ""}`;
+    const over = (b.titulo && nt > b.titulo.max) || (b.texto && ns > b.texto.max);
+    const parts = [b.titulo ? `título ${nt}/${b.titulo.max}` : "sem caixa de título", b.texto ? `frase ${ns}/${b.texto.max}` : "sem caixa de frase"];
+    el.textContent = `Cabe na arte: ${parts.join(" · ")} caracteres${over ? ". Acima disso o texto é cortado no fim da palavra." : ""}`;
     el.classList.toggle("warn-text", over);
   }
   $("#cf-imgtitle").addEventListener("input", drawLimits);
@@ -482,10 +483,11 @@
     renderPieceAssets();
   });
   // @ no prompt da imagem: lista os ativos do projeto; o servidor manda a imagem como referência e troca @Nome por "Nome (image N)"
-  const mention = { open: false, items: [], at: -1, sel: 0 };
+  const mention = { open: false, items: [], at: -1, sel: 0, ta: null };
   function closeMention() { mention.open = false; $("#cf-mention").hidden = true; }
-  async function updateMention() {
-    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+  async function updateMention(ev) {
+    const ta = ev.target; mention.ta = ta; const pos = ta.selectionStart;
+    ta.parentElement.appendChild($("#cf-mention"));
     const m = /(^|[\s(])@([^\s@]*)$/.exec(ta.value.slice(0, pos));
     if (!m || ro()) return closeMention();
     const q = m[2].toLowerCase();
@@ -499,22 +501,25 @@
   }
   function pickMention(i) {
     const a = mention.items[i]; if (!a) return;
-    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+    const ta = mention.ta; const pos = ta.selectionStart;
     const ins = `@${a.name} `;
     ta.value = ta.value.slice(0, mention.at) + ins + ta.value.slice(pos);
     ta.selectionStart = ta.selectionEnd = mention.at + ins.length;
     closeMention(); ta.focus();
   }
-  $("#cf-iprompt").addEventListener("input", updateMention);
-  $("#cf-iprompt").addEventListener("blur", () => setTimeout(closeMention, 150));
-  $("#cf-iprompt").addEventListener("keydown", (ev) => {
+  for (const sel of ["#cf-iprompt", "#cf-media"]) {
+    $(sel).addEventListener("input", updateMention);
+    $(sel).addEventListener("blur", () => setTimeout(closeMention, 150));
+    $(sel).addEventListener("keydown", mentionKeys);
+  }
+  function mentionKeys(ev) {
     if (!mention.open) return;
     if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
       ev.preventDefault(); mention.sel = (mention.sel + (ev.key === "ArrowDown" ? 1 : -1) + mention.items.length) % mention.items.length;
       $("#cf-mention").querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", i === mention.sel));
     } else if (ev.key === "Enter" || ev.key === "Tab") { ev.preventDefault(); pickMention(mention.sel); }
     else if (ev.key === "Escape") { ev.preventDefault(); closeMention(); }
-  });
+  }
   $("#cf-mention").addEventListener("mousedown", (ev) => { const b = ev.target.closest("[data-m]"); if (b) { ev.preventDefault(); pickMention(Number(b.dataset.m)); } });
   $("#cf-vidlib").addEventListener("change", () => { if ($("#cf-vidlib").value) $("#cf-url").value = $("#cf-vidlib").value; });
 

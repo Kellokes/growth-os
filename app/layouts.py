@@ -239,19 +239,39 @@ def extract_images_endpoint(data: dict) -> tuple[bytes, str] | str:
     raise ProviderError("o modelo não devolveu nenhuma imagem; tente de novo ou escolha outro modelo de imagem em /settings")
 
 
-async def _request_image_endpoint(key: str, model: str, prompt: str, ratio: str) -> tuple[bytes, str]:
-    """Modelos só de imagem (rota /images). Mande só o prompt: o formato das referências nessa rota não foi verificado."""
-    body = {"model": model, "prompt": prompt, "n": 1, "aspect_ratio": ratio}
+async def _request_image_endpoint(key: str, model: str, prompt: str, ratio: str,
+                                  refs: list[tuple[bytes, str]] | None = None) -> tuple[bytes, str]:
+    """Modelos só de imagem (rota /images). As referências vão em "input_references" (image_url), como na doc do OpenRouter;
+    antes só o prompt ia e as imagens eram ignoradas sem aviso. Se o provedor recusar data URL, refaz com links HTTPS."""
+    refs = (refs or [])[:MAX_REFS_SENT]
+    urls = [data_url(d, m) for d, m in refs]
+    links: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.post(endpoints.URLS[endpoints.IMAGES], json=body, headers={"Authorization": f"Bearer {key}"})
-            try:
-                payload = resp.json()
-            except ValueError:
-                payload = {}
-            payload = payload if isinstance(payload, dict) else {}
-            if resp.status_code != 200:
+            while True:
+                body = {"model": model, "prompt": prompt, "n": 1, "aspect_ratio": ratio}
+                if urls:
+                    body["input_references"] = [{"type": "image_url", "image_url": {"url": u}} for u in urls]
+                resp = await client.post(endpoints.URLS[endpoints.IMAGES], json=body, headers={"Authorization": f"Bearer {key}"})
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    payload = {}
+                payload = payload if isinstance(payload, dict) else {}
+                if resp.status_code == 200:
+                    break
                 _, msg = _error_detail(payload)
+                if refs and not links and _is_scheme_error(resp.status_code, msg):
+                    links = [share_image(d, m) for d, m in refs]
+                    if not all(links):
+                        raise ProviderError(f"{model} não aceita as imagens de referência embutidas e pede links HTTPS: defina "
+                                            "GOS_PUBLIC_URL=https://os.takeonestudio.io no .env do VPS (ou escolha outro modelo "
+                                            "de imagem em /settings)")
+                    urls = links
+                    continue
+                if urls and resp.status_code == 400 and "input_reference" in msg.lower():
+                    raise ProviderError(f"{model} não aceita imagens de referência (input_references): escolha outro modelo de "
+                                        "imagem em /settings para usar ativos, ou tire as referências desta arte")
                 raise _explain(resp.status_code, msg, model)
             calllog.note_usage(payload.get("usage"))
             got = extract_images_endpoint(payload)
@@ -265,6 +285,8 @@ async def _request_image_endpoint(key: str, model: str, prompt: str, ratio: str)
         raise ProviderError(f"não consegui falar com o OpenRouter: {type(e).__name__}") from e
     except ValueError as e:
         raise ProviderError(str(e)) from e
+    finally:
+        unshare(links)
 
 
 async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
@@ -275,7 +297,7 @@ async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]],
     if bad:
         raise ProviderError(bad)
     if endpoints.route_for(model, "image") == endpoints.IMAGES:
-        return await _request_image_endpoint(key, model, prompt, ratio)
+        return await _request_image_endpoint(key, model, prompt, ratio, refs)
     refs = refs[:MAX_REFS_SENT]
     urls = [data_url(d, m) for d, m in refs]
     links: list[str] = []
@@ -309,7 +331,7 @@ async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]],
                 continue
             # Modelo fora do registro que o OpenRouter manda para o /images: troca de rota (e o log mostra a mensagem original).
             if not endpoints.is_known(model) and endpoints.wrong_route_hint(msg) == endpoints.IMAGES:
-                return await _request_image_endpoint(key, model, prompt, ratio)
+                return await _request_image_endpoint(key, model, prompt, ratio, refs)
             raise _explain(status, msg, model)
         raise ProviderError("o OpenRouter recusou o pedido de imagem")  # inalcançável: o laço sempre retorna ou levanta
     finally:

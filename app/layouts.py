@@ -864,6 +864,17 @@ def piece_texts(c: ContentItem, limits: tuple[int, int] = DEFAULT_LIMITS) -> tup
     return fit_text(title, limits[0]), fit_text(text, limits[1])
 
 
+NO_TEXT = "ABSOLUTELY NO text, letters or numbers anywhere in the image."
+KEEP_REFS = ("Reference images are attached: keep each reference's content exactly as it is, INCLUDING any text, numbers, "
+             "messages or screen content that appears in it (for example a phone showing messages keeps those messages); do "
+             "not redraw, translate or garble it. Do not add any other new text, letters, numbers or logos.")
+
+
+def text_rule(has_refs: bool) -> str:
+    """Regra de texto da imagem: sem referência, nada de texto; com referência, o que está nela (inclusive texto) se mantém."""
+    return KEEP_REFS if has_refs else NO_TEXT
+
+
 def build_background_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
     name, ratio, _ = FORMATS[c.visual_format]
     lines = [
@@ -904,22 +915,23 @@ def build_reference_prompt(project_name: str, brief: str, c: ContentItem, feedba
         f"Subject: {(c.image_prompt.strip() or c.media.strip() or c.title or c.body)[:1000]}",
         "The attached images are the brand references: keep their palette, mood and visual identity, and the brand logo if it appears.",
         f"Brand style brief: {brief.strip()[:1500]}" if brief.strip() else "",
-        "Do not write any headline or sentence on the image; no garbled letters.",
+        "Keep the content of the reference images exactly as it is, including any text, numbers or messages in them (a phone "
+        "showing messages keeps those messages). Do not add any headline or new sentence on the image.",
         f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
     ]
     return "\n".join(x for x in lines if x)
 
 
-def propose_prompt(project_name: str, brief: str, c: ContentItem) -> str:
+def propose_prompt(project_name: str, brief: str, c: ContentItem, has_refs: bool = False) -> str:
     """Prompt que o gerador de conteúdo propõe quando o agente não mandou um: assunto da peça + estilo do projeto."""
     name, ratio, _ = FORMATS[c.visual_format]
     subject = (c.media.strip() or c.title or c.body)[:600]
     style = f" Style: {brief.strip()[:500]}." if brief.strip() else ""
-    return f"{name} image ({ratio}) for the brand \"{project_name}\". {subject}.{style} No text, letters or logos in the image."
+    return f"{name} image ({ratio}) for the brand \"{project_name}\". {subject}.{style} {text_rule(has_refs)}"
 
 
-def build_free_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "") -> str:
-    base = c.image_prompt.strip() or propose_prompt(project_name, brief, c)
+def build_free_prompt(project_name: str, brief: str, c: ContentItem, feedback: str = "", has_refs: bool = False) -> str:
+    base = c.image_prompt.strip() or propose_prompt(project_name, brief, c, has_refs)
     name, ratio, _ = FORMATS[c.visual_format]
     lines = [base, f"Format: {name} {ratio}.",
              f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else ""]
@@ -1162,21 +1174,23 @@ def slide_wants_photo(db, c: ContentItem, s: dict) -> bool:
     return "midia" in template_boxes(t) or motion.has_media_slot(t.html) or (has_alpha(plate.data, plate.mime))
 
 
-def build_slide_photo_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, feedback: str = "") -> str:
+def build_slide_photo_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, feedback: str = "",
+                             has_refs: bool = False) -> str:
     subject = (s.get("media") or "").strip() or " — ".join(x for x in (s.get("title"), s.get("text")) if x) or c.media or c.title
     lines = [
         f"Create ONE photograph ({ratio}) for slide of a social media carousel of the brand \"{project_name}\". It goes inside a "
         "picture window of an existing layout, so deliver ONLY the photo, edge to edge.",
         f"Slide subject: {subject[:700]}",
         f"Carousel theme (keep the same look across all slides): {(c.media.strip() or c.title or c.body)[:400]}",
-        "ONE single continuous scene, never panels, frames, collage or split screen. ABSOLUTELY NO text, letters or numbers.",
+        "ONE single continuous scene, never panels, frames, collage or split screen. " + text_rule(has_refs),
         f"Brand style brief (mood and palette only): {brief.strip()[:600]}" if brief.strip() else "",
         f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
     ]
     return "\n".join(x for x in lines if x)
 
 
-def build_free_slide_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, mode: str) -> str:
+def build_free_slide_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, mode: str,
+                            has_refs: bool = False) -> str:
     subject = (s.get("media") or "").strip() or " — ".join(x for x in (s.get("title"), s.get("text")) if x) or c.media or c.title
     lines = [
         f"Create a finished carousel slide image ({ratio}) for a social media post of the brand \"{project_name}\".",
@@ -1185,7 +1199,8 @@ def build_free_slide_prompt(project_name: str, brief: str, c: ContentItem, s: di
         "ONE single continuous scene. Use the attached assets as the real objects of the game/brand: reproduce them faithfully, "
         "never invent a different board, card, character or logo." if mode == "reference" else "",
         f"Brand style brief: {brief.strip()[:800]}" if brief.strip() else "",
-        "Do not write any headline or sentence on the image; no garbled letters.",
+        ("Keep the content of the reference images as it is, including any text or messages in them; do not add any headline "
+         "or new sentence on the image." if has_refs else "Do not write any headline or sentence on the image; no garbled letters."),
     ]
     return "\n".join(x for x in lines if x)
 
@@ -1203,7 +1218,7 @@ async def generate_free_slide(db, c: ContentItem, s: dict, mode: str, feedback: 
         if not picked:
             raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
     ratio = FORMATS[c.visual_format][1]
-    prompt = _with_assets(build_free_slide_prompt(name, brief, c, s, ratio, mode), picked, 1, db, c)
+    prompt = _with_assets(build_free_slide_prompt(name, brief, c, s, ratio, mode, bool(picked)), picked, 1, db, c)
     with calllog.context("image", c.project_id):
         data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
     a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime=mime, data=data,
@@ -1274,11 +1289,9 @@ async def generate_slide_photo(db, c: ContentItem, s: dict, feedback: str = "") 
     choice = image_choice(db, log=True, project_id=c.project_id)
     await ast.auto_pick(db, c)
     picked = ast.for_slide(db, c, s)  # o que a página pede: falou em tabuleiro, vai o tabuleiro
-    prompt = build_slide_photo_prompt(name, brief, c, s, ratio, feedback)
+    prompt = build_slide_photo_prompt(name, brief, c, s, ratio, feedback, bool(picked))
     if picked:
-        prompt += "\n" + ast.prompt_lines(picked, 1).replace("reproduce them faithfully when they appear",
-                                                            "use them only as reference for the real objects; never draw "
-                                                            "their text")
+        prompt += "\n" + ast.prompt_lines(picked, 1)
     with calllog.context("image", c.project_id):
         data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
     photo = LayoutAsset(project_id=c.project_id, kind="media", format=c.visual_format, mime=mime, data=data,
@@ -1353,17 +1366,17 @@ async def generate_slide_photos(db, c: ContentItem) -> str:
     return "; ".join(errors)[:500]
 
 
-async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
+async def generate_piece_image(db, c: ContentItem, feedback: str = "", prompt: str = "") -> None:
     """Capa da peça e, no carrossel, a foto de cada página e do CTA (ver generate_cover)."""
-    await generate_cover(db, c, feedback)
-    if c.visual_format == "carrossel" and c.image_id and not c.media_job:
+    await generate_cover(db, c, feedback, prompt)
+    if c.visual_format == "carrossel" and c.image_id and not c.media_job and not prompt.strip():
         err = await generate_slide_photos(db, c)
         if err:
             c.image_error = err
             db.commit()
 
 
-async def generate_cover(db, c: ContentItem, feedback: str = "") -> None:
+async def generate_cover(db, c: ContentItem, feedback: str = "", override: str = "") -> None:
     """Imagem da peça no layout escolhido, com a mídia da fonte escolhida:
     gerar_imagem: a IA refaz só o cenário dentro da arte (1 imagem paga); gerar_video: pede o vídeo (fica pronto em minutos);
     upload/link: a foto ou o vídeo entram no layout (sem IA se o template tem a janela {{midia}}); nenhuma: só arte e texto."""
@@ -1374,7 +1387,7 @@ async def generate_cover(db, c: ContentItem, feedback: str = "") -> None:
     mode = c.image_mode or "template"
     await ast.auto_pick(db, c)  # escolhe sozinho as referências do jogo que a peça cita (tabuleiro, cartas...)
     if mode != "template":
-        return await _generate_free_image(db, c, mode, feedback)
+        return await _generate_free_image(db, c, mode, feedback, override)
     template = piece_template(db, c)
     if template is None:
         raise ProviderError(f"Defina o template de {role_label(c.visual_format, 'capa')} deste projeto em Layouts antes de gerar a imagem.")
@@ -1384,7 +1397,7 @@ async def generate_cover(db, c: ContentItem, feedback: str = "") -> None:
     plate = _plate(db, template)
     boxes = template_boxes(template)
     if src == "gerar_imagem" and boxes:
-        return await _generate_box_photo(db, c, template, boxes, name, brief, feedback)
+        return await _generate_box_photo(db, c, template, boxes, name, brief, feedback, override)
     if src == "gerar_imagem":
         choice = image_choice(db, log=True, project_id=c.project_id)
         picked = ast.for_piece(db, c)
@@ -1395,6 +1408,7 @@ async def generate_cover(db, c: ContentItem, feedback: str = "") -> None:
             rows = picked or style_refs(db, c.project_id)
             prompt = _with_assets(build_background_prompt(name, brief, c, feedback), picked, 1, db, c)
             refs = [(a.data, a.mime) for a in rows[:MAX_REFS_SENT]]
+        prompt = override.strip() or prompt
         with calllog.context("image", c.project_id):
             data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
         bg = LayoutAsset(project_id=c.project_id, kind="background", format=c.visual_format, mime=mime, data=data,
@@ -1428,7 +1442,7 @@ async def generate_cover(db, c: ContentItem, feedback: str = "") -> None:
         # o layout não tem janela para a foto: a IA encaixa a foto na arte (1 imagem paga), mantendo logo e moldura
         choice = image_choice(db, log=True, project_id=c.project_id)
         picked = ast.for_piece(db, c, MAX_REFS_SENT - 2)
-        prompt = _with_assets(build_merge_prompt(name, c, feedback), picked, 3, db, c)
+        prompt = override.strip() or _with_assets(build_merge_prompt(name, c, feedback), picked, 3, db, c)
         with calllog.context("image", c.project_id):
             data, mime = await request_image(choice.model, prompt, [(plate.data, plate.mime), (m.data, m.mime)]
                                              + [(a.data, a.mime) for a in picked], FORMATS[c.visual_format][1])
@@ -1444,7 +1458,7 @@ async def generate_cover(db, c: ContentItem, feedback: str = "") -> None:
     await asyncio.to_thread(_finish, db, c, template, final, model, prompt)
 
 
-def build_photo_prompt(project_name: str, brief: str, c: ContentItem, ratio: str, feedback: str = "") -> str:
+def build_photo_prompt(project_name: str, brief: str, c: ContentItem, ratio: str, feedback: str = "", has_refs: bool = False) -> str:
     """Foto para a caixa de imagem do template: só a foto, sem arte, moldura nem texto (a arte e o texto já estão no layout)."""
     lines = [
         f"Create ONE photograph ({ratio}) for a social media post of the brand \"{project_name}\". It goes inside a picture "
@@ -1452,7 +1466,7 @@ def build_photo_prompt(project_name: str, brief: str, c: ContentItem, ratio: str
         f"Subject: {(c.image_prompt.strip() or c.media.strip() or c.title or c.body)[:800]}",
         "ONE single continuous scene: combine every attached reference INTO that one scene. Never show them as separate "
         "pictures, panels, frames, cards, collage, grid or split screen; no logos or user interface around it.",
-        "ABSOLUTELY NO text, letters or numbers anywhere in the image.",
+        text_rule(has_refs),
         f"Brand style brief (mood and palette only): {brief.strip()[:800]}" if brief.strip() else "",
         f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
     ]
@@ -1460,7 +1474,7 @@ def build_photo_prompt(project_name: str, brief: str, c: ContentItem, ratio: str
 
 
 async def _generate_box_photo(db, c: ContentItem, template: LayoutAsset, boxes: dict, name: str, brief: str,
-                              feedback: str) -> None:
+                              feedback: str, override: str = "") -> None:
     """Template do editor: a IA não mexe na arte. Só cria a foto da caixa de imagem (se houver) e o texto entra nas caixas."""
     from . import media as med
 
@@ -1475,11 +1489,10 @@ async def _generate_box_photo(db, c: ContentItem, template: LayoutAsset, boxes: 
     w, h = CANVAS[c.visual_format]
     ratio = nearest_ratio(box["w"] * w, box["h"] * h)
     picked = ast.for_piece(db, c)
-    prompt = ast.rewrite_mentions(db, c, build_photo_prompt(name, brief, c, ratio, feedback), picked, 1)
+    prompt = ast.rewrite_mentions(db, c, build_photo_prompt(name, brief, c, ratio, feedback, bool(picked)), picked, 1)
     if picked:
-        prompt += "\n" + ast.prompt_lines(picked, 1).replace("reproduce them faithfully when they appear",
-                                                             "use them only as reference for the real objects; never draw "
-                                                             "their text")
+        prompt += "\n" + ast.prompt_lines(picked, 1)
+    prompt = override.strip() or prompt
     with calllog.context("image", c.project_id):
         data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
     med.set_media(db, c, data, mime, "gerar_imagem", prompt)
@@ -1488,7 +1501,7 @@ async def _generate_box_photo(db, c: ContentItem, template: LayoutAsset, boxes: 
     await asyncio.to_thread(_finish, db, c, template, final, choice.model, prompt)
 
 
-async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = "") -> None:
+async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = "", override: str = "") -> None:
     """Sem template: a imagem sai pronta do modelo, só das referências do projeto (reference) ou só de um prompt (prompt)."""
     choice = image_choice(db, log=True, project_id=c.project_id)
     project = db.get(GrowthProject, c.project_id)
@@ -1512,7 +1525,8 @@ async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = ""
     else:
         picked = ast.for_piece(db, c) if ast.chosen_ids(c) or ast.mentioned(db, c) else []  # modo prompt: só os ativos que o owner escolheu
         refs = [(a.data, a.mime) for a in picked]
-        prompt = _with_assets(build_free_prompt(name, brief, c, feedback), picked, 1, db, c)
+        prompt = _with_assets(build_free_prompt(name, brief, c, feedback, bool(picked)), picked, 1, db, c)
+    prompt = override.strip() or prompt
     with calllog.context("image", c.project_id):
         data, mime = await request_image(choice.model, prompt, refs, FORMATS[c.visual_format][1])
     drop_bg(db, c)  # sem template não há fundo separado: o fundo e o vídeo de antes não valem mais

@@ -227,6 +227,17 @@ def ingest_blocks(db: DB, task: Task, text: str) -> list[ContentItem]:
     return created
 
 
+def _last_prompt(c: ContentItem, db: DB | None) -> str:
+    """Prompt que gerou a imagem atual da peça (o owner pode editar e gerar de novo). Vazio se a arte não usou IA."""
+    if db is None or not c.image_id:
+        return ""
+    from sqlalchemy import select
+
+    from .db import LayoutAsset
+
+    return db.scalar(select(LayoutAsset.prompt).where(LayoutAsset.id == c.image_id)) or ""
+
+
 def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = None, db: DB | None = None) -> dict:
     name, group, icon = CHANNELS.get(c.channel, CHANNELS["outro"])
     pipe = None
@@ -242,6 +253,7 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         "img_title": c.img_title, "img_text": c.img_text,
         "image_mode": c.image_mode or "template", "template_id": c.template_id, "ref_id": c.ref_id,
         "image_prompt": c.image_prompt,
+        "last_prompt": _last_prompt(c, db),
         "visual_format": c.visual_format, "needs_image": needs_image(c), "image_error": c.image_error,
         "image_url": f"/api/layouts/assets/{c.image_id}" if c.image_id else "",
         "video_url": f"/api/layouts/assets/{c.video_id}" if c.video_id else "",

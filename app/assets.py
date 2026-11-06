@@ -364,7 +364,7 @@ def prompt_lines(assets: list[LayoutAsset], first_index: int = 1) -> str:
         use = f" Use it: {a.use_when.strip()[:200]}." if a.use_when.strip() else ""
         parts.append(f"image {i} = {label(a)} ({CATEGORIES.get(a.category, 'asset')}): {what[:200]}.{use}")
     return ("Brand assets attached (reproduce them faithfully when they appear: same shapes, proportions, colors, art style and "
-            "details; never redesign, restyle or invent a different logo, board, card, character or object): " + " | ".join(parts))
+            "details, and any text, numbers or messages visible in them; never redesign, restyle or invent a different logo, board, card, character or object): " + " | ".join(parts))
 
 
 def text_lines(assets: list[LayoutAsset]) -> str:

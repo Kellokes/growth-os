@@ -85,7 +85,7 @@ def test_ai_photo_goes_only_into_image_box(studio):
     r = studio.post(f"/api/content/{cid}/image", json={})
     assert r.status_code == 200, r.text
     assert len(AI) == 1 and AI[0]["ratio"] == "1:1" and AI[0]["refs"] == 1  # caixa 864x768 -> 1:1; a arte não vai junto
-    assert "ONLY the photo" in AI[0]["prompt"] and "ONE single continuous scene" in AI[0]["prompt"] and "never draw their text" in AI[0]["prompt"]
+    assert "ONLY the photo" in AI[0]["prompt"] and "ONE single continuous scene" in AI[0]["prompt"] and "INCLUDING any text" in AI[0]["prompt"] and "ABSOLUTELY NO text" not in AI[0]["prompt"]
     last = RENDERS[-1]
     assert last["media"] and last["bg"] and '<div class="photo"><img class="m-media"' in last["html"]
     assert "As cartas de cada jogador vão no próprio celular…" in last["html"]  # limite 50, sem partir palavra

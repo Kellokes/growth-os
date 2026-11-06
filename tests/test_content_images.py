@@ -437,3 +437,58 @@ def test_prompts_keep_text_in_the_empty_panel():
     assert "EMPTY text panel" in lay.build_template_prompt("Marca", "story") and "Never place text over a photograph" in lay.build_template_prompt("Marca", "story")
     c = dbmod.ContentItem(visual_format="story", title="t", body="b", media="cartas")
     assert "ONLY in the photo window" in lay.build_scenery_prompt("Marca", "", c)
+
+
+def test_motion_busy_429_is_retried_then_succeeds(monkeypatch):
+    """O motion responde 429 na hora quando está ocupado: o app espera e repete em vez de falhar."""
+    calls = []
+
+    class Resp:
+        def __init__(self, status):
+            self.status_code, self.content = status, PNG
+
+        def json(self):
+            return {"error": "o serviço de vídeo está ocupado; tente em instantes"}
+
+    answers = [Resp(429), Resp(429), Resp(200)]
+    monkeypatch.setattr(motion, "BUSY_DELAYS", (0, 0, 0))
+    monkeypatch.setattr(motion.httpx, "post", lambda url, json, timeout: calls.append(url) or answers.pop(0))
+    assert motion.render_still(TEMPLATE, "story", None, "T", "x") == PNG
+    assert len(calls) == 3
+
+
+def test_motion_persistent_busy_gives_the_busy_error(monkeypatch):
+    class Resp:
+        status_code, content = 429, b""
+
+        def json(self):
+            return {"error": "o serviço de vídeo está ocupado; tente em instantes"}
+
+    monkeypatch.setattr(motion, "BUSY_DELAYS", (0, 0))
+    monkeypatch.setattr(motion.httpx, "post", lambda url, json, timeout: Resp())
+    with pytest.raises(ProviderError, match="429"):
+        motion.render_still(TEMPLATE, "story", None, "T", "x")
+
+
+def test_motion_calls_are_serialized(monkeypatch):
+    """Várias peças ao mesmo tempo (threads) não chegam juntas ao motion: uma por vez."""
+    import threading
+    import time
+
+    active, peak = [0], [0]
+
+    class Resp:
+        status_code, content = 200, PNG
+
+    def slow_post(url, json, timeout):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        active[0] -= 1
+        return Resp()
+
+    monkeypatch.setattr(motion.httpx, "post", slow_post)
+    ts = [threading.Thread(target=motion.render_still, args=(TEMPLATE, "story", None, "T", "x")) for _ in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert peak[0] == 1

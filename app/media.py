@@ -258,10 +258,11 @@ async def poll_video(job: str) -> tuple[str, bytes | None, str]:
 async def start_video(db, c: ContentItem) -> None:
     choice = video_choice(db, log=True, project_id=c.project_id)
     project = db.get(GrowthProject, c.project_id)
-    from .assets import for_piece, text_lines
+    from .assets import for_piece, rewrite_mentions, text_lines
 
     prompt = video_prompt(project.name if project else "", (project.style_brief if project else "") or "", c,
                           text_lines(for_piece(db, c)))
+    prompt = rewrite_mentions(db, c, prompt, [], 1)  # vídeo não recebe imagem: @Texto entra inteiro, @Imagem vira só o nome
     with calllog.context("video", c.project_id):
         c.media_job = await submit_video(choice.model, prompt, VIDEO_RATIO.get(c.visual_format, "9:16"))
     c.image_error = ""

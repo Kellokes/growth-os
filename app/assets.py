@@ -136,9 +136,10 @@ def find_mentions(db, project_id: int, text: str) -> list[tuple[int, int, Layout
 
 
 def mentioned(db, c: ContentItem) -> list[LayoutAsset]:
-    """Ativos de imagem citados com @ no prompt da peça, sem repetir, na ordem em que aparecem (máx. MAX_SENT)."""
+    """Ativos de imagem citados com @ na mídia ou no prompt da peça, sem repetir, na ordem em que aparecem (máx. MAX_SENT)."""
     out: list[LayoutAsset] = []
-    for _, _, a in find_mentions(db, c.project_id, c.image_prompt or ""):
+    # "Mídia" (o que a imagem deve mostrar, com layout) e "Prompt da imagem" (sem layout): os dois aceitam @
+    for _, _, a in find_mentions(db, c.project_id, f"{c.media or ''}\n{c.image_prompt or ''}"):
         if is_image(a) and a not in out:
             out.append(a)
     return out[:MAX_SENT]

@@ -374,6 +374,37 @@ def test_bulk_approval_and_sweep_send_to_postiz(logged, monkeypatch):
     s.close()
 
 
+def test_each_project_uses_its_own_postiz_channel(logged, monkeypatch):
+    from app import content as cnt
+    (a,) = make_projects("A Ilha")
+    # um Postiz só, três contas de Instagram: uma por projeto
+    chans = [{"id": "z", "nome": "Zombie Party", "rede": "instagram"}, {"id": "t", "nome": "Take One", "rede": "instagram"},
+             {"id": "i", "nome": "A Ilha - Jogue no seu Whats", "rede": "instagram"}]
+    future = cnt.local_now() + timedelta(days=1)
+
+    connect(a, "postiz", POSTIZ, monkeypatch)  # sem campo Canal: o nome que cita o projeto decide
+    calls = _fake_postiz(monkeypatch, chans)
+    (p1,) = _pieces(a, dict(channel="instagram", body="1", status="pending", scheduled_at=future))
+    assert logged.post(f"/api/content/{p1}/decide", json={"approve": True}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["i"]
+
+    connect(a, "postiz", {**POSTIZ, "canal": "take one"}, monkeypatch)  # o campo Canal manda mais que o nome
+    calls.clear()
+    (p2,) = _pieces(a, dict(channel="instagram", body="2", status="pending", scheduled_at=future))
+    assert logged.post(f"/api/content/{p2}/decide", json={"approve": True}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["t"]
+
+    connect(a, "postiz", {**POSTIZ, "canal": "inexistente"}, monkeypatch)  # canal errado: não chuta, explica
+    (p3,) = _pieces(a, dict(channel="instagram", body="3", status="pending", scheduled_at=future))
+    out = logged.post(f"/api/content/{p3}/decide", json={"approve": True}).json()
+    assert out["status"] == "approved" and "inexistente" in out["note"]
+
+    connect(a, "postiz", POSTIZ, monkeypatch)  # Publicar sem canal na tela também usa o do projeto
+    calls.clear()
+    assert logged.post(f"/api/content/{p3}/publish", json={}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] in ("agendar_post", "publicar_post")] == ["i"]
+
+
 def test_postiz_network_mapping():
     from app.main import postiz_network
     assert postiz_network("instagram-standalone") == "instagram"

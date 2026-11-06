@@ -1937,9 +1937,10 @@ async def content_generate_image(cid: int, body: PieceImageIn, request: Request,
 
 
 @app.post("/api/content/{cid}/image/upload")
-def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: Auth = Depends(current_auth),
-                         db: DB = Depends(get_db)):
-    """Imagem própria do owner no lugar da gerada (ou quando a geração não é possível)."""
+async def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: Auth = Depends(current_auth),
+                               db: DB = Depends(get_db)):
+    """Imagem do owner para a peça. Se a peça usa um layout (modo template com template definido), a imagem ENTRA no
+    layout, como a mídia da peça; só sem layout ela substitui a imagem final como está."""
     c = _content_or_404(db, cid)
     if c.status not in cnt.EDITABLE:
         raise HTTPException(409, "só dá para mudar a imagem de uma peça em aprovação ou aprovada")
@@ -1949,8 +1950,20 @@ def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: 
         data, mime = lay.decode_image(body.data)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+    template = None
+    if (c.image_mode or "template") == "template":
+        try:
+            template = lay.piece_template(db, c)
+        except ProviderError as e:
+            raise HTTPException(422, str(e)) from e
+    if template is not None:
+        c.media_source = "upload"
+        med.set_media(db, c, data, mime, "upload")
+        audit(db, auth.user.username, "content_image_upload", f"#{c.id} no layout #{template.id}", client_ip(request))
+        await _compose_after_media(db, c)
+        return _content_json(db, c)
     lay.set_piece_image(db, c, data, mime, model="upload")
-    audit(db, auth.user.username, "content_image_upload", f"#{c.id}", client_ip(request))
+    audit(db, auth.user.username, "content_image_upload", f"#{c.id} substitui (sem layout)", client_ip(request))
     return _content_json(db, c)
 
 

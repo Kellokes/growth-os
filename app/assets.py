@@ -9,11 +9,14 @@ Na hora de gerar a imagem de uma peça, entram como imagens de referência, com 
 Vídeos (links) não vão para o modelo de imagem: ficam no catálogo dos agentes e podem virar a mídia da peça (fonte "link").
 Tudo é por projeto: nunca entra ativo de outro projeto.
 """
+import hashlib
 import json
 import re
 import unicodedata
 
-from .db import ContentItem, LayoutAsset
+from . import calllog
+from .db import ContentItem, GrowthProject, LayoutAsset
+from .providers import ChatTurn, ProviderError
 
 CATEGORIES: dict[str, str] = {
     "logo": "Logo",
@@ -71,7 +74,7 @@ def asset_json(a: LayoutAsset) -> dict:
     return {
         "id": a.id, "name": a.name or "", "category": a.category or ("video" if link else "texto" if txt else "estilo"),
         "category_name": CATEGORIES.get(a.category or ("video" if link else "texto" if txt else "estilo"), "Outro"),
-        "note": a.note or "", "use_when": a.use_when or "", "always": bool(a.always),
+        "note": a.note or "", "use_when": a.use_when or "", "tags": a.tags or "", "always": bool(a.always),
         "link": a.url if link else "", "url": "" if link or txt else f"/api/layouts/assets/{a.id}", "is_link": link, "is_text": txt,
         "text": text_of(a) if txt else "",
         "created_at": a.created_at.isoformat(),
@@ -88,14 +91,55 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in t if not unicodedata.combining(ch))
 
 
-def _keywords(a: LayoutAsset) -> set[str]:
-    cat = CATEGORIES.get(a.category or "", "")
-    words = re.findall(r"[a-z0-9]{4,}", _fold(f"{a.name} {a.use_when} {a.note} {cat}"))
-    return {w for w in words if w not in _STOP}
+# Grupos de palavras que significam a mesma coisa (PT/EN, singular/plural): "tabuleiro" no post casa com um ativo "Board".
+_SYN = [
+    {"tabuleiro", "board", "tabuleiros", "mapa", "map"},
+    {"carta", "cartas", "card", "cards", "baralho", "deck"},
+    {"personagem", "personagens", "character", "characters", "heroi", "herois", "vilao"},
+    {"dado", "dados", "dice", "die"},
+    {"peca", "pecas", "token", "tokens", "pino", "pawn", "miniatura"},
+    {"logo", "logotipo", "marca", "logomarca"},
+    {"cenario", "cenarios", "local", "scenery", "ambiente"},
+    {"caixa", "box", "embalagem", "packaging"},
+    {"produto", "produtos", "product"},
+    {"regra", "regras", "rules", "manual"},
+]
+_SYN_OF = {w: i for i, grp in enumerate(_SYN) for w in grp}
+_CATEGORY_WORDS = {"logo": "logo", "carta": "carta", "personagem": "personagem", "cenario": "cenario", "produto": "produto"}
 
 
 def _stem(w: str) -> str:
-    return w[:-1] if len(w) > 4 and w.endswith("s") else w  # cartas -> carta, tabuleiros -> tabuleiro
+    if w in _SYN_OF:
+        return f"~{_SYN_OF[w]}"
+    return w[:5] if len(w) > 5 else w.rstrip("s")
+
+
+def _tokens(text: str) -> set[str]:
+    return {_stem(w) for w in re.findall(r"[a-z0-9]{3,}", _fold(text)) if w not in _STOP}
+
+
+def _terms(a: LayoutAsset) -> list[tuple[set[str], int]]:
+    """(palavras, peso) do ativo: tags e nome pesam mais que o "quando usar", a categoria e a descrição."""
+    cat = _tokens(_CATEGORY_WORDS.get(a.category or "", ""))
+    return [(_tokens(a.tags or ""), 3), (_tokens(a.name or ""), 3), (_tokens(a.use_when or ""), 2), (cat, 2),
+            (_tokens(a.note or ""), 1)]
+
+
+def score(a: LayoutAsset, subject: str) -> int:
+    """Quanto o ativo combina com o texto (0 = não combina). Soma o peso de cada grupo de palavras que aparece no texto."""
+    words = _tokens(subject)
+    return sum(w for terms, w in _terms(a) if terms & words)
+
+
+def split_tags(raw: str) -> str:
+    """Tags separadas por vírgula, sem repetir, curtas: "Tabuleiro, board,  mapa" -> "tabuleiro, board, mapa"."""
+    out: list[str] = []
+    for t in re.split(r"[,;\n]+", raw or ""):
+        t = re.sub(r"\s+", " ", t).strip().lower()[:40]
+        if t and t not in out:
+            out.append(t)
+    return ", ".join(out[:20])
+
 
 
 def chosen_ids(c: ContentItem) -> list[int]:
@@ -173,19 +217,111 @@ def rewrite_mentions(db, c: ContentItem, prompt: str, assets: list[LayoutAsset],
     return "".join(out)
 
 
-def for_piece(db, c: ContentItem, limit: int = MAX_SENT) -> list[LayoutAsset]:
-    """Ativos de imagem que entram na arte desta peça: os citados com @ no prompt (na ordem), depois os escolhidos,
-    ou, sem escolha, "sempre" + os que combinam com o assunto."""
+def piece_subject(c: ContentItem, extra: str = "") -> str:
+    return " ".join([c.title, c.body, c.media, c.img_title, c.img_text, c.image_prompt, extra])
+
+
+def _signature(c: ContentItem, rows: list[LayoutAsset]) -> str:
+    """Muda quando o assunto da peça ou a biblioteca muda: a escolha da IA só vale para o mesmo assunto e os mesmos ativos."""
+    raw = piece_subject(c) + "|" + "|".join(f"{a.id}:{a.name}:{a.tags}:{a.use_when}:{a.note}:{a.category}" for a in rows)
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def _auto(c: ContentItem, rows: list[LayoutAsset]) -> list[int] | None:
+    try:
+        v = json.loads(c.asset_auto or "")
+    except ValueError:
+        return None
+    if isinstance(v, dict) and v.get("sig") == _signature(c, rows) and isinstance(v.get("ids"), list):
+        return [i for i in v["ids"] if isinstance(i, int)]
+    return None
+
+
+def for_piece(db, c: ContentItem, limit: int = MAX_SENT, extra: str = "") -> list[LayoutAsset]:
+    """Ativos de imagem que entram na arte desta peça: os citados com @ no prompt (na ordem), depois os escolhidos pelo owner,
+    ou, sem escolha, "sempre" + os que a IA escolheu para o assunto (auto_pick) ou, sem ela, os que combinam por tag/nome/uso.
+    extra = texto a mais para casar (ex.: a página do carrossel)."""
     rows = [a for a in project_assets(db, c.project_id) if is_image(a)]
     first = mentioned(db, c)
     ids = chosen_ids(c)
+    by_id = {a.id: a for a in rows}
     if ids:
-        by_id = {a.id: a for a in rows}
         rest = [by_id[i] for i in ids if i in by_id]
         return (first + [a for a in rest if a not in first])[:limit]
-    subject = " ".join([c.title, c.body, c.media, c.img_title, c.img_text, c.image_prompt])
-    picked = for_subject(db, c.project_id, subject, limit=MAX_SENT)
+    picked = [a for a in rows if a.always]
+    auto = _auto(c, rows)
+    if auto is not None:
+        picked += [by_id[i] for i in auto if i in by_id and by_id[i] not in picked]
+        if extra.strip():  # a IA escolheu pelo post inteiro; a página acrescenta o que só ela cita
+            picked += [a for a in sorted(rows, key=lambda a: -score(a, extra)) if a not in picked and score(a, extra) >= 3]
+    else:
+        subject = piece_subject(c, extra)
+        hits = sorted((a for a in rows if not a.always and score(a, subject)), key=lambda a: -score(a, subject))
+        picked += hits
     return (first + [a for a in picked if a not in first])[:limit]
+
+
+def _pick_prompt(c: ContentItem, project_name: str, rows: list[LayoutAsset], extra: str) -> str:
+    lines = "\n".join(f"- {label(a)} [{CATEGORIES.get(a.category, 'Outro')}]: {a.note.strip()[:160]}"
+                      + (f" · tags: {a.tags}" if a.tags.strip() else "")
+                      + (f" · quando usar: {a.use_when.strip()[:160]}" if a.use_when.strip() else "") for a in rows)
+    return f"""Você escolhe quais imagens de referência da marca "{project_name}" entram na arte de uma peça de conteúdo, para a IA de imagem
+desenhar os objetos REAIS do jogo/produto (tabuleiro, cartas, personagens...) em vez de inventar. Responda SOMENTE com um JSON válido.
+
+Peça:
+Título: {c.title[:200]}
+Texto: {c.body[:1500]}
+Cena/mídia: {(c.media or c.image_prompt)[:400]}
+Texto na imagem: {c.img_title[:150]} {c.img_text[:250]}
+{extra[:900]}
+
+Biblioteca de referências (use o nome EXATO):
+{lines}
+
+Regras: escolha só as referências cujo objeto aparece ou é citado na peça (se fala do tabuleiro, o tabuleiro; se fala das cartas, as cartas);
+no máximo {MAX_SENT}; nenhuma se nada combina. Não escolha a logo (ela já vai sozinha quando precisa). Formato: {{"ativos": ["Nome exato"]}}"""
+
+
+async def auto_pick(db, c: ContentItem, extra: str = "") -> None:
+    """Pede a um modelo de TEXTO para escolher, na biblioteca do projeto, as referências que a peça precisa (guarda em
+    c.asset_auto). Sem escolha manual do owner, uma vez por assunto. Se não houver modelo ou ele falhar, vale o casamento por
+    tags/nome (for_piece). Nunca levanta erro: a imagem sai de qualquer jeito."""
+    if chosen_ids(c):
+        return
+    rows = [a for a in project_assets(db, c.project_id) if is_image(a) and not a.always]
+    if not rows or not piece_subject(c, extra).strip():
+        return
+    sig = _signature(c, [a for a in project_assets(db, c.project_id) if is_image(a)])
+    try:
+        if json.loads(c.asset_auto or "").get("sig") == sig:
+            return
+    except (ValueError, AttributeError):
+        pass
+    try:
+        from . import growth
+
+        provider = growth.pick_provider(None, "agents_run", db)
+        project = db.get(GrowthProject, c.project_id)
+        prompt = _pick_prompt(c, project.name if project else "", rows, extra)
+        with calllog.context("agents_run", c.project_id, "ativos"):
+            with calllog.track(provider.id, provider.model, "agents_run", f"escolher ativos da peça #{c.id}") as call:
+                reply = await provider.complete([ChatTurn("user", prompt)])
+                call.done(reply)
+        m = re.search(r"\{.*\}", reply or "", re.S)
+        names = json.loads(m.group(0)).get("ativos") if m else None
+        if not isinstance(names, list):
+            return
+    except (ProviderError, ValueError, AttributeError):
+        return
+    by_name = {_fold(a.name).strip(): a for a in rows if a.name}
+    got: list[LayoutAsset] = []
+    for n in names:
+        a = by_name.get(_fold(str(n)).strip())
+        if a is not None and a not in got:
+            got.append(a)
+    c.asset_auto = json.dumps({"sig": sig, "ids": [a.id for a in got[:MAX_SENT]], "names": [label(a) for a in got[:MAX_SENT]]},
+                              ensure_ascii=False)
+    db.commit()
 
 
 def for_subject(db, project_id: int, text: str, forced: list[int] | None = None, limit: int = MAX_SENT) -> list[LayoutAsset]:
@@ -195,14 +331,7 @@ def for_subject(db, project_id: int, text: str, forced: list[int] | None = None,
     rows = [a for a in project_assets(db, project_id) if is_image(a)]
     by_id = {a.id: a for a in rows}
     out = [by_id[i] for i in (forced or []) if i in by_id]
-    words = {_stem(w) for w in re.findall(r"[a-z0-9]{4,}", _fold(text))}
-    scored = []
-    for a in rows:
-        if a in out or a.always:
-            continue
-        hits = len({_stem(k) for k in _keywords(a)} & words)
-        if hits:
-            scored.append((-hits, a.id, a))
+    scored = [(-score(a, text), a.id, a) for a in rows if a not in out and not a.always and score(a, text)]
     out += [a for a in rows if a.always and a not in out]
     out += [a for _, _, a in sorted(scored)]
     return out[:limit]
@@ -218,7 +347,11 @@ def for_slide(db, c: ContentItem, s: dict, limit: int = MAX_SENT) -> list[Layout
     forced = slide_ids(s) + [a.id for a in mentioned(db, c)] + chosen_ids(c)
     forced = list(dict.fromkeys(forced))
     text = " ".join(str(x) for x in (s.get("media"), s.get("title"), s.get("text")) if x)
-    return for_subject(db, c.project_id, text or c.media or c.title, forced, limit)
+    picked = for_subject(db, c.project_id, text or c.media or c.title, forced, limit)
+    if not any(not a.always and a.id not in forced for a in picked):  # a página não cita nada: vale o que a IA escolheu para a peça
+        by_id = {a.id: a for a in project_assets(db, c.project_id) if is_image(a)}
+        picked += [by_id[i] for i in (_auto(c, list(by_id.values())) or []) if i in by_id and by_id[i] not in picked]
+    return picked[:limit]
 
 
 def prompt_lines(assets: list[LayoutAsset], first_index: int = 1) -> str:
@@ -230,8 +363,8 @@ def prompt_lines(assets: list[LayoutAsset], first_index: int = 1) -> str:
         what = a.note.strip() or CATEGORIES.get(a.category, "")
         use = f" Use it: {a.use_when.strip()[:200]}." if a.use_when.strip() else ""
         parts.append(f"image {i} = {label(a)} ({CATEGORIES.get(a.category, 'asset')}): {what[:200]}.{use}")
-    return ("Brand assets attached (reproduce them faithfully when they appear, never invent a different logo, card or "
-            "object): " + " | ".join(parts))
+    return ("Brand assets attached (reproduce them faithfully when they appear: same shapes, proportions, colors, art style and "
+            "details; never redesign, restyle or invent a different logo, board, card, character or object): " + " | ".join(parts))
 
 
 def text_lines(assets: list[LayoutAsset]) -> str:
@@ -265,6 +398,7 @@ def catalog(db, project_id: int) -> str:
         if is_text(a):
             extra = f" · texto: {text_of(a)[:160]}"
         when = f" · quando usar: {a.use_when.strip()[:160]}" if a.use_when.strip() else ""
+        when += f" · tags: {a.tags}" if (a.tags or "").strip() else ""
         always = " · vai em toda arte" if a.always else ""
         lines.append(f"- {label(a)} [{CATEGORIES.get(a.category, 'Outro')}]: {a.note.strip()[:160]}{when}{always}{extra}")
     return ("ATIVOS DO PROJETO (biblioteca do owner, use pelo nome exato em \"ativos\" no bloco conteudo; vídeos podem ir em "

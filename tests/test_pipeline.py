@@ -188,6 +188,23 @@ def test_agent_guide_and_block_carry_per_page_image(logged, monkeypatch):
     assert out[0]["media"] == "praia" and out[1]["media"] == "sol"
 
 
+def test_manual_carousel_image_also_makes_page_photos(logged, monkeypatch):
+    """Gerar a imagem pelo botão (não só pela linha de produção) cria a foto de cada página e do CTA e as páginas sobem com ela."""
+    setup(logged, monkeypatch)
+    s = dbmod.new_session()
+    c = dbmod.ContentItem(project_id=pid("zombie-party"), channel="instagram", body=BODY, title="Halloween", media="festa",
+                          visual_format="carrossel", img_title="Capa", img_text="Texto da capa",
+                          slides=json.dumps([{"role": "pagina", "title": "Dica 1", "text": "t1", "media": "PAGE1 scene"},
+                                             {"role": "cta", "title": "Salve", "text": "t", "media": "CTA scene"}]))
+    s.add(c)
+    s.commit()
+    cid = c.id
+    run(lay.generate_piece_image(s, c))
+    s.close()
+    slides = json.loads(load(cid).slides)
+    assert load(cid).image_id and all(x.get("photo_id") and x.get("image_id") for x in slides)
+
+
 def add_asset(name, note, use_when="", category="artefato", always=False):
     s = dbmod.new_session()
     a = dbmod.LayoutAsset(project_id=pid("zombie-party"), kind="reference", format="", mime="image/png", data=PNG, name=name,

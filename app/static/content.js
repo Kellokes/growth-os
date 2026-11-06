@@ -491,6 +491,7 @@
           : `<label>Tipo<select data-ae="category">${assetCats.filter((c) => c.key !== "video" && c.key !== "texto").map((c) => `<option value="${esc(c.key)}" ${c.key === a.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>`}
         <label>O que é<textarea data-ae="note" rows="2" maxlength="500">${esc(a.note)}</textarea></label>
         <label>Quando usar<textarea data-ae="use_when" rows="2" maxlength="500">${esc(a.use_when)}</textarea></label>
+        <label>Tags<input data-ae="tags" maxlength="600" value="${esc(a.tags)}" placeholder="tabuleiro, board, mapa"></label>
         ${a.is_link || a.is_text ? "" : `<label class="check"><input type="checkbox" data-ae="always" ${a.always ? "checked" : ""}> Vai em toda arte</label>`}
         <div class="row"><button class="btn small primary" type="button" data-asave="${a.id}">Salvar</button><button class="btn small ghost" type="button" data-acancel="1">Cancelar</button></div>
       </div>` : `
@@ -500,14 +501,15 @@
         <small>${esc(a.category_name)}${a.always ? " · vai em toda arte" : ""}</small>
         ${a.note ? `<small>${esc(a.note)}</small>` : ""}
         ${a.use_when ? `<small><b>Quando usar:</b> ${esc(a.use_when)}</small>` : ""}
+        ${a.tags ? `<small><b>Tags:</b> ${esc(a.tags)}</small>` : ""}
         <div class="row"><button class="btn small ghost" type="button" data-aedit="${a.id}">Editar</button><button class="btn small danger" type="button" data-adel="${a.id}">Apagar</button></div>
       </figure>`).join("") || `<div class="empty-card card tile-empty"><h2>Nenhum ativo ainda</h2><p class="muted">Suba a logo, as cartas, os objetos e os links de vídeo do projeto.</p></div>`;
   }
   $("#as-kind").addEventListener("click", (ev) => { const b = ev.target.closest("[data-ak]"); if (b) { asKind = b.dataset.ak; renderAssets(); } });
   $("#as-filter").addEventListener("click", (ev) => { const b = ev.target.closest("[data-afilter]"); if (b) { asFilter = b.dataset.afilter; renderAssets(); } });
   const assetForm = () => ({ project, name: $("#as-name").value, category: $("#as-cat").value, note: $("#as-note").value,
-    use_when: $("#as-when").value, always: $("#as-always").checked });
-  const clearAssetForm = () => { ["#as-name", "#as-note", "#as-when", "#as-link", "#as-text"].forEach((s) => { $(s).value = ""; }); $("#as-always").checked = false; };
+    use_when: $("#as-when").value, tags: $("#as-tags").value, always: $("#as-always").checked });
+  const clearAssetForm = () => { ["#as-name", "#as-note", "#as-when", "#as-tags", "#as-link", "#as-text"].forEach((s) => { $(s).value = ""; }); $("#as-always").checked = false; };
   $("#as-file").onchange = async (ev) => {
     const files = [...ev.target.files]; ev.target.value = ""; const msg = $("#as-msg");
     for (const f of files) {
@@ -549,12 +551,13 @@
     const imgs = list.filter((a) => !a.is_link && !a.is_text); const vids = list.filter((a) => a.is_link);
     $("#cf-assets-step").hidden = $("#cf-visual").hidden || (!imgs.length && !vids.length);
     $("#cf-assets").innerHTML = imgs.map((a) => {
-      const on = assetSel.includes(a.id); const auto = !assetSel.length && a.always;
+      const on = assetSel.includes(a.id); const auto = !assetSel.length && (a.always || (current?.assets_auto || []).includes(a.name));
       return `<button type="button" data-asset="${a.id}" class="${on ? "on" : ""} ${auto ? "auto" : ""}" aria-pressed="${on}" ${ro() ? "disabled" : ""} title="${esc(a.note)}">${esc(a.name || `#${a.id}`)}</button>`;
     }).join("");
     $("#cf-assets-hint").textContent = !imgs.length ? "Este projeto ainda não tem ativos de imagem (aba Ativos)."
       : assetSel.length ? `${assetSel.length} escolhido(s): vão como referência junto do prompt (até 5).`
-        : "Nenhum escolhido: vão os marcados \"toda arte\" (tracejados) e os que combinam com o assunto da peça. Toque para escolher.";
+        : (current?.assets_auto || []).length ? `Automático (tracejados): ${current.assets_auto.join(", ")}, escolhidos pelo assunto da peça. Toque para escolher você mesmo.`
+        : "Nenhum escolhido: o sistema escolhe sozinho pelo assunto da peça (tags, nome e uso) e vão os marcados \"toda arte\" (tracejados). Toque para escolher.";
     $("#cf-vidlib").innerHTML = `<option value="">Colar um link abaixo</option>` + vids.map((v) => `<option value="${esc(v.link)}" ${v.link === $("#cf-url").value ? "selected" : ""}>${esc(v.name || v.link)}</option>`).join("");
     $("#cf-vid-wrap").hidden = src !== "link" || !vids.length;
   }

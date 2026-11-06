@@ -96,7 +96,8 @@ class Postiz(Connector):
         base = safe_base_url(ctx.config.get("url", ""))
         channels = await self._channels(ctx, base)
         if op == "listar_canais":
-            return {"canais": [{"id": c.get("id"), "nome": c.get("name"), "rede": c.get("identifier")} for c in channels]}
+            return {"canais": [{"id": c.get("id"), "nome": c.get("name"), "rede": c.get("identifier"),
+                               "desativado": bool(c.get("disabled"))} for c in channels]}
         ch = next((c for c in channels if c.get("id") == params["canal_id"]), None)
         if ch is None:
             raise ConnectorError("canal não encontrado no Postiz (use listar_canais para ver os ids)")

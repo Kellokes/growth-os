@@ -4,9 +4,12 @@ O vídeo sai do serviço `motion` (HyperFrames + Chromium + ffmpeg, rede interna
 HyperFrames a partir do template, do fundo e do texto da peça. A animação básica é fixa e determinística (entrada do título e do
 texto e zoom lento): nenhum código gerado por IA roda no servidor. Animações livres escritas por agentes ficam em PR do projeto.
 """
+import asyncio
 import base64
 import html as htmllib
 import re
+import threading
+import time
 
 import httpx
 
@@ -20,6 +23,24 @@ MAX_VIDEO_BYTES = 25_000_000
 MAX_IMAGE_BYTES = 15_000_000
 REQUEST_TIMEOUT = 240.0
 BG_PATH = "assets/bg"  # + extensão
+
+# O serviço motion renderiza UM trabalho por vez e responde 429 na hora a quem chega com ele ocupado (um vídeo leva minutos).
+# Por isso aqui as chamadas entram em fila (uma por vez neste processo) e, se mesmo assim vier 429 (outro chamador, um render
+# ainda terminando), esperam e tentam de novo em vez de falhar na cara do owner.
+_SLOT = threading.Lock()
+BUSY_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)  # pausas entre as tentativas (os testes zeram)
+
+
+def _post(path: str, payload: dict) -> httpx.Response:
+    """POST no serviço motion, uma chamada por vez e repetindo o 429 (ocupado). Síncrono: o render de vídeo roda em thread."""
+    url = get_settings().motion_url.rstrip("/") + path
+    with _SLOT:
+        for delay in (*BUSY_DELAYS, None):
+            resp = httpx.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+            if resp.status_code != 429 or delay is None:
+                return resp
+            time.sleep(delay)
+    return resp  # inalcançável
 
 _STYLE = re.compile(r"<style\b[^>]*>(.*?)</style>", re.I | re.S)
 _BODY = re.compile(r"<body\b[^>]*>(.*)</body>", re.I | re.S)
@@ -172,7 +193,7 @@ def render_still(template: str, fmt: str, bg: tuple[bytes, str] | None, title: s
     payload = {**_payload(template, fmt, bg, title, text, brand, zoom=False, media=media), "at": at}
     with calllog.track("motion", "hyperframes", "piece_render", f"imagem {fmt} · template + texto de {len(title) + len(text)} caracteres") as call:
         try:
-            resp = httpx.post(get_settings().motion_url.rstrip("/") + "/still", json=payload, timeout=REQUEST_TIMEOUT)
+            resp = _post("/still", payload)
         except httpx.HTTPError as e:
             raise _unreachable(e) from e
         png = _check(resp, (0, b"\x89PNG"), MAX_IMAGE_BYTES)
@@ -188,8 +209,7 @@ async def render_video(template: str, fmt: str, bg: tuple[bytes, str] | None, ti
                "quality": "standard"}
     with calllog.track("motion", "hyperframes", "video_render", f"vídeo {fmt} · {secs:g} s · texto de {len(title) + len(text)} caracteres") as call:
         try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                resp = await client.post(get_settings().motion_url.rstrip("/") + "/render", json=payload)
+            resp = await asyncio.to_thread(_post, "/render", payload)
         except httpx.HTTPError as e:
             raise _unreachable(e) from e
         mp4 = _check(resp, (4, b"ftyp"), MAX_VIDEO_BYTES)

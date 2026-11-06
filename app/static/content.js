@@ -4,13 +4,15 @@
   const TABS = ["pecas", "agenda", "saidas", "ativos"];
   const STAGES = [
     ["pending", "Aguardando você", "aprovar ou rejeitar"],
-    ["scheduled", "Agendadas", "aprovadas, com data"],
-    ["ready", "Prontas para sair", "aprovadas, é só publicar"],
-    ["sent", "Enviadas", "publicadas ou enviadas"],
+    ["attention", "Precisa de atenção", "não foi ao Postiz"],
+    ["postiz", "No Postiz", "agendadas, ainda não saíram"],
+    ["scheduled", "Agendadas", "e-mail e canais manuais"],
+    ["ready", "Prontas para sair", "e-mail e canais manuais"],
+    ["sent", "Publicadas", "já saíram"],
     ["closed", "Rejeitadas ou falharam", ""],
   ];
-  const STAGE_LABEL = { pending: "aguardando aprovação", scheduled: "agendada", ready: "pronta para sair", sent: "enviada", rejected: "rejeitada", failed: "falhou" };
-  const STAGE_BADGE = { pending: "t-proposed", scheduled: "t-approved", ready: "c-ready", sent: "t-done", rejected: "t-rejected", failed: "t-failed" };
+  const STAGE_LABEL = { pending: "aguardando aprovação", attention: "precisa de atenção", postiz: "agendada no Postiz", scheduled: "agendada", ready: "pronta para sair", sent: "publicada", rejected: "rejeitada", failed: "falhou" };
+  const STAGE_BADGE = { pending: "t-proposed", attention: "t-failed", postiz: "c-ready", scheduled: "t-approved", ready: "c-ready", sent: "t-done", rejected: "t-rejected", failed: "t-failed" };
   const TASK_STATUS = { done: "concluída", failed: "falhou" };
 
   let agents = {}; let projects = []; let channels = []; let project = "all";
@@ -66,8 +68,9 @@
     let actions = "";
     if (it.status === "pending") actions = `<button class="btn small danger" type="button" data-reject="${it.id}">Rejeitar</button><button class="btn small primary" type="button" data-approve="${it.id}">Aprovar</button>`;
     else if (it.status === "approved" || it.status === "failed") {
-      const auto = it.group === "email" || it.group === "social";
-      actions = `${auto ? `<button class="btn small primary" type="button" data-publish="${it.id}">${icon("send")} Publicar</button>` : ""}<button class="btn small" type="button" data-sent="${it.id}">Marcar enviada</button>`;
+      const social = it.group === "social";
+      const pub = it.group === "email" ? "Enviar e-mail" : "Enviar ao Postiz";
+      actions = `${it.group === "email" || social ? `<button class="btn small primary" type="button" data-publish="${it.id}">${icon("send")} ${pub}</button>` : ""}${social ? "" : `<button class="btn small" type="button" data-sent="${it.id}">Marcar enviada</button>`}`;
     }
     else if (it.status === "sent" && it.link) actions = `<a class="btn small ghost" href="${esc(it.link)}" target="_blank" rel="noopener noreferrer">Ver ${icon("arrow-ur")}</a>`;
     return `<article class="cpiece card st-${esc(it.stage)} g-${esc(it.group)}" data-id="${it.id}" tabindex="0">
@@ -96,15 +99,17 @@
     const chips = [["", "Todos os canais", inS.length]].concat(Object.keys(groups).map((g) => [g, names[g] || g, groups[g]]));
     $("#group-filter").innerHTML = chips.length > 2 || groupF ? chips.map(([g, l, n]) => `<button type="button" class="fchip ${g === groupF ? "active" : ""}" data-group="${esc(g)}">${esc(l)} <span>${n}</span></button>`).join("") : "";
     const list = inS.filter((it) => !groupF || it.group === groupF);
-    if (stageF === "scheduled") list.sort((a, b) => (a.scheduled_at || "").localeCompare(b.scheduled_at || ""));
+    if (["scheduled", "postiz"].includes(stageF)) list.sort((a, b) => (a.scheduled_at || "").localeCompare(b.scheduled_at || ""));
     $("#pieces").innerHTML = list.map(piece).join("") || emptyPieces();
   }
   function emptyPieces() {
     const msg = {
       pending: ["Nada esperando você", "Quando um agente escrever um post ou e-mail, ele aparece aqui para você aprovar."],
-      scheduled: ["Nenhuma peça agendada", "Abra uma peça aprovada e escolha quando ela sai."],
-      ready: ["Nada pronto para sair", "As peças aprovadas sem data (ou cuja hora chegou) ficam aqui."],
-      sent: ["Nada enviado ainda", "Depois de publicar, marque a peça como enviada para guardar o histórico."],
+      attention: ["Nada travado", "Posts aprovados vão sozinhos ao Postiz. Se algum não conseguir, ele aparece aqui com o motivo."],
+      postiz: ["Nada agendado no Postiz", "Aprove um post com data futura e ele fica aqui até sair."],
+      scheduled: ["Nenhuma peça agendada", "E-mails e canais manuais aprovados com data aparecem aqui."],
+      ready: ["Nada pronto para sair", "E-mails e canais manuais aprovados, sem data (ou cuja hora chegou), ficam aqui."],
+      sent: ["Nada publicado ainda", "Depois que a peça sair, ela fica aqui como histórico."],
       closed: ["Nenhuma rejeitada", ""],
     }[stageF];
     return `<div class="empty-card card tile-empty"><h2>${esc(msg[0])}</h2>${msg[1] ? `<p class="muted">${esc(msg[1])}</p>` : ""}</div>`;
@@ -223,8 +228,8 @@
       ${it.link ? `<a class="tag" href="${esc(it.link)}" target="_blank" rel="noopener noreferrer">ver onde saiu ${icon("arrow-ur")}</a>` : ""}
       ${it.task_id ? `<a class="tag" href="/board">tarefa #${it.task_id}</a>` : ""}`;
     const note = $("#cf-note");
-    note.hidden = !(it && (it.note || it.stage === "ready"));
-    note.textContent = it?.note ? `Motivo: ${it.note}` : it?.stage === "ready" ? "Aprovada. O envio automático chega com as integrações; por enquanto copie o texto, publique e marque como enviada." : "";
+    note.hidden = !(it && (it.note || ["ready", "attention", "postiz"].includes(it.stage)));
+    note.textContent = it?.note ? `Motivo: ${it.note}` : it?.stage === "attention" ? "Aprovada, mas ainda não foi ao Postiz. Use Enviar ao Postiz depois de resolver o motivo acima." : it?.stage === "postiz" ? "Agendada no Postiz. Para mudar a data ou cancelar, faça direto no Postiz." : it?.stage === "ready" ? "Aprovada. Envie o e-mail pelo botão ou, em canal manual, publique e marque como enviada." : "";
     $("#cf-sent-box").hidden = true; $("#cf-link").value = "";
     renderActions(); renderImage();
     $("#content-dialog").showModal();
@@ -599,7 +604,7 @@
       if (it.status !== "sent") b.push(`<button class="btn ghost" type="button" data-cf="delete">${icon("trash")} Excluir</button>`);
       if (["rejected", "failed", "approved"].includes(it.status)) b.push('<button class="btn ghost" type="button" data-cf="reopen">Voltar para aprovação</button>');
       if (it.status === "pending") b.push('<button class="btn danger" type="button" data-cf="reject">Rejeitar</button>', '<button class="btn" type="submit">Salvar</button>', `<button class="btn primary" type="button" data-cf="approve">${icon("check")} Salvar e aprovar</button>`);
-      if (["approved", "failed"].includes(it.status)) b.push('<button class="btn" type="submit">Salvar</button>', `<button class="btn primary" type="button" data-cf="sent">${icon("send")} Marcar enviada</button>`);
+      if (["approved", "failed"].includes(it.status)) b.push('<button class="btn" type="submit">Salvar</button>', `<button class="btn ${it.group === "social" ? "" : "primary"}" type="button" data-cf="sent">${icon("send")} ${it.group === "social" ? "Já publiquei fora do OS" : "Marcar enviada"}</button>`);
     }
     $("#cf-actions").innerHTML = b.join("");
   }

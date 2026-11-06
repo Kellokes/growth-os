@@ -874,7 +874,7 @@ dialog pre { background: var(--code-bg); border: 1px solid var(--line); border-r
 /* =====================================================================
    CENTRAL DE CONTEÚDO: peças, agenda e saídas dos agentes
    ===================================================================== */
-.cstats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.cstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; }
 .cstat {
   --k: var(--muted);
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; cursor: pointer;

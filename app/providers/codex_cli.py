@@ -2,6 +2,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from .. import calllog
 from ..config import get_settings
 from .base import SYSTEM_PROMPT, ChatTurn, Provider, ProviderError, render_transcript, run_cli
 
@@ -26,6 +27,13 @@ async def run_codex(model: str, args: list[str], cwd: Path, timeout: int, stdin:
         if msg:
             raise ProviderError(msg) from e
         raise
+
+
+def _last(out_file: Path, raw: str) -> str:
+    """Última mensagem do Codex (arquivo de --output-last-message) ou a saída bruta; vai para o log com GOS_LOG_PROMPTS."""
+    text = out_file.read_text(errors="replace").strip() if out_file.exists() else raw.strip()
+    calllog.note_reply(text)
+    return text
 
 
 class CodexCLIProvider(Provider):
@@ -56,10 +64,9 @@ class CodexCLIProvider(Provider):
             if self.reasoning:
                 args += ["-c", f'model_reasoning_effort="{self.reasoning}"']
             args.append("-")
+            calllog.note_prompt(text=f"{prompt}\n\n[imagem anexada: {mime}, {len(image) / 1024:.0f} KB]")
             raw = await run_codex(self.model, args, Path(tmp), s.provider_timeout_seconds, prompt)
-            if out_file.exists():
-                return out_file.read_text(errors="replace").strip()
-            return raw.strip()
+            return _last(out_file, raw)
 
     async def complete(self, history: list[ChatTurn]) -> str:
         s = get_settings()
@@ -77,7 +84,6 @@ class CodexCLIProvider(Provider):
             if self.reasoning:
                 args += ["-c", f'model_reasoning_effort="{self.reasoning}"']
             args.append("-")
+            calllog.note_prompt(text=prompt)
             raw = await run_codex(self.model, args, Path(s.workspace_dir), s.provider_timeout_seconds, prompt)
-            if out_file.exists():
-                return out_file.read_text(errors="replace").strip()
-            return raw.strip()
+            return _last(out_file, raw)

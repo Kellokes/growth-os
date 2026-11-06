@@ -675,9 +675,19 @@ def ai_calls(limit: int = 100, status: str = "", activity: str = "", after_id: i
     failed_total = base.filter(AiCall.status == "error").count()
     latest_id = db.query(func.max(AiCall.id)).scalar() or 0
     labels = {a["key"]: a["label"] for a in modelcfg.ACTIVITIES} | calllog.ACTIVITY_LABELS
-    return {"running": running, "failed_24h": failed, "failed_total": failed_total, "latest_id": latest_id, "calls": [
+    return {"running": running, "failed_24h": failed, "failed_total": failed_total, "latest_id": latest_id,
+            "log_prompts": calllog.full_enabled(), "calls": [
         calllog.call_json(r) | {"project": names.get(r.project_id, ""), "activity_label": labels.get(r.activity, r.activity)}
         for r in rows]}
+
+
+@app.get("/api/calls/{call_id}")
+def ai_call_detail(call_id: int, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Uma chamada com o prompt enviado e o retorno completos (só existem nas gravadas com GOS_LOG_PROMPTS=true)."""
+    r = db.get(AiCall, call_id)
+    if r is None:
+        raise HTTPException(404, "chamada não encontrada")
+    return calllog.full_json(r)
 
 
 @app.get("/api/costs")

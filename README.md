@@ -92,6 +92,11 @@ Recuperação: `python -m app.cli reset-password felipe` e `python -m app.cli re
 - Aviso no Telegram (opcional): crie um bot com o @BotFather, mande uma mensagem para ele e preencha
   `GOS_TELEGRAM_BOT_TOKEN` e `GOS_TELEGRAM_CHAT_ID`. O bot só envia; não aceita comandos.
 - `GOS_PUBLIC_URL` (ex.: `https://os.takeonestudio.io`) coloca o link do plano no aviso.
+- Log de chamadas (rodapé "Chamadas em segundo plano"): por padrão guarda só resumos. Para depurar,
+  `GOS_LOG_PROMPTS=true` no `.env` (e reinicie o app) grava também o prompt enviado (sistema + mensagens) e o
+  retorno completo de cada chamada à IA. Abra a chamada no rodapé e clique em "Ver prompt e retorno completos".
+  Chaves e tokens são tirados e imagens viram `[imagem ...]`; só vale para as chamadas feitas com a opção ligada.
+  Desligue depois: o conteúdo fica no banco por 30 dias, como o resto do log.
 
 ## Kanban, habilidades, integrações e rotinas
 

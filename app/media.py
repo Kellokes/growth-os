@@ -222,6 +222,7 @@ async def submit_video(model: str, prompt: str, ratio: str) -> str:
         raise ProviderError(bad)
     key = _key()
     with calllog.track("openrouter", model, "video", f"vídeo {ratio} · prompt de {len(prompt)} caracteres") as call:
+        calllog.note_prompt(text=prompt)
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(VIDEO_URL, json={"model": model, "prompt": prompt, "aspect_ratio": ratio},

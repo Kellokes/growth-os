@@ -221,3 +221,79 @@ def test_after_id_hides_older_calls_without_deleting_them(logged):
     after = logged.get(f"/api/calls?limit=5&after_id={cut}").json()
     assert len(after["calls"]) == 1 and after["failed_total"] == 0 and after["failed_24h"] == 0
     assert len(rows()) == 8  # nada foi apagado
+
+
+def _openrouter_reply(monkeypatch, reply: str):
+    from app.providers import openrouter as orp
+
+    sent = {}
+
+    async def fake_post(self, client, body):
+        sent["body"] = body
+        return 200, {"choices": [{"message": {"content": reply}}], "usage": {"prompt_tokens": 3}}, ""
+
+    monkeypatch.setattr(orp.OpenRouterProvider, "_post", fake_post)
+    return orp.OpenRouterProvider().configured("m/x"), sent
+
+
+def _log_prompts(monkeypatch, on: bool):
+    from app.config import get_settings
+
+    monkeypatch.setenv("GOS_LOG_PROMPTS", "true" if on else "false")
+    get_settings.cache_clear()
+
+
+def test_full_prompt_is_not_stored_by_default(logged, monkeypatch):
+    provider, _ = _openrouter_reply(monkeypatch, "resposta inteira do modelo")
+    with calllog.track("openrouter", "m/x", "threads", "pedido"):
+        asyncio.run(provider.complete([ChatTurn("user", "pergunta completa " * 40)]))
+    (r,) = rows()
+    assert r.prompt_full == "" and r.response_full == ""
+    data = logged.get("/api/calls").json()
+    assert data["log_prompts"] is False and data["calls"][0]["has_full"] is False
+
+
+def test_log_prompts_stores_system_user_and_reply_without_secrets(logged, monkeypatch):
+    _log_prompts(monkeypatch, True)
+    provider, sent = _openrouter_reply(monkeypatch, "linha 1\nlinha 2 com a chave sk-or-v1-abcdef1234567890abcd")
+    question = "use o token=ghp_abcdefghijklmnop1234 e me diga " + "x " * 300
+    with calllog.track("openrouter", "m/x", "threads", "pedido") as call:
+        reply = asyncio.run(provider.complete([ChatTurn("user", question)]))
+        call.done(calllog.summarize_text(reply))
+    (r,) = rows()
+    assert r.prompt_full.startswith("### sistema\nVocê é o Growth OS") and "### user\nuse o token=[oculto]" in r.prompt_full
+    assert "x " * 300 in r.prompt_full  # inteiro, não o trecho de 100 caracteres
+    assert r.response_full.startswith("linha 1\nlinha 2") and "sk-or-v1" not in r.response_full
+    assert "ghp_abc" not in r.prompt_full and "Bearer" not in r.prompt_full
+    # a chave de verdade vai só no cabeçalho, nunca no corpo que é logado
+    assert "Authorization" not in str(sent["body"])
+    data = logged.get("/api/calls").json()
+    assert data["log_prompts"] is True
+    c = data["calls"][0]
+    assert c["has_full"] is True and "prompt_full" not in c
+    full = logged.get(f"/api/calls/{c['id']}").json()
+    assert full["prompt_full"] == r.prompt_full and full["response_full"] == r.response_full
+    assert logged.get("/api/calls/999999").status_code == 404
+
+
+def test_log_prompts_keeps_prompt_of_failed_call_and_hides_images(logged, monkeypatch):
+    _log_prompts(monkeypatch, True)
+    with pytest.raises(ProviderError):
+        with calllog.track("openrouter", "m/img", "layout_html", "pedido"):
+            calllog.note_prompt(messages=[{"role": "user", "content": [
+                {"type": "text", "text": "converta este layout"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 5000}}]}])
+            raise ProviderError("caiu")
+    (r,) = rows()
+    assert r.status == "error" and "converta este layout" in r.prompt_full
+    assert "[imagem enviada em base64]" in r.prompt_full and "AAAA" not in r.prompt_full
+
+
+def test_full_text_is_capped_and_base64_is_hidden():
+    assert "[imagem image/png em base64]" in calllog.redact_full("veja data:image/png;base64," + "Q" * 900)
+    out = calllog.redact_full("a " * (calllog.FULL_LIMIT // 2 + 5))
+    assert out.endswith("[cortado: 10 caracteres a mais]")
+
+
+def test_detail_endpoint_needs_login(client):
+    assert client.get("/api/calls/1").status_code in (401, 303, 307)

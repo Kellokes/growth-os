@@ -140,8 +140,10 @@ Canais: {channels}. Só "canal" e "texto" são obrigatórios.
 Posts visuais ganham a imagem pronta do sistema antes de você aprovar: o fundo é gerado a partir de "midia" (descreva só a
 cena, sem texto) e o texto da imagem ("titulo_imagem", "texto_imagem") entra no template fixo do projeto. Se a peça pedir uma imagem livre (sem o template), use "modo_imagem": "prompt" e
 descreva a imagem inteira em "prompt_imagem"; o owner pode trocar o modo e editar o prompt antes de aprovar.
-Carrossel roda em três layouts: a capa ("titulo_imagem", "texto_imagem"), as páginas do meio ("paginas", até 8, texto curto em
-cada) e o CTA final ("cta"). Se você achou uma foto ou um vídeo na internet que deve entrar no post, use "fonte_midia": "link"
+Carrossel roda em três layouts: a capa ("titulo_imagem", "texto_imagem"), as páginas do meio ("paginas", de 3 a 8, cada uma com
+"titulo", "texto" curto e "imagem": a cena da foto daquela página, em inglês, sem texto escrito) e o CTA final ("cta", com
+"titulo", "texto" e "imagem"). Preencha TUDO: o sistema gera as imagens de cada parte e só pede a aprovação do owner quando a peça
+está inteira; o que você deixar vazio o sistema completa a partir da legenda, mas o seu texto é sempre melhor. Se você achou uma foto ou um vídeo na internet que deve entrar no post, use "fonte_midia": "link"
 e o endereço direto do arquivo em "link_midia". Não gere nem peça arquivos."""
 
 
@@ -214,9 +216,15 @@ def ingest_blocks(db: DB, task: Task, text: str) -> list[ContentItem]:
     return created
 
 
-def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = None) -> dict:
+def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = None, db: DB | None = None) -> dict:
     name, group, icon = CHANNELS.get(c.channel, CHANNELS["outro"])
+    pipe = None
+    if db is not None and c.status == "pending":
+        from . import pipeline
+
+        pipe = pipeline.check(db, c)
     return {
+        "pipeline": pipe,
         "id": c.id, "project": project_slug, "agent": c.agent_slug, "task_id": c.task_id,
         "channel": c.channel, "channel_name": name, "channel_icon": icon, "group": group,
         "title": c.title, "body": c.body, "recipient": c.recipient, "purpose": c.purpose, "media": c.media,
@@ -271,12 +279,14 @@ def block_slides(it: dict) -> str:
     out = []
     for p in pages if isinstance(pages, list) else []:
         if isinstance(p, dict):
-            out.append({"role": "pagina", "title": str(p.get("titulo") or "")[:120], "text": str(p.get("texto") or "")[:300]})
+            out.append({"role": "pagina", "title": str(p.get("titulo") or "")[:120], "text": str(p.get("texto") or "")[:300],
+                        "media": str(p.get("imagem") or p.get("midia") or "")[:600]})
         elif isinstance(p, str) and p.strip():
             out.append({"role": "pagina", "title": "", "text": p.strip()[:300]})
     cta = it.get("cta")
     if isinstance(cta, dict):
-        out.append({"role": "cta", "title": str(cta.get("titulo") or "")[:120], "text": str(cta.get("texto") or "")[:300]})
+        out.append({"role": "cta", "title": str(cta.get("titulo") or "")[:120], "text": str(cta.get("texto") or "")[:300],
+                    "media": str(cta.get("imagem") or cta.get("midia") or "")[:600]})
     elif isinstance(cta, str) and cta.strip():
         out.append({"role": "cta", "title": cta.strip()[:120], "text": ""})
     return json.dumps(out, ensure_ascii=False) if out else ""

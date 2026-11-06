@@ -483,10 +483,11 @@
     renderPieceAssets();
   });
   // @ no prompt da imagem: lista os ativos do projeto; o servidor manda a imagem como referência e troca @Nome por "Nome (image N)"
-  const mention = { open: false, items: [], at: -1, sel: 0 };
+  const mention = { open: false, items: [], at: -1, sel: 0, ta: null };
   function closeMention() { mention.open = false; $("#cf-mention").hidden = true; }
-  async function updateMention() {
-    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+  async function updateMention(ev) {
+    const ta = ev.target; mention.ta = ta; const pos = ta.selectionStart;
+    ta.parentElement.appendChild($("#cf-mention"));
     const m = /(^|[\s(])@([^\s@]*)$/.exec(ta.value.slice(0, pos));
     if (!m || ro()) return closeMention();
     const q = m[2].toLowerCase();
@@ -500,22 +501,25 @@
   }
   function pickMention(i) {
     const a = mention.items[i]; if (!a) return;
-    const ta = $("#cf-iprompt"); const pos = ta.selectionStart;
+    const ta = mention.ta; const pos = ta.selectionStart;
     const ins = `@${a.name} `;
     ta.value = ta.value.slice(0, mention.at) + ins + ta.value.slice(pos);
     ta.selectionStart = ta.selectionEnd = mention.at + ins.length;
     closeMention(); ta.focus();
   }
-  $("#cf-iprompt").addEventListener("input", updateMention);
-  $("#cf-iprompt").addEventListener("blur", () => setTimeout(closeMention, 150));
-  $("#cf-iprompt").addEventListener("keydown", (ev) => {
+  for (const sel of ["#cf-iprompt", "#cf-media"]) {
+    $(sel).addEventListener("input", updateMention);
+    $(sel).addEventListener("blur", () => setTimeout(closeMention, 150));
+    $(sel).addEventListener("keydown", mentionKeys);
+  }
+  function mentionKeys(ev) {
     if (!mention.open) return;
     if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
       ev.preventDefault(); mention.sel = (mention.sel + (ev.key === "ArrowDown" ? 1 : -1) + mention.items.length) % mention.items.length;
       $("#cf-mention").querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", i === mention.sel));
     } else if (ev.key === "Enter" || ev.key === "Tab") { ev.preventDefault(); pickMention(mention.sel); }
     else if (ev.key === "Escape") { ev.preventDefault(); closeMention(); }
-  });
+  }
   $("#cf-mention").addEventListener("mousedown", (ev) => { const b = ev.target.closest("[data-m]"); if (b) { ev.preventDefault(); pickMention(Number(b.dataset.m)); } });
   $("#cf-vidlib").addEventListener("change", () => { if ($("#cf-vidlib").value) $("#cf-url").value = $("#cf-vidlib").value; });
 

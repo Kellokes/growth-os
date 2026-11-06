@@ -492,3 +492,36 @@ def test_motion_calls_are_serialized(monkeypatch):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert peak[0] == 1
+
+
+def test_no_text_rule_only_without_reference_and_prompt_is_editable(logged, monkeypatch):
+    make_projects("Zombie Party")
+    s = dbmod.new_session()
+    modelcfg.save(s, "image", "openrouter", "google/gemini-2.5-flash-image", "")
+    s.add(dbmod.LayoutAsset(project_id=pid("zombie-party"), kind="reference", status="", mime="image/png", data=PNG, note="celular"))
+    s.commit()
+    s.close()
+    c = dbmod.ContentItem(visual_format="story", title="t", body="b", media="cartas", image_prompt="")
+    # sem referência: regra de nenhum texto; com referência: manter o conteúdo dela, inclusive texto
+    assert "ABSOLUTELY NO text" in lay.build_photo_prompt("M", "", c, "4:5")
+    assert "ABSOLUTELY NO text" not in lay.build_photo_prompt("M", "", c, "4:5", has_refs=True)
+    assert "INCLUDING any text" in lay.build_photo_prompt("M", "", c, "4:5", has_refs=True)
+    assert "ABSOLUTELY NO text" in lay.build_free_prompt("M", "", c) and "ABSOLUTELY NO text" not in lay.build_free_prompt("M", "", c, has_refs=True)
+    assert "including any text" in lay.build_reference_prompt("M", "", c)
+    assert "no garbled" not in lay.build_reference_prompt("M", "", c)
+
+    seen = {}
+
+    async def fake(model, prompt, refs, ratio):
+        seen.update(prompt=prompt, n=len(refs))
+        return PNG + b"9", "image/png"
+
+    monkeypatch.setattr(lay, "request_image", fake)
+    cid = new_piece(image_mode="reference", title="Festa")
+    r = logged.post(f"/api/content/{cid}/image", json={})
+    assert r.status_code == 200 and seen["n"] == 1 and "ABSOLUTELY NO text" not in seen["prompt"]
+    assert r.json()["last_prompt"] == seen["prompt"]  # a UI mostra o prompt usado para editar
+
+    r = logged.post(f"/api/content/{cid}/image", json={"prompt": "Phone showing the same messages, on a table"})
+    assert r.status_code == 200 and seen["prompt"] == "Phone showing the same messages, on a table" and seen["n"] == 1
+    assert r.json()["last_prompt"] == seen["prompt"]

@@ -156,6 +156,9 @@ def test_postiz_instagram_payload_has_post_type_and_media_in_all_paths(logged, m
                                                                          {"id": "m2", "path": "https://cdn/2.png"}]]
     assert b"png0" in uploads[0] and b"png1" in uploads[1]
     assert posts[3]["posts"][0]["value"][0]["image"] == []
+    posts.clear()
+    asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "ig", "texto": "x", "midia_ids": str(ids[0]), "tipo": "story"}))
+    assert posts[0]["posts"][0]["settings"]["post_type"] == "story"
 
 
 def test_postiz_instagram_without_media_and_foreign_asset_are_refused(logged, monkeypatch):
@@ -298,6 +301,36 @@ def test_publish_approved_content_by_email_and_social(logged, monkeypatch):
     zid = z.id
     wa.close()
     assert logged.post(f"/api/content/{zid}/publish", json={}).status_code == 422
+
+
+def test_approving_scheduled_social_piece_schedules_it_in_postiz(logged, monkeypatch):
+    from datetime import timedelta
+    from app import content as cnt
+    (a,) = make_projects("Zombie Party")
+    connect(a, "postiz", POSTIZ, monkeypatch)
+    calls = []
+
+    async def fake_run(self, ctx, op, params):
+        calls.append((op, params))
+        if op == "listar_canais":
+            return {"canais": [{"id": "ig1", "nome": "IG", "rede": "instagram"}, {"id": "li1", "nome": "LI", "rede": "linkedin"}]}
+        return {"tipo": "schedule", "canal": "IG", "ref": "p1"}
+
+    monkeypatch.setattr(senders.Postiz, "run", fake_run)
+    s = dbmod.new_session()
+    future = cnt.local_now() + timedelta(days=2)
+    rows = [dbmod.ContentItem(project_id=pid(a), channel="instagram", body="A", status="pending", scheduled_at=future),
+            dbmod.ContentItem(project_id=pid(a), channel="instagram", body="B", status="pending"),  # sem data
+            dbmod.ContentItem(project_id=pid(a), channel="x", body="C", status="pending", scheduled_at=future)]  # sem canal X
+    s.add_all(rows)
+    s.commit()
+    ids = [r.id for r in rows]
+    s.close()
+    out = [logged.post(f"/api/content/{i}/decide", json={"approve": True}).json() for i in ids]
+    assert out[0]["status"] == "sent"  # agendado no Postiz sozinho
+    ops = [c for c in calls if c[0] == "agendar_post"]
+    assert len(ops) == 1 and ops[0][1]["canal_id"] == "ig1" and ops[0][1]["texto"] == "A"
+    assert out[1]["status"] == "approved" and out[2]["status"] == "approved"  # ficam para o botão Publicar
 
 
 def test_failed_publish_marks_content_failed_and_can_retry(logged, monkeypatch):

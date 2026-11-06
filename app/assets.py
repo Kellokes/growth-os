@@ -89,8 +89,13 @@ def _fold(text: str) -> str:
 
 
 def _keywords(a: LayoutAsset) -> set[str]:
-    words = re.findall(r"[a-z0-9]{4,}", _fold(f"{a.name} {a.use_when}"))
+    cat = CATEGORIES.get(a.category or "", "")
+    words = re.findall(r"[a-z0-9]{4,}", _fold(f"{a.name} {a.use_when} {a.note} {cat}"))
     return {w for w in words if w not in _STOP}
+
+
+def _stem(w: str) -> str:
+    return w[:-1] if len(w) > 4 and w.endswith("s") else w  # cartas -> carta, tabuleiros -> tabuleiro
 
 
 def chosen_ids(c: ContentItem) -> list[int]:
@@ -178,11 +183,42 @@ def for_piece(db, c: ContentItem, limit: int = MAX_SENT) -> list[LayoutAsset]:
         by_id = {a.id: a for a in rows}
         rest = [by_id[i] for i in ids if i in by_id]
         return (first + [a for a in rest if a not in first])[:limit]
-    subject = _fold(" ".join([c.title, c.body, c.media, c.img_title, c.img_text, c.image_prompt]))
-    words = set(re.findall(r"[a-z0-9]{4,}", subject))
-    picked = [a for a in rows if a.always]
-    picked += [a for a in rows if not a.always and _keywords(a) & words]
+    subject = " ".join([c.title, c.body, c.media, c.img_title, c.img_text, c.image_prompt])
+    picked = for_subject(db, c.project_id, subject, limit=MAX_SENT)
     return (first + [a for a in picked if a not in first])[:limit]
+
+
+def for_subject(db, project_id: int, text: str, forced: list[int] | None = None, limit: int = MAX_SENT) -> list[LayoutAsset]:
+    """Ativos de imagem certos para UM assunto (uma página, o CTA): os escolhidos de antemão (forced, na ordem), os "sempre" e os que
+    o assunto cita (nome, "quando usar", descrição ou tipo: falou em tabuleiro, vem o tabuleiro; falou em cartas, vêm as cartas).
+    Quem combina com mais palavras vem primeiro."""
+    rows = [a for a in project_assets(db, project_id) if is_image(a)]
+    by_id = {a.id: a for a in rows}
+    out = [by_id[i] for i in (forced or []) if i in by_id]
+    words = {_stem(w) for w in re.findall(r"[a-z0-9]{4,}", _fold(text))}
+    scored = []
+    for a in rows:
+        if a in out or a.always:
+            continue
+        hits = len({_stem(k) for k in _keywords(a)} & words)
+        if hits:
+            scored.append((-hits, a.id, a))
+    out += [a for a in rows if a.always and a not in out]
+    out += [a for _, _, a in sorted(scored)]
+    return out[:limit]
+
+
+def slide_ids(s: dict) -> list[int]:
+    v = s.get("assets")
+    return [int(x) for x in v if isinstance(x, int)] if isinstance(v, list) else []
+
+
+def for_slide(db, c: ContentItem, s: dict, limit: int = MAX_SENT) -> list[LayoutAsset]:
+    """Ativos da página: os que o agente indicou para ela, os citados com @ ou escolhidos na peça e o que o texto dela pede."""
+    forced = slide_ids(s) + [a.id for a in mentioned(db, c)] + chosen_ids(c)
+    forced = list(dict.fromkeys(forced))
+    text = " ".join(str(x) for x in (s.get("media"), s.get("title"), s.get("text")) if x)
+    return for_subject(db, c.project_id, text or c.media or c.title, forced, limit)
 
 
 def prompt_lines(assets: list[LayoutAsset], first_index: int = 1) -> str:

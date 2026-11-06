@@ -17,6 +17,7 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session as DB
 
+from . import assets as ast
 from . import calllog
 from . import content as cnt
 from .db import ContentItem, GrowthProject, utcnow
@@ -87,6 +88,11 @@ def _is_template_carousel(c: ContentItem) -> bool:
     return c.visual_format == "carrossel" and (c.image_mode or "template") == "template"
 
 
+def _is_carousel(c: ContentItem) -> bool:
+    """Carrossel em qualquer modo de imagem: cada página tem a sua imagem (no layout, ou inteira pelo modelo nos modos livres)."""
+    return c.visual_format == "carrossel"
+
+
 def _needs_copy_check(c: ContentItem) -> bool:
     """Só as peças que um agente escreveu são completadas e cobradas; o que o owner escreve é do jeito que ele quis."""
     return bool(c.agent_slug)
@@ -107,7 +113,7 @@ def copy_gaps(c: ContentItem) -> list[str]:
             gaps.append("título da capa")
         if not c.img_text.strip():
             gaps.append("texto da capa")
-    if _is_template_carousel(c):
+    if _is_carousel(c):
         raw = _raw_slides(c)
         pages = [s for s in raw if s.get("role") != "cta"]
         if len(pages) < MIN_PAGES:
@@ -151,7 +157,7 @@ def derive_copy(c: ContentItem) -> bool:
             src = rest.strip() or c.body
             if src.strip() and src.strip() != c.img_title.strip():
                 c.img_text, changed = _sentence(src, 140)[:400], True
-    if _is_template_carousel(c):
+    if _is_carousel(c):
         raw = _raw_slides(c)
         for s in raw:
             title, text = str(s.get("title") or "").strip(), str(s.get("text") or "").strip()
@@ -162,7 +168,7 @@ def derive_copy(c: ContentItem) -> bool:
     return changed
 
 
-def copy_prompt(project: GrowthProject | None, c: ContentItem) -> str:
+def copy_prompt(project: GrowthProject | None, c: ContentItem, db: DB) -> str:
     have = {"titulo_imagem": c.img_title, "texto_imagem": c.img_text, "paginas": [
         {"titulo": s.get("title", ""), "texto": s.get("text", ""), "imagem": s.get("media", "")}
         for s in _raw_slides(c) if s.get("role") != "cta"],
@@ -181,9 +187,11 @@ O que já está preenchido (NÃO mude, só complete o que está vazio):
 
 Complete o que falta ({"; ".join(copy_gaps(c))}). Regras: português do Brasil, mesmo tom da legenda, sem inventar fatos que a legenda não traz;
 título da capa até 6 palavras; texto da capa até 140 caracteres; carrossel com {MIN_PAGES} a 6 páginas, cada uma com "titulo" (até 6 palavras),
-"texto" (até 220 caracteres, um passo ou ideia só, apoiando a informação da legenda) e "imagem" (uma frase em inglês descrevendo a cena da foto
-dessa página, sem texto escrito); "cta" com chamada final curta e "imagem" também. Formato:
-{{"titulo_imagem": "", "texto_imagem": "", "paginas": [{{"titulo": "", "texto": "", "imagem": ""}}], "cta": {{"titulo": "", "texto": "", "imagem": ""}}}}"""
+"texto" (até 220 caracteres, um passo ou ideia só, apoiando a informação da legenda), "imagem" (uma frase em inglês descrevendo a cena da foto
+dessa página, sem texto escrito) e "ativos" (nomes EXATOS dos ativos do projeto que a página mostra: página sobre o tabuleiro leva o tabuleiro,
+sobre as cartas leva as cartas; [] se nenhum); "cta" com chamada final curta, "imagem" e "ativos" também. Formato:
+{{"titulo_imagem": "", "texto_imagem": "", "paginas": [{{"titulo": "", "texto": "", "imagem": "", "ativos": []}}], "cta": {{"titulo": "", "texto": "", "imagem": "", "ativos": []}}}}
+{ast.catalog(db, c.project_id)}"""
 
 
 def _json_of(text: str) -> dict:
@@ -199,14 +207,14 @@ def _json_of(text: str) -> dict:
     return v
 
 
-def merge_copy(c: ContentItem, data: dict) -> None:
+def merge_copy(c: ContentItem, data: dict, db: DB | None = None) -> None:
     """Junta o que o modelo mandou ao que já existe: só preenche vazios e acrescenta o que falta, nunca troca o que o agente escreveu."""
     if c.visual_format:
         if not c.img_title.strip():
             c.img_title = str(data.get("titulo_imagem") or "").strip()[:200]
         if not c.img_text.strip():
             c.img_text = str(data.get("texto_imagem") or "").strip()[:400]
-    if not _is_template_carousel(c):
+    if not _is_carousel(c):
         return
     raw = _raw_slides(c)
     pages = [s for s in raw if s.get("role") != "cta"]
@@ -214,7 +222,7 @@ def merge_copy(c: ContentItem, data: dict) -> None:
     new_pages = [p for p in (data.get("paginas") or []) if isinstance(p, dict)]
     for i, p in enumerate(new_pages):
         item = {"title": str(p.get("titulo") or "").strip()[:120], "text": str(p.get("texto") or "").strip()[:300],
-                "media": str(p.get("imagem") or "").strip()[:600]}
+                "media": str(p.get("imagem") or "").strip()[:600], **cnt._slide_assets(p, db, c.project_id)}
         if i < len(pages):
             for k, v in item.items():
                 if v and not str(pages[i].get(k) or "").strip():
@@ -223,7 +231,7 @@ def merge_copy(c: ContentItem, data: dict) -> None:
             pages.append({"role": "pagina", **{k: v for k, v in item.items() if v}})
     d = data.get("cta") if isinstance(data.get("cta"), dict) else {}
     item = {"title": str(d.get("titulo") or "").strip()[:120], "text": str(d.get("texto") or "").strip()[:300],
-            "media": str(d.get("imagem") or "").strip()[:600]}
+            "media": str(d.get("imagem") or "").strip()[:600], **cnt._slide_assets(d, db, c.project_id)}
     if cta is None:
         cta = {"role": "cta"}
     for k, v in item.items():
@@ -246,9 +254,9 @@ async def complete_copy(db: DB, c: ContentItem) -> None:
     project = db.get(GrowthProject, c.project_id)
     with calllog.context("agents_run", c.project_id, f"agente:{c.agent_slug}"):
         with calllog.track(provider.id, provider.model, "agents_run", f"completar peça #{c.id}: {'; '.join(copy_gaps(c))}"[:400]) as call:
-            reply = await provider.complete([ChatTurn("user", copy_prompt(project, c))])
+            reply = await provider.complete([ChatTurn("user", copy_prompt(project, c, db))])
             call.done(reply)
-    merge_copy(c, _json_of(reply))
+    merge_copy(c, _json_of(reply), db)
     derive_copy(c)
     db.commit()
     left = copy_gaps(c)
@@ -307,14 +315,14 @@ def check(db: DB, c: ContentItem) -> dict:
     if c.visual_format:
         wait = "" if c.image_id else _cover_wait(db, c)
         parts.append(_part("capa", "Capa" if c.visual_format == "carrossel" else "Imagem", bool(c.image_id), st, wait))
-        if _is_template_carousel(c):
+        if _is_carousel(c):
             for i, s in enumerate(lay.piece_slides(c)):
                 photo = lay.slide_wants_photo(db, c, s)
                 ok = bool(s.get("image_id")) and (not photo or bool(s.get("photo_id")))
                 wait = ""
                 if not ok and not c.image_id:
                     wait = "espera a capa"
-                elif not ok:
+                elif not ok and _is_template_carousel(c):
                     try:
                         missing = lay.piece_template(db, c, s["role"]) is None
                     except ProviderError as e:
@@ -402,7 +410,7 @@ async def run_piece(db: DB, c: ContentItem, force: bool = False) -> dict:
     if c.visual_format and todo("capa"):
         await _attempt(db, c, "capa", lambda: lay.generate_piece_image(db, c))
         db.refresh(c)
-    if _is_template_carousel(c) and c.image_id:
+    if _is_carousel(c) and c.image_id:
         for i, s in enumerate(lay.piece_slides(c)):
             key = _slide_key(i, s["role"])
             if not todo(key):
@@ -411,10 +419,13 @@ async def run_piece(db: DB, c: ContentItem, force: bool = False) -> dict:
             async def build(i=i):
                 slides = lay.piece_slides(c)
                 s = slides[i]
-                if lay.slide_wants_photo(db, c, s) and not s.get("photo_id"):
-                    await lay.generate_slide_photo(db, c, s)
-                cover = await asyncio.to_thread(lay.cover_layers, db, c, lay.piece_template(db, c))
-                await asyncio.to_thread(lay.render_slide, db, c, s, cover[0])
+                if not _is_template_carousel(c):  # modos livres: a imagem inteira da página sai do modelo, com os ativos dela
+                    await lay.generate_free_slide(db, c, s, c.image_mode)
+                else:
+                    if lay.slide_wants_photo(db, c, s) and not s.get("photo_id"):
+                        await lay.generate_slide_photo(db, c, s)
+                    cover = await asyncio.to_thread(lay.cover_layers, db, c, lay.piece_template(db, c))
+                    await asyncio.to_thread(lay.render_slide, db, c, s, cover[0])
                 c.slides = json.dumps(slides, ensure_ascii=False)
                 db.commit()
 

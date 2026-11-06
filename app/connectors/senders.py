@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 
+import httpx
+
 from . import Connector, ConnectorError, Ctx, Op, TransientError, register, request_json, safe_base_url
 
 _EMAIL = re.compile(r"^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$")
@@ -40,10 +42,11 @@ class Postiz(Connector):
     ops = {
         "listar_canais": Op("read", "lista os canais (redes) conectados no Postiz, com o id de cada um"),
         "criar_rascunho": Op("internal", "cria um rascunho no Postiz (não publica)",
-                             {"canal_id": (str, True), "texto": (str, True)}),
+                             {"canal_id": (str, True), "texto": (str, True), "midia_ids": (str, False)}),
         "agendar_post": Op("external", "agenda um post no Postiz para uma data/hora (ISO, UTC)",
-                           {"canal_id": (str, True), "texto": (str, True), "quando": (str, True)}, risk="medio", daily_cap=10),
-        "publicar_post": Op("external", "publica agora no canal escolhido", {"canal_id": (str, True), "texto": (str, True)},
+                           {"canal_id": (str, True), "texto": (str, True), "quando": (str, True), "midia_ids": (str, False)},
+                           risk="medio", daily_cap=10),
+        "publicar_post": Op("external", "publica agora no canal escolhido", {"canal_id": (str, True), "texto": (str, True), "midia_ids": (str, False)},
                             risk="medio", daily_cap=10),
     }
 
@@ -53,6 +56,41 @@ class Postiz(Connector):
     async def _channels(self, ctx: Ctx, base: str) -> list[dict]:
         data = await request_json(ctx, "GET", f"{base}/api/public/v1/integrations", headers=self._headers(ctx))
         return [c for c in (data if isinstance(data, list) else []) if isinstance(c, dict)]
+
+    async def _upload(self, ctx: Ctx, base: str, ids: list[int]) -> list[dict]:
+        """Sobe as imagens/vídeos da peça para o Postiz (na ordem dada) e devolve {id, path} de cada um."""
+        from .. import db as dbmod
+        s = dbmod.new_session()
+        try:
+            files = []
+            for i in ids:
+                a = s.get(dbmod.LayoutAsset, i)
+                if a is None or a.project_id != ctx.project_id:
+                    raise ConnectorError(f"arquivo #{i} não existe neste projeto")
+                files.append((a.mime or "image/png", bytes(a.data)))
+        finally:
+            s.close()
+        out = []
+        for n, (mime, data) in enumerate(files, 1):
+            ext = (mime.split("/")[-1] or "png").replace("jpeg", "jpg")
+            try:
+                async with ctx.client() as c:
+                    r = await c.post(f"{base}/api/public/v1/upload", headers=self._headers(ctx),
+                                     files={"file": (f"midia-{n}.{ext}", data, mime)})
+            except httpx.HTTPError as e:
+                raise TransientError(f"não consegui subir a mídia no Postiz: {e.__class__.__name__}") from e
+            if r.status_code in (429,) or r.status_code >= 500:
+                raise TransientError(f"o Postiz respondeu {r.status_code} ao subir a mídia")
+            if r.status_code >= 400:
+                raise ConnectorError(f"o Postiz recusou a mídia ({r.status_code}): {r.text[:200]}")
+            try:
+                j = r.json()
+            except ValueError as e:
+                raise ConnectorError("o Postiz não devolveu JSON ao subir a mídia") from e
+            if not (isinstance(j, dict) and j.get("id") and j.get("path")):
+                raise ConnectorError("o Postiz não devolveu id/path da mídia enviada")
+            out.append({"id": j["id"], "path": j["path"]})
+        return out
 
     async def run(self, ctx: Ctx, op: str, params: dict) -> dict:
         base = safe_base_url(ctx.config.get("url", ""))
@@ -76,8 +114,12 @@ class Postiz(Connector):
         settings = {"__type": ch.get("identifier", "")}
         if settings["__type"] in _IG_PROVIDERS:
             settings["post_type"] = "post"  # o Postiz exige post_type (post|story) no Instagram; "post" = feed
+        ids = [int(x) for x in str(params.get("midia_ids", "")).replace(" ", "").split(",") if x.isdigit()]
+        if settings["__type"] in _IG_PROVIDERS and not ids:
+            raise ConnectorError("o Instagram exige ao menos uma imagem ou vídeo na peça")
+        media = await self._upload(ctx, base, ids) if ids else []
         body = {"type": kind, "date": when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"), "shortLink": False,
-                "tags": [], "posts": [{"integration": {"id": ch["id"]}, "value": [{"content": params["texto"], "image": []}],
+                "tags": [], "posts": [{"integration": {"id": ch["id"]}, "value": [{"content": params["texto"], "image": media}],
                                        "settings": settings}]}
         data = await request_json(ctx, "POST", f"{base}/api/public/v1/posts", body=body, headers=self._headers(ctx))
         ref = ""

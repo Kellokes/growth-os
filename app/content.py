@@ -84,6 +84,16 @@ def needs_image(c: ContentItem) -> bool:
     return bool(c.visual_format) and not c.image_id
 
 
+def media_asset_ids(c: ContentItem) -> list[int]:
+    """Arquivos (layout_assets.id) que acompanham o post, na ordem: carrossel = capa + páginas; reel = o vídeo, se houver."""
+    from .layouts import piece_slides
+    if c.visual_format == "reel" and c.video_id:
+        return [c.video_id]
+    ids = [c.image_id] if c.image_id else []
+    ids += [s["image_id"] for s in piece_slides(c) if s.get("image_id")]
+    return ids
+
+
 def parse_when(raw) -> datetime | None:
     """Aceita '2026-11-03 10:00', '2026-11-03T10:00' ou só a data (vira 9h). Hora local do owner."""
     s = str(raw or "").strip().replace("T", " ")[:16]

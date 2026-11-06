@@ -15,7 +15,7 @@ import time
 import httpx
 
 from . import assets as ast
-from . import calllog, modelcfg
+from . import calllog, endpoints, modelcfg
 from .config import get_settings
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
@@ -163,8 +163,10 @@ def _is_modality_error(status: int, msg: str) -> bool:
 
 async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
     """Pede UMA imagem ao OpenRouter, com as referências junto."""
-    with calllog.track("openrouter", model, "image", f"imagem {ratio} · {len(refs[:MAX_REFS_SENT])} referência(s) · "
-                       f"prompt de {len(prompt)} caracteres") as call:
+    route = endpoints.route_for(model, "image")
+    note = "" if endpoints.is_known(model) else " · rota NÃO registrada, usando a padrão"
+    with calllog.track("openrouter", model, "image", f"imagem {ratio} · rota {route}{note} · {len(refs[:MAX_REFS_SENT])} "
+                       f"referência(s) · prompt de {len(prompt)} caracteres") as call:
         data, mime = await _request_image(model, prompt, refs, ratio)
         call.done(summarize_bytes(mime, len(data)))
         return data, mime
@@ -215,10 +217,65 @@ def _is_scheme_error(status: int, msg: str) -> bool:
     return status == 400 and ("url scheme" in m or "data url" in m)
 
 
+def extract_images_endpoint(data: dict) -> tuple[bytes, str] | str:
+    """Resposta do /images: data[0].b64_json (ou data URL). Devolve (bytes, mime), ou o link https se vier só url."""
+    items = data.get("data") if isinstance(data, dict) else None
+    for it in items if isinstance(items, list) else []:
+        it = it if isinstance(it, dict) else {}
+        raw = it.get("b64_json") or it.get("image") or ""
+        url = it.get("url") or ""
+        if raw:
+            try:
+                return decode_image(raw)
+            except ValueError:
+                continue
+        if url.startswith("data:"):
+            try:
+                return decode_image(url)
+            except ValueError:
+                continue
+        if url.startswith("https://"):
+            return url
+    raise ProviderError("o modelo não devolveu nenhuma imagem; tente de novo ou escolha outro modelo de imagem em /settings")
+
+
+async def _request_image_endpoint(key: str, model: str, prompt: str, ratio: str) -> tuple[bytes, str]:
+    """Modelos só de imagem (rota /images). Mande só o prompt: o formato das referências nessa rota não foi verificado."""
+    body = {"model": model, "prompt": prompt, "n": 1, "aspect_ratio": ratio}
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.post(endpoints.URLS[endpoints.IMAGES], json=body, headers={"Authorization": f"Bearer {key}"})
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {}
+            payload = payload if isinstance(payload, dict) else {}
+            if resp.status_code != 200:
+                _, msg = _error_detail(payload)
+                raise _explain(resp.status_code, msg, model)
+            calllog.note_usage(payload.get("usage"))
+            got = extract_images_endpoint(payload)
+            if isinstance(got, str):  # só veio um link: baixa uma vez
+                dl = await client.get(got)
+                if dl.status_code != 200:
+                    raise ProviderError(f"não consegui baixar a imagem gerada ({dl.status_code})")
+                return decode_image(base64.b64encode(dl.content).decode())
+            return got
+    except httpx.HTTPError as e:
+        raise ProviderError(f"não consegui falar com o OpenRouter: {type(e).__name__}") from e
+    except ValueError as e:
+        raise ProviderError(str(e)) from e
+
+
 async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
     key = _api_key()
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
+    bad = endpoints.incompatible(model, "image")
+    if bad:
+        raise ProviderError(bad)
+    if endpoints.route_for(model, "image") == endpoints.IMAGES:
+        return await _request_image_endpoint(key, model, prompt, ratio)
     refs = refs[:MAX_REFS_SENT]
     urls = [data_url(d, m) for d, m in refs]
     links: list[str] = []
@@ -250,6 +307,9 @@ async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]],
                                         "imagem em /settings)")
                 urls = links
                 continue
+            # Modelo fora do registro que o OpenRouter manda para o /images: troca de rota (e o log mostra a mensagem original).
+            if not endpoints.is_known(model) and endpoints.wrong_route_hint(msg) == endpoints.IMAGES:
+                return await _request_image_endpoint(key, model, prompt, ratio)
             raise _explain(status, msg, model)
         raise ProviderError("o OpenRouter recusou o pedido de imagem")  # inalcançável: o laço sempre retorna ou levanta
     finally:
@@ -407,6 +467,9 @@ async def request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str
 
 
 async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str:
+    bad = endpoints.incompatible(model, "text")
+    if bad:
+        raise ProviderError(bad)
     key = _api_key()
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")

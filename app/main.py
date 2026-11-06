@@ -1829,6 +1829,30 @@ def postiz_network(identifier: str) -> str:
     return head if head in cnt.CHANNELS else ident
 
 
+def choose_postiz_channel(db: DB, project: GrowthProject, channel: str, mine: list[dict]) -> tuple[str, str]:
+    """Qual canal do Postiz leva a peça do projeto: (id, "") ou ("", motivo). O Postiz é um só; cada projeto tem o seu canal.
+
+    1) o campo "canal" da integração do projeto (nome ou id); 2) o canal da rede cujo nome cita o projeto;
+    3) o único canal da rede. Se ainda sobrar dúvida, o owner escolhe no Publicar.
+    """
+    net = cnt.CHANNELS[channel][0]
+    row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "postiz").one_or_none()
+    want = str(routines._config(row).get("canal", "")).strip().lower()
+    if want:
+        hit = ([x for x in mine if str(x.get("id")).lower() == want or str(x.get("nome", "")).strip().lower() == want]
+               or [x for x in mine if want in str(x.get("nome", "")).lower()])
+        if len(hit) == 1:
+            return str(hit[0]["id"]), ""
+        return "", (f'o canal "{want}" configurado em Integrações > Postiz '
+                    f'{"não foi achado entre os canais de " + net if not hit else "bate com mais de um canal de " + net}.')
+    named = [x for x in mine if project.name.strip().lower() in str(x.get("nome", "")).lower()]
+    pool = named or mine
+    if len(pool) == 1:
+        return str(pool[0]["id"]), ""
+    return "", (f"há {len(pool)} canais de {net} no Postiz; preencha o campo Canal em Integrações > Postiz deste projeto "
+                "ou escolha um no Publicar.")
+
+
 AUTO_NOTE = "Envio automático ao Postiz não saiu: "
 
 
@@ -1857,9 +1881,10 @@ async def _auto_send(db: DB, c: ContentItem, actor: str, ip: str) -> None:
         mine = [x for x in canais if postiz_network(x.get("rede", "")) == c.channel]
         if not mine:
             return why(f"nenhum canal de {cnt.CHANNELS[c.channel][0]} conectado no Postiz.")
-        if len(mine) > 1:
-            return why(f"há {len(mine)} canais de {cnt.CHANNELS[c.channel][0]} no Postiz; escolha um no Publicar.")
-        await _publish_piece(db, c, PublishIn(canal_id=str(mine[0]["id"])), _Actor(actor), ip)
+        pick, msg = choose_postiz_channel(db, project, c.channel, mine)
+        if not pick:
+            return why(msg)
+        await _publish_piece(db, c, PublishIn(canal_id=pick), _Actor(actor), ip)
     except HTTPException as e:
         why(str(e.detail))
 
@@ -1947,9 +1972,15 @@ async def _publish_piece(db: DB, c: ContentItem, body: PublishIn, auth: Auth, ip
         raw = {"para": c.recipient, "assunto": c.title or "(sem assunto)", "texto": c.body}
     elif cnt.CHANNELS.get(c.channel, ("", ""))[1] == "social":
         kind, operation = "postiz", "publicar_post"
-        if not body.canal_id.strip():
-            raise HTTPException(422, "escolha o canal do Postiz")
-        raw = {"canal_id": body.canal_id.strip(), "texto": c.body}
+        canal = body.canal_id.strip()
+        if not canal:  # sem canal escolhido: o do projeto (campo Canal da integração, nome citando o projeto ou o único)
+            res = await acts.run_operation(db, acts.Ticket(0, project.id, "owner", 0), "postiz", "listar_canais", {})
+            mine = [x for x in (res.get("result") or {}).get("canais", []) if not x.get("desativado")
+                    and postiz_network(x.get("rede", "")) == c.channel]
+            canal, msg = choose_postiz_channel(db, project, c.channel, mine) if mine else ("", "nenhum canal desta rede no Postiz")
+            if not canal:
+                raise HTTPException(422, f"escolha o canal do Postiz: {msg}")
+        raw = {"canal_id": canal, "texto": c.body}
         if media_ids := cnt.media_asset_ids(c):
             raw["midia_ids"] = ",".join(map(str, media_ids))
         if c.visual_format == "story":

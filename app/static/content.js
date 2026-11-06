@@ -115,13 +115,48 @@
     catch (e) { $("#pieces").innerHTML = `<div class="alert">${esc(e.message)}</div>`; }
   }
 
+  // Estado "processando": a peça ganha uma faixa de luz correndo, o botão vira spinner e a frase troca a cada etapa.
+  async function busy(id, steps, fn) {
+    const card = document.querySelector(`.cpiece[data-id="${id}"]`);
+    const dlg = $("#content-dialog")?.open ? $("#content-dialog") : null;
+    const btns = [...(card ? card.querySelectorAll("button") : []), ...(dlg ? dlg.querySelectorAll("#cf-actions button") : [])];
+    const was = btns.map((b) => b.disabled);
+    let line = null, timers = [];
+    btns.forEach((b) => { b.disabled = true; });
+    if (card) {
+      card.classList.add("busy");
+      line = document.createElement("div");
+      line.className = "cbusy"; line.setAttribute("role", "status");
+      line.innerHTML = `<i class="cspin"></i><span></span>`;
+      card.querySelector(".cpiece-foot")?.before(line);
+    }
+    const say = (t) => { if (line) line.querySelector("span").textContent = t; const m = dlg?.querySelector("#cf-busy"); if (m) m.textContent = t; };
+    if (dlg && !dlg.querySelector("#cf-busy")) dlg.querySelector("#cf-actions")?.insertAdjacentHTML("beforebegin", `<div class="cbusy" id="cf-busy" role="status"><i class="cspin"></i><span></span></div>`);
+    dlg?.querySelector("#cf-busy")?.removeAttribute("hidden");
+    say(steps[0]);
+    steps.slice(1).forEach((t, i) => timers.push(setTimeout(() => say(t), 900 * (i + 1))));
+    try { return await fn(); }
+    finally {
+      timers.forEach(clearTimeout);
+      card?.classList.remove("busy"); line?.remove();
+      dlg?.querySelector("#cf-busy")?.setAttribute("hidden", "");
+      btns.forEach((b, i) => { b.disabled = was[i]; });
+    }
+  }
+  const stepsFor = (id, approve) => {
+    if (!approve) return ["Rejeitando…"];
+    const it = items.find((x) => x.id === id);
+    if (it && it.group === "social") return ["Aprovando…", "Conferindo o canal no Postiz…", it.scheduled_at ? "Agendando no Postiz…" : "Publicando no Postiz…"];
+    return ["Aprovando…"];
+  };
+
   async function act(fn) {
     try { await fn(); } catch (e) { alert(e.message); return false; }
     await loadPieces(); loaded.agenda = false; loaded.saidas = false;
     if (activeTab() === "agenda") loadAgenda();
     return true;
   }
-  const decide = (id, approve, note = "") => act(() => api(`/api/content/${id}/decide`, { method: "POST", body: JSON.stringify({ approve, note }) }));
+  const decide = (id, approve, note = "") => act(() => busy(id, stepsFor(id, approve), () => api(`/api/content/${id}/decide`, { method: "POST", body: JSON.stringify({ approve, note }) })));
   const markSent = (id, link = "") => act(() => api(`/api/content/${id}/sent`, { method: "POST", body: JSON.stringify({ link }) }));
 
   // ---------- diálogo: ver, editar, aprovar, agendar, marcar enviada ----------
@@ -651,22 +686,28 @@
   // Publicar pelo OS: e-mail (SMTP, pede 2FA) ou rede social (Postiz, escolhe o canal).
   async function publish(id) {
     const it = items.find((x) => x.id === id); if (!it) return;
-    const body = {};
+    const send = (body) => busy(id, [it.group === "email" ? "Enviando o e-mail…" : "Enviando ao Postiz…"],
+      () => api(`/api/content/${id}/publish`, { method: "POST", body: JSON.stringify(body) }));
     try {
       if (it.group === "email") {
         const t = prompt(`Enviar este e-mail para ${it.recipient || "?"} agora?\nDigite o código 2FA para confirmar:`, "");
-        if (!t) return; body.totp = t;
+        if (!t) return;
+        await send({ totp: t });
       } else {
-        const list = await api(`/api/gprojects/${it.project}/postiz/canais`);
-        if (!list.length) return alert("Nenhum canal conectado no Postiz deste projeto.");
-        let pick = list[0];
-        if (list.length > 1) {
-          const n = prompt("Em qual canal publicar?\n" + list.map((c, i) => `${i + 1}) ${c.nome} (${c.rede})`).join("\n"), "1");
-          pick = list[Number(n) - 1]; if (!pick) return;
-        } else if (!confirm(`Publicar agora em ${pick.nome} (${pick.rede})?`)) return;
-        body.canal_id = pick.id;
+        // o servidor já sabe o canal do projeto; só pergunta se não houver como escolher sozinho
+        try { await send({}); }
+        catch (e) {
+          if (!/escolha o canal/i.test(e.message)) throw e;
+          const list = await api(`/api/gprojects/${it.project}/postiz/canais`);
+          if (!list.length) return alert("Nenhum canal conectado no Postiz deste projeto.");
+          let pick = list[0];
+          if (list.length > 1) {
+            const n = prompt(`${e.message}\n\nEm qual canal publicar?\n` + list.map((c, i) => `${i + 1}) ${c.nome} (${c.rede})`).join("\n"), "1");
+            pick = list[Number(n) - 1]; if (!pick) return;
+          } else if (!confirm(`Publicar agora em ${pick.nome} (${pick.rede})?`)) return;
+          await send({ canal_id: pick.id });
+        }
       }
-      await api(`/api/content/${id}/publish`, { method: "POST", body: JSON.stringify(body) });
     } catch (e) { alert(e.message); }
     await loadPieces(); sw?.reload?.();
   }

@@ -259,3 +259,20 @@ def test_agent_page_ativos_by_name_are_resolved(logged, monkeypatch):
     out = json.loads(cnt.block_slides({"paginas": [{"titulo": "A", "texto": "B", "ativos": ["tabuleiro", "nao existe"]}]}, s, pid("zombie-party")))
     s.close()
     assert out[0]["assets"] == [board]
+
+
+def test_page_windows_get_photos_even_when_cover_media_is_uploaded(logged, monkeypatch):
+    """Capa com mídia subida (não gerada): a janela de foto de cada página não pode ficar vazia."""
+    prov, seen = setup(logged, monkeypatch)
+    cid = agent_piece(media_source="upload")
+    s = dbmod.new_session()
+    c = s.get(dbmod.ContentItem, cid)
+    from app import media as med
+    med.set_media(s, c, PNG, "image/png", "upload", "")
+    s.commit()
+    s.close()
+    run(lay.autogen_pending())
+    item = logged.get("/api/content?project=zombie-party").json()["items"][0]
+    assert item["pipeline"]["state"] == "ready", item["pipeline"]
+    slides = json.loads(load(cid).slides)
+    assert all(x.get("photo_id") and x.get("image_id") for x in slides)

@@ -1141,15 +1141,21 @@ def render_piece(db, c: ContentItem, bg: LayoutAsset | None, template: LayoutAss
 
 
 def slide_wants_photo(db, c: ContentItem, s: dict) -> bool:
-    """A página ganha uma foto própria da IA: carrossel no modo template, mídia "gerar_imagem" e um template com janela de foto
-    (caixa {{midia}} do editor, janela do HTML ou arte transparente)."""
+    """A página ganha uma foto própria da IA: carrossel no modo template e um template com janela de foto (caixa {{midia}} do
+    editor, janela do HTML ou arte transparente). A mídia da capa pode ser qualquer uma (subida, link, vídeo): a janela da página
+    nunca fica vazia, desde que haja modelo de imagem. Só "nenhuma" (o owner não quer foto) deixa a janela de fora."""
     from . import media as med
     from . import motion
 
     if c.visual_format != "carrossel" or (c.image_mode or "template") != "template":
         return False
-    if med.norm_source(c.media_source) != "gerar_imagem":
+    if med.norm_source(c.media_source) == "nenhuma":
         return False
+    if med.norm_source(c.media_source) != "gerar_imagem":
+        try:
+            image_choice(db)  # a capa não é gerada por IA: só cria foto de página se o modelo de imagem estiver configurado
+        except ProviderError:
+            return False
     try:
         t = piece_template(db, c, s["role"])
     except ProviderError:

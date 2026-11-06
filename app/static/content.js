@@ -726,12 +726,16 @@
       if (!t) return;
       return publishNow(id, { totp: t }, btn);
     }
+    // o servidor já sabe o canal do projeto (campo Canal, nome citando o projeto, escolha lembrada); só pergunta se não souber
+    const sched = it.scheduled_at && parseLocal(it.scheduled_at) > new Date();
+    const r = await working({ btn, phases: [[0, "Conferindo o canal…"], [1200, sched ? "Agendando no Postiz…" : "Publicando no Postiz…"], [9000, "Quase lá…"]] },
+      () => api(`/api/content/${id}/publish`, { method: "POST", body: "{}" }));
+    if (r.ok) { await refreshAll(); sw?.reload?.(); toast(r.value.status === "sent" ? (sched ? "Agendada no Postiz." : "Publicada.") : (r.value.note || "O envio falhou."), r.value.status === "sent" ? "ok" : "err", { action: goTo(r.value) }); flash(cardOf(id), r.value.status === "sent" ? "ok" : "err"); return; }
+    if (!/escolha o canal/i.test(r.error.message)) { await refreshAll(); flash(cardOf(id), "err"); return toast(r.error.message, "err"); }
     let list;
-    try { list = await working({ btn, phases: [[0, "Buscando canais…"]] }, () => api(`/api/gprojects/${it.project}/postiz/canais`)); }
-    catch (e) { return toast(e.message, "err"); }
-    if (!list.ok) return toast(list.error.message, "err");
-    const canais = list.value.filter((c) => !c.desativado && (c.rede || "").split("-")[0] === it.channel);
-    const pool = canais.length ? canais : list.value;
+    try { list = await api(`/api/gprojects/${it.project}/postiz/canais`); } catch (e) { return toast(e.message, "err"); }
+    const canais = list.filter((c) => !c.desativado && (c.rede || "").split("-")[0] === it.channel);
+    const pool = canais.length ? canais : list;
     if (!pool.length) return toast("Nenhum canal conectado no Postiz deste projeto.", "err");
     pickChannel(it, pool);
   }

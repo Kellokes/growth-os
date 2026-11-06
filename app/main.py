@@ -1854,6 +1854,12 @@ def pick_postiz_channel(db: DB, project: GrowthProject, channel: str, mine: list
     Um só canal da rede: ele. Vários: o que o owner já escolheu antes neste projeto (guardado na integração) e,
     sem isso, o único cujo nome cita o projeto (ex.: "A Ilha Jogo" no projeto a-ilha).
     """
+    row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "postiz").one_or_none()
+    want = str(routines._config(row).get("canal", "")).strip().lower()
+    if want:  # campo "Canal" da integração: manda mais que tudo (nome ou id, aceita parte do nome)
+        hit = ([x for x in mine if str(x.get("id")).lower() == want or str(x.get("nome", "")).strip().lower() == want]
+               or [x for x in mine if want in str(x.get("nome", "")).lower()])
+        return hit[0] if len(hit) == 1 else None
     if len(mine) == 1:
         return mine[0]
     saved = routines._config(db.query(Integration).filter(Integration.project_id == project.id,

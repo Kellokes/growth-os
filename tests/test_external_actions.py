@@ -429,3 +429,13 @@ def test_several_channels_of_one_network_pick_by_project(logged, monkeypatch):
     assert logged.post(f"/api/content/{p1}/publish", json={"canal_id": "z1", "lembrar": True}).json()["status"] == "sent"
     r2 = logged.post(f"/api/content/{p2}/decide", json={"approve": True}).json()
     assert r2["status"] == "sent" and [c[1]["canal_id"] for c in calls if c[0] == "publicar_post"] == ["z1", "z1"]
+
+
+def test_postiz_canal_field_wins_over_name(logged, monkeypatch):
+    from app import content as cnt
+    (a,) = make_projects("A Ilha")
+    connect(a, "postiz", {**POSTIZ, "canal": "take one"}, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "t", "nome": "Take One", "rede": "instagram"}, {"id": "i", "nome": "A Ilha Jogo", "rede": "instagram"}])
+    (p,) = _pieces(a, dict(channel="instagram", body="x", status="pending", scheduled_at=cnt.local_now() + timedelta(days=1)))
+    assert logged.post(f"/api/content/{p}/decide", json={"approve": True}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["t"]

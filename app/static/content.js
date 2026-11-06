@@ -400,6 +400,10 @@
       ${can ? `<div class="row"><button class="btn small primary" type="button" data-img="gen" ${it.media_generating ? "disabled" : ""}>${esc(again)}</button>
         ${action === "upload" && it.media_file_url ? '<button class="btn small" type="button" data-img="compose">Montar de novo</button>' : ""}
         <button class="btn small ghost" type="button" data-img="up" title="${tplMode ? "A imagem entra no layout escolhido. Sem layout, ela substitui a imagem final como está." : "Sem layout: a imagem vai como está e substitui a final."}">Subir imagem</button></div>` : ""}
+      ${can && it.last_prompt ? `<details class="cf-lastprompt"><summary>Prompt usado na imagem (editar e gerar outra versão)</summary>
+        <textarea id="cf-lastprompt" rows="8" maxlength="6000">${esc(it.last_prompt)}</textarea>
+        <div class="row"><button class="btn small" type="button" data-img="genprompt">Gerar com este prompt</button></div>
+        <small class="muted">Vale só para a capa e substitui o prompt montado. As imagens de referência continuam indo junto. Cobra 1 imagem.</small></details>` : ""}
       ${it?.video_url ? `<video class="cimg big" src="${esc(it.video_url)}" controls playsinline preload="metadata"></video>` : ""}
       ${can && it.can_video ? `<div class="row"><button class="btn small" type="button" data-vid="gen">${it.video_url ? "Montar o vídeo de novo" : "Montar vídeo animado"}</button>
         ${it.video_url ? '<button class="btn small ghost" type="button" data-vid="del">Apagar vídeo</button>' : ""}</div>
@@ -421,7 +425,8 @@
       if (what === "gen" && tplMode && src === "link" && !$("#cf-url").value.trim()) { toast("Cole o link do arquivo.", "info"); return refresh(); }
       const r = await working({ btn: b, scope: $("#cf-image"), phases: video ? [[0, "Pedindo o vídeo…"], [12000, "Renderizando o vídeo… (até 2 min)"]] : [[0, "Montando a arte…"], [15000, "Ainda montando… (até 1 min)"]] }, () => {
         if (what === "gen" && tplMode && src === "link") return api(`/api/content/${current.id}/media/link`, { method: "POST", body: JSON.stringify({ url: $("#cf-url").value.trim() }) });
-        return api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify({}) });
+        const edited = what === "genprompt" ? ($("#cf-lastprompt")?.value || "").trim() : "";
+        return api(`/api/content/${current.id}/image`, { method: "POST", body: JSON.stringify(edited ? { prompt: edited } : {}) });
       });
       if (r.ok) { current = r.value; toast(video ? "Vídeo pronto." : "Arte pronta.", "ok"); } else toast(r.error.message, "err");
     } catch (e) { toast(e.message, "err"); }

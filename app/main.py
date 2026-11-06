@@ -2120,6 +2120,7 @@ def reopen_content(cid: int, request: Request, auth: Auth = Depends(current_auth
 
 class PieceImageIn(BaseModel):
     feedback: str = Field(default="", max_length=500)
+    prompt: str = Field(default="", max_length=6000)  # prompt editado pelo owner: vale no lugar do montado (só a capa)
 
 
 class PieceUploadIn(BaseModel):
@@ -2135,7 +2136,7 @@ async def content_generate_image(cid: int, body: PieceImageIn, request: Request,
         raise HTTPException(409, "só dá para mudar a imagem de uma peça em aprovação ou aprovada")
     pipeline.reset(c)
     try:
-        await lay.generate_piece_image(db, c, body.feedback)
+        await lay.generate_piece_image(db, c, body.feedback, body.prompt)
     except ProviderError as e:
         c.image_error = str(e)[:500]
         db.commit()

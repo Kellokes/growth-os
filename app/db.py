@@ -115,6 +115,9 @@ class AiCall(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)  # custo em dólar que o próprio OpenRouter informou
+    # Só com GOS_LOG_PROMPTS=true: o prompt enviado e o retorno inteiros (sem chaves/tokens). Vazio no modo normal.
+    prompt_full: Mapped[str] = mapped_column(Text, default="")
+    response_full: Mapped[str] = mapped_column(Text, default="")
 
 
 # ---------- etapa 3: agentes, KPIs e plano diário ----------
@@ -531,7 +534,8 @@ _NEW_COLUMNS = {
         "media_job": "VARCHAR(120) NOT NULL DEFAULT ''",
         "asset_ids": "TEXT NOT NULL DEFAULT ''",
     },
-    "ai_calls": {"input_tokens": "INTEGER NULL", "output_tokens": "INTEGER NULL", "cost_usd": "FLOAT NULL"},
+    "ai_calls": {"input_tokens": "INTEGER NULL", "output_tokens": "INTEGER NULL", "cost_usd": "FLOAT NULL",
+                 "prompt_full": "TEXT NOT NULL DEFAULT ''", "response_full": "TEXT NOT NULL DEFAULT ''"},
     "layout_assets": {
         "html": "TEXT NOT NULL DEFAULT ''", "plate_id": "INTEGER NULL",
         "name": "VARCHAR(80) NOT NULL DEFAULT ''", "role": "VARCHAR(12) NOT NULL DEFAULT ''",

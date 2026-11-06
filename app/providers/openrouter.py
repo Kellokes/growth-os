@@ -94,6 +94,7 @@ class OpenRouterProvider(Provider):
             body["reasoning"] = {"enabled": False}
         elif self.reasoning:
             body["reasoning"] = {"effort": self.reasoning}
+        calllog.note_prompt(messages=messages)
 
         status, msg = 0, ""
         async with httpx.AsyncClient(timeout=s.provider_timeout_seconds) as client:
@@ -117,7 +118,9 @@ class OpenRouterProvider(Provider):
                     status = code
                 if status == 200:
                     calllog.note_usage((data or {}).get("usage"))
-                    return self._content(data)
+                    content = self._content(data)
+                    calllog.note_reply(content)
+                    return content
                 if status not in RETRYABLE:
                     break
         if status == 0:

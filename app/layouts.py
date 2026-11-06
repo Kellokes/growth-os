@@ -313,6 +313,7 @@ async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]],
                 "image_config": {"aspect_ratio": ratio},
                 "usage": {"include": True},
             }
+            calllog.note_prompt(messages=body["messages"])
             status, payload = await _post_chat(key, body)
             if status == 200:
                 calllog.note_usage(payload.get("usage"))
@@ -498,6 +499,7 @@ async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> st
     body = {"model": model, "messages": [{"role": "user", "content": [
         {"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url(*image)}}]}],
             "usage": {"include": True}}
+    calllog.note_prompt(messages=body["messages"])
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             resp = await client.post(OPENROUTER_URL, json=body, headers={"Authorization": f"Bearer {key}"})
@@ -517,6 +519,7 @@ async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> st
         content = ""
     if isinstance(content, list):
         content = "".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+    calllog.note_reply(content or "")
     return str(content or "")
 
 

@@ -9,6 +9,7 @@
   let cleared = 0;
   try { cleared = Number(localStorage.getItem(KEY)) || 0; } catch { /* sem storage */ }
   let open = false, filter = "", timer = null, openId = null;
+  const full = new Map();  // id → {prompt_full, response_full} já buscados (GOS_LOG_PROMPTS=true)
 
   const when = (iso) => new Date(iso + "Z").toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const dur = (ms) => ms == null ? "…" : ms < 1000 ? `${ms} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`;
@@ -44,8 +45,33 @@
         d.append(el("dt", null, k), el("dd", null, v));
       }
       item.append(d);
+      if (c.has_full) item.append(fullBox(c.id));
     }
     return item;
+  }
+
+  // Prompt enviado e retorno completos: só nas chamadas gravadas com GOS_LOG_PROMPTS=true.
+  function fullBox(id) {
+    const box = el("div", "calllog-full");
+    const got = full.get(id);
+    if (!got) {
+      const b = el("button", "btn small ghost", "Ver prompt e retorno completos");
+      b.type = "button";
+      b.onclick = async () => {
+        b.disabled = true; b.textContent = "carregando…";
+        try { full.set(id, await api(`/api/calls/${id}`)); } catch (e) { alert(e.message); }
+        draw(last);
+      };
+      box.append(b);
+      return box;
+    }
+    for (const [k, v] of [["Prompt enviado", got.prompt_full], ["Retorno do modelo", got.response_full]]) {
+      const det = el("details");
+      det.open = true;
+      det.append(el("summary", null, `${k} · ${(v || "").length} caracteres`), el("pre", null, v || "(vazio)"));
+      box.append(det);
+    }
+    return box;
   }
 
   let last = null;
@@ -57,6 +83,7 @@
     const bits = [];
     if (data.running) bits.push(`${data.running} em andamento`);
     if (data.failed_24h) bits.push(`${data.failed_24h} com erro nas últimas 24 h`);
+    if (data.log_prompts) bits.push("gravando prompts completos");
     $("#calllog-sum").textContent = bits.join(" · ") || (data.calls.length ? "tudo certo" : "nenhuma chamada ainda");
     const top = data.calls[0];
     $("#calllog-last").textContent = top ? `${top.activity_label || top.activity} · ${STATUS[top.status] || top.status}` : "";

@@ -34,6 +34,7 @@ from . import media as med
 from . import assets as ast
 from . import missions
 from . import endpoints, modelcfg
+from . import pipeline
 from . import routines
 from . import projects as proj
 from . import reset as rst
@@ -1652,7 +1653,7 @@ def _content_or_404(db: DB, cid: int) -> ContentItem:
 
 def _content_json(db: DB, c: ContentItem) -> dict:
     p = db.get(GrowthProject, c.project_id)
-    return cnt.item_json(c, p.slug if p else "")
+    return cnt.item_json(c, p.slug if p else "", db=db)
 
 
 def _scope(db: DB, project: str) -> int | None:
@@ -1681,7 +1682,7 @@ def list_content(project: str = "all", days: int = 30, auth: Auth = Depends(curr
     )
     projects = _projects_by_id(db)
     now = cnt.local_now()
-    items = [cnt.item_json(c, projects[c.project_id].slug if c.project_id in projects else "", now)
+    items = [cnt.item_json(c, projects[c.project_id].slug if c.project_id in projects else "", now, db)
              for c in open_rows + closed]
     counts: dict[str, int] = {}
     for it in items:
@@ -1799,6 +1800,8 @@ def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Dep
     _apply_content(c, body, db)
     if c.status == "failed":
         c.status, c.note = "approved", ""
+    db.commit()
+    pipeline.reset(c)  # o owner mexeu na peça: as partes que falharam ganham novas tentativas
     db.commit()
     if {"title", "body", "img_title", "img_text", "slides"} & set(body.model_dump(exclude_unset=True)):
         lay.rerender_piece(db, c)  # o texto da imagem mudou: refaz a imagem final, com o mesmo fundo
@@ -2130,6 +2133,7 @@ async def content_generate_image(cid: int, body: PieceImageIn, request: Request,
     c = _content_or_404(db, cid)
     if c.status not in cnt.EDITABLE:
         raise HTTPException(409, "só dá para mudar a imagem de uma peça em aprovação ou aprovada")
+    pipeline.reset(c)
     try:
         await lay.generate_piece_image(db, c, body.feedback)
     except ProviderError as e:
@@ -2137,6 +2141,17 @@ async def content_generate_image(cid: int, body: PieceImageIn, request: Request,
         db.commit()
         raise HTTPException(422, str(e)) from e
     audit(db, auth.user.username, "content_image", f"#{c.id} {c.visual_format}", client_ip(request))
+    return _content_json(db, c)
+
+
+@app.post("/api/content/{cid}/complete")
+async def content_complete(cid: int, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """O owner manda completar a peça agora: refaz só as partes que faltam (texto, capa, páginas, CTA), zerando as tentativas."""
+    c = _content_or_404(db, cid)
+    if c.status not in cnt.EDITABLE:
+        raise HTTPException(409, "só dá para completar uma peça em aprovação ou aprovada")
+    await pipeline.run_piece(db, c, force=True)
+    audit(db, auth.user.username, "content_complete", f"#{c.id}", client_ip(request))
     return _content_json(db, c)
 
 
@@ -2301,7 +2316,7 @@ def content_agenda(project: str = "all", days: int = 14, auth: Auth = Depends(cu
         q = q.filter(ContentItem.project_id == pid)
     for c in q.all():
         events.append({"kind": "content", "at": c.scheduled_at.isoformat(timespec="minutes"),
-                       "item": cnt.item_json(c, slug(c.project_id), now)})
+                       "item": cnt.item_json(c, slug(c.project_id), now, db)})
     aq = db.query(Automation).filter(Automation.enabled.is_(True))
     if pid is not None:
         aq = aq.filter(Automation.project_id == pid)

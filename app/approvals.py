@@ -170,6 +170,12 @@ def decide_content(db: DB, c: ContentItem, approve: bool, note: str = "") -> Non
         raise ApprovalError("este conteúdo não está aguardando aprovação")
     if approve and cnt.needs_image(c):
         raise ApprovalError("esta peça é visual e ainda não tem imagem: gere ou suba a imagem antes de aprovar")
+    if approve:
+        from . import pipeline  # import tardio: pipeline importa layouts, que importa o banco
+
+        missing = pipeline.blockers(db, c)
+        if missing:
+            raise ApprovalError("a peça do agente ainda não está completa: " + "; ".join(missing)[:400])
     c.status = "approved" if approve else "rejected"
     c.note = "" if approve else note.strip()
     c.decided_at = utcnow()

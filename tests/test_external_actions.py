@@ -303,34 +303,82 @@ def test_publish_approved_content_by_email_and_social(logged, monkeypatch):
     assert logged.post(f"/api/content/{zid}/publish", json={}).status_code == 422
 
 
-def test_approving_scheduled_social_piece_schedules_it_in_postiz(logged, monkeypatch):
-    from datetime import timedelta
-    from app import content as cnt
-    (a,) = make_projects("Zombie Party")
-    connect(a, "postiz", POSTIZ, monkeypatch)
+def _fake_postiz(monkeypatch, canais):
     calls = []
 
     async def fake_run(self, ctx, op, params):
         calls.append((op, params))
         if op == "listar_canais":
-            return {"canais": [{"id": "ig1", "nome": "IG", "rede": "instagram"}, {"id": "li1", "nome": "LI", "rede": "linkedin"}]}
-        return {"tipo": "schedule", "canal": "IG", "ref": "p1"}
+            return {"canais": canais}
+        return {"tipo": "schedule" if op == "agendar_post" else "now", "canal": "IG", "ref": "p1"}
 
     monkeypatch.setattr(senders.Postiz, "run", fake_run)
+    return calls
+
+
+def _pieces(a, *rows):
     s = dbmod.new_session()
-    future = cnt.local_now() + timedelta(days=2)
-    rows = [dbmod.ContentItem(project_id=pid(a), channel="instagram", body="A", status="pending", scheduled_at=future),
-            dbmod.ContentItem(project_id=pid(a), channel="instagram", body="B", status="pending"),  # sem data
-            dbmod.ContentItem(project_id=pid(a), channel="x", body="C", status="pending", scheduled_at=future)]  # sem canal X
-    s.add_all(rows)
+    objs = [dbmod.ContentItem(project_id=pid(a), **r) for r in rows]
+    s.add_all(objs)
     s.commit()
-    ids = [r.id for r in rows]
+    ids = [o.id for o in objs]
     s.close()
+    return ids
+
+
+def test_approving_social_piece_sends_it_to_postiz(logged, monkeypatch):
+    from app import content as cnt
+    (a,) = make_projects("Zombie Party")
+    connect(a, "postiz", POSTIZ, monkeypatch)
+    # O Instagram sem Facebook chega do Postiz como "instagram-standalone"; canal desativado não conta.
+    calls = _fake_postiz(monkeypatch, [{"id": "ig1", "nome": "IG", "rede": "instagram-standalone"},
+                                       {"id": "ig0", "nome": "IG velho", "rede": "instagram", "desativado": True},
+                                       {"id": "li1", "nome": "LI", "rede": "linkedin-page"}])
+    future = cnt.local_now() + timedelta(days=2)
+    ids = _pieces(a, dict(channel="instagram", body="A", status="pending", scheduled_at=future),
+                  dict(channel="instagram", body="B", status="pending"),  # sem data: publica agora
+                  dict(channel="linkedin", body="L", status="pending", scheduled_at=future),
+                  dict(channel="x", body="C", status="pending", scheduled_at=future))  # sem canal X
     out = [logged.post(f"/api/content/{i}/decide", json={"approve": True}).json() for i in ids]
-    assert out[0]["status"] == "sent"  # agendado no Postiz sozinho
-    ops = [c for c in calls if c[0] == "agendar_post"]
-    assert len(ops) == 1 and ops[0][1]["canal_id"] == "ig1" and ops[0][1]["texto"] == "A"
-    assert out[1]["status"] == "approved" and out[2]["status"] == "approved"  # ficam para o botão Publicar
+    assert [o["status"] for o in out[:3]] == ["sent", "sent", "sent"]
+    sched = [c[1] for c in calls if c[0] == "agendar_post"]
+    now = [c[1] for c in calls if c[0] == "publicar_post"]
+    assert [(x["canal_id"], x["texto"]) for x in sched] == [("ig1", "A"), ("li1", "L")]
+    assert [(x["canal_id"], x["texto"]) for x in now] == [("ig1", "B")]
+    assert out[3]["status"] == "approved" and "nenhum canal de X" in out[3]["note"]  # motivo visível; Publicar segue valendo
+
+
+def test_bulk_approval_and_sweep_send_to_postiz(logged, monkeypatch):
+    from app import content as cnt
+    from app import main
+    (a,) = make_projects("Zombie Party")
+    connect(a, "postiz", POSTIZ, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "ig1", "nome": "IG", "rede": "instagram"}])
+    future = cnt.local_now() + timedelta(days=1)
+    bulk, stuck, two = _pieces(a, dict(channel="instagram", body="Lote", status="pending", scheduled_at=future),
+                               dict(channel="instagram", body="Preso", status="approved", scheduled_at=future),
+                               dict(channel="instagram", body="Dois", status="approved", scheduled_at=future))
+    r = logged.post("/api/approvals/decide", json={"items": [{"kind": "content", "ref_id": bulk}], "approve": True})
+    assert r.status_code == 200
+    assert [c[1]["texto"] for c in calls if c[0] == "agendar_post"] == ["Lote"]
+    # Aprovada antes (ou por outro caminho) e nunca enviada: a varredura do agendador manda; não repete.
+    s = dbmod.new_session()
+    s.get(dbmod.ContentItem, two).status = "sent"
+    s.commit()
+    s.close()
+    asyncio.run(main.auto_send_pending())
+    asyncio.run(main.auto_send_pending())
+    assert [c[1]["texto"] for c in calls if c[0] == "agendar_post"] == ["Lote", "Preso"]
+    s = dbmod.new_session()
+    assert s.get(dbmod.ContentItem, stuck).status == "sent"
+    s.close()
+
+
+def test_postiz_network_mapping():
+    from app.main import postiz_network
+    assert postiz_network("instagram-standalone") == "instagram"
+    assert postiz_network("linkedin-page") == "linkedin"
+    assert postiz_network("x") == "x" and postiz_network("threads") == "threads"
 
 
 def test_failed_publish_marks_content_failed_and_can_retry(logged, monkeypatch):

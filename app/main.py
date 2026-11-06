@@ -97,9 +97,11 @@ async def lifespan(_app: FastAPI):
     finally:
         db.close()
     scheduler = asyncio.create_task(growth.scheduler_loop()) if get_settings().scheduler_enabled else None
+    sender = asyncio.create_task(_auto_send_loop()) if get_settings().scheduler_enabled else None
     yield
-    if scheduler:
-        scheduler.cancel()
+    for t in (scheduler, sender):
+        if t:
+            t.cancel()
 
 
 app = FastAPI(title="Growth OS", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -1052,7 +1054,7 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
     """Aprova ou rejeita cartões de qualquer tipo. Ação externa de risco alto exige o código 2FA (consumido uma vez)."""
     ip = client_ip(request)
     seen: set[tuple[str, int]] = set()
-    done, errors, to_run = [], [], []
+    done, errors, to_run, to_send = [], [], [], []
     totp_ok: bool | None = None
     for it in body.items:
         key = (it.kind, it.ref_id)
@@ -1071,6 +1073,8 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
             elif it.kind == "content":
                 c = _content_or_404(db, it.ref_id)
                 appr.decide_content(db, c, body.approve, body.note)
+                if body.approve:
+                    to_send.append(c)
                 detail = f"#{c.id} {c.channel}"
             elif it.kind == "mission":
                 m = db.get(Mission, it.ref_id)
@@ -1108,6 +1112,8 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
         await acts.execute_approved(db, a)
         audit(db, auth.user.username, "action_executed", f"#{a.id} {a.integration}.{a.operation} -> {a.status}", ip)
         growth.action_settled(db, a)  # feita ou falhou: a tarefa que esperava continua com o desfecho
+    for c in to_send:  # peça de rede social aprovada: vai sozinha ao Postiz (agenda ou publica)
+        await _auto_send(db, c, auth.user.username, ip)
     return {"decided": done, "errors": errors,
             "actions": [{"id": a.id, "status": a.status, "error": a.error} for a in to_run]}
 
@@ -1810,30 +1816,96 @@ async def decide_content(cid: int, body: ContentDecideIn, request: Request,
     ip = client_ip(request)
     audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}", ip)
     if body.approve:
-        await _auto_schedule(db, c, auth, ip)
+        await _auto_send(db, c, auth.user.username, ip)
     return _content_json(db, c)
 
 
-async def _auto_schedule(db: DB, c: ContentItem, auth: Auth, ip: str) -> None:
-    """Aprovou uma peça de rede social com data futura: já agenda no Postiz (ele publica na hora marcada).
+def postiz_network(identifier: str) -> str:
+    """Canal do OS para um provedor do Postiz: "instagram-standalone" e "instagram" são Instagram, "linkedin-page" é LinkedIn..."""
+    ident = str(identifier or "").strip().lower()
+    if ident in cnt.CHANNELS:
+        return ident
+    head = ident.split("-")[0]
+    return head if head in cnt.CHANNELS else ident
 
-    Sem data, sem Postiz ligado ou sem um canal único da rede, nada acontece: o botão Publicar continua valendo.
+
+AUTO_NOTE = "Envio automático ao Postiz não saiu: "
+
+
+async def _auto_send(db: DB, c: ContentItem, actor: str, ip: str) -> None:
+    """Peça de rede social aprovada vai sozinha ao Postiz: com data futura, agenda; sem data (ou já passou), publica agora.
+
+    Se não der (Postiz desligado, nenhum canal da rede ou mais de um), a peça fica aprovada com o motivo na nota,
+    e o botão Publicar continua valendo.
     """
-    if cnt.CHANNELS.get(c.channel, ("", ""))[1] != "social" or not (c.scheduled_at and c.scheduled_at > cnt.local_now()):
+    if c.status != "approved" or cnt.CHANNELS.get(c.channel, ("", ""))[1] != "social" or cnt.needs_image(c):
         return
     project = db.get(GrowthProject, c.project_id)
-    if "postiz" not in acts._ready(db, project):
-        return
-    try:
-        res = await acts.run_operation(db, acts.Ticket(0, project.id, "owner", 0), "postiz", "listar_canais", {})
-        mine = [x for x in (res.get("result") or {}).get("canais", []) if x.get("rede") == c.channel]
-        if len(mine) != 1:
-            return  # nenhum canal dessa rede, ou mais de um: o owner escolhe no Publicar
-        await _publish_piece(db, c, PublishIn(canal_id=str(mine[0]["id"])), auth, ip)
-    except HTTPException as e:
-        c.note = f"Agendamento automático não saiu: {e.detail}"[:1000]
+
+    def why(msg: str) -> None:
+        c.note = (AUTO_NOTE + msg)[:1000]
         cnt.touch(c)
         db.commit()
+
+    if "postiz" not in acts._ready(db, project):
+        return why("a integração Postiz não está ligada e pronta neste projeto (Automações > Integrações).")
+    try:
+        res = await acts.run_operation(db, acts.Ticket(0, project.id, "owner", 0), "postiz", "listar_canais", {})
+        if res.get("status") != "done":
+            return why(res.get("message") or "não consegui listar os canais do Postiz.")
+        canais = [x for x in (res.get("result") or {}).get("canais", []) if not x.get("desativado")]
+        mine = [x for x in canais if postiz_network(x.get("rede", "")) == c.channel]
+        if not mine:
+            return why(f"nenhum canal de {cnt.CHANNELS[c.channel][0]} conectado no Postiz.")
+        if len(mine) > 1:
+            return why(f"há {len(mine)} canais de {cnt.CHANNELS[c.channel][0]} no Postiz; escolha um no Publicar.")
+        await _publish_piece(db, c, PublishIn(canal_id=str(mine[0]["id"])), _Actor(actor), ip)
+    except HTTPException as e:
+        why(str(e.detail))
+
+
+async def _auto_send_loop() -> None:
+    while True:
+        try:
+            await auto_send_pending()
+        except Exception:  # noqa: BLE001 - o laço nunca pode morrer
+            growth.log.exception("envio automático ao Postiz")
+        await asyncio.sleep(60)
+
+
+class _Actor:
+    """Quem dispara um envio fora de uma requisição (aprovação em lote, varredura do agendador)."""
+
+    def __init__(self, username: str, user=None):
+        self.user = user or type("U", (), {"username": username})()
+
+
+async def auto_send_pending() -> None:
+    """Varredura do agendador: peça social aprovada que nunca foi ao Postiz vai agora.
+
+    Pega aprovações por qualquer caminho (lote, peça criada pelo owner, data ou imagem acertadas depois).
+    Só olha peças com data futura ou aprovadas nas últimas 24 h, e pula as que já tentaram (há uma ação)
+    ou já têm o motivo de não ter ido na nota.
+    """
+    db = new_session()
+    try:
+        social = [k for k, v in cnt.CHANNELS.items() if v[1] == "social"]
+        since = utcnow() - timedelta(hours=24)
+        rows = (db.query(ContentItem)
+                .filter(ContentItem.status == "approved", ContentItem.channel.in_(social),
+                        or_(ContentItem.scheduled_at > cnt.local_now(), ContentItem.decided_at >= since))
+                .order_by(ContentItem.id).limit(20).all())
+        for c in rows:
+            if (c.note or "").startswith(AUTO_NOTE) or cnt.needs_image(c):
+                continue
+            if db.query(Action).filter(Action.idempotency_key.like(f"conteudo-{c.id}-%")).count():
+                continue
+            try:
+                await _auto_send(db, c, "agendador", "")
+            except Exception:  # noqa: BLE001 - uma peça com problema não trava as outras
+                growth.log.exception("envio automático da peça #%s", c.id)
+    finally:
+        db.close()
 
 
 class PublishIn(BaseModel):

@@ -1004,6 +1004,10 @@ def clean_slides(raw) -> list[dict]:
             item["image_id"] = s["image_id"]
         if isinstance(s.get("photo_id"), int):
             item["photo_id"] = s["photo_id"]
+        if isinstance(s.get("assets"), list):
+            ids = [int(x) for x in s["assets"] if isinstance(x, int)][:ast.MAX_SENT]
+            if ids:
+                item["assets"] = ids
         if str(s.get("media") or s.get("imagem") or "").strip():
             item["media"] = str(s.get("media") or s.get("imagem")).strip()[:600]
         if item["role"] == "cta":
@@ -1172,6 +1176,45 @@ def build_slide_photo_prompt(project_name: str, brief: str, c: ContentItem, s: d
     return "\n".join(x for x in lines if x)
 
 
+def build_free_slide_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, mode: str) -> str:
+    subject = (s.get("media") or "").strip() or " — ".join(x for x in (s.get("title"), s.get("text")) if x) or c.media or c.title
+    lines = [
+        f"Create a finished carousel slide image ({ratio}) for a social media post of the brand \"{project_name}\".",
+        f"Slide subject: {subject[:700]}",
+        f"Carousel theme (keep the same look across all slides): {(c.image_prompt.strip() or c.media.strip() or c.title or c.body)[:400]}",
+        "ONE single continuous scene. Use the attached assets as the real objects of the game/brand: reproduce them faithfully, "
+        "never invent a different board, card, character or logo." if mode == "reference" else "",
+        f"Brand style brief: {brief.strip()[:800]}" if brief.strip() else "",
+        "Do not write any headline or sentence on the image; no garbled letters.",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+async def generate_free_slide(db, c: ContentItem, s: dict, mode: str, feedback: str = "") -> None:
+    """Página do carrossel sem template (modos reference/prompt): a imagem inteira sai do modelo, com os ativos certos da página.
+    Guarda em s["image_id"]."""
+    choice = image_choice(db, log=True, project_id=c.project_id)
+    project = db.get(GrowthProject, c.project_id)
+    name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
+    picked = ast.for_slide(db, c, s)
+    if mode == "reference":
+        picked += [a for a in style_refs(db, c.project_id) if a not in picked]
+        picked = (picked or [a for a in ast.project_assets(db, c.project_id) if ast.is_image(a)])[:MAX_REFS_SENT]
+        if not picked:
+            raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
+    ratio = FORMATS[c.visual_format][1]
+    prompt = _with_assets(build_free_slide_prompt(name, brief, c, s, ratio, mode), picked, 1, db, c)
+    with calllog.context("image", c.project_id):
+        data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
+    a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime=mime, data=data,
+                    model=choice.model, prompt=prompt, role=s["role"])
+    db.add(a)
+    db.flush()
+    if s.get("image_id") and (old := db.get(LayoutAsset, s["image_id"])) is not None:
+        db.delete(old)
+    s["image_id"] = a.id
+
+
 def _slide_layers(db, t: LayoutAsset, s: dict, cover_bg):
     """(fundo, foto) de uma página: a arte do template com a foto da página na janela; sem arte, a foto vira o fundo."""
     from . import motion
@@ -1229,9 +1272,8 @@ async def generate_slide_photo(db, c: ContentItem, s: dict, feedback: str = "") 
     w, h = CANVAS[c.visual_format]
     ratio = nearest_ratio(box["w"] * w, box["h"] * h) if box else FORMATS[c.visual_format][1]
     choice = image_choice(db, log=True, project_id=c.project_id)
-    page_text = " ".join(str(s.get(k) or "") for k in ("title", "text", "media"))
     await ast.auto_pick(db, c)
-    picked = ast.for_piece(db, c, extra=page_text)
+    picked = ast.for_slide(db, c, s)  # o que a página pede: falou em tabuleiro, vai o tabuleiro
     prompt = build_slide_photo_prompt(name, brief, c, s, ratio, feedback)
     if picked:
         prompt += "\n" + ast.prompt_lines(picked, 1).replace("reproduce them faithfully when they appear",
@@ -1459,7 +1501,10 @@ async def _generate_free_image(db, c: ContentItem, mode: str, feedback: str = ""
             rows = ast.for_piece(db, c, MAX_REFS_SENT)
             rows += [a for a in style_refs(db, c.project_id) if a not in rows]
         rows = [a for a in rows if a is not None and a.kind == "reference" and a.project_id == c.project_id
-                and ast.is_image(a)][:MAX_REFS_SENT]
+                and ast.is_image(a)]
+        if not rows and not c.ref_id:  # nada combinou com o assunto: vai a biblioteca do projeto
+            rows = [a for a in ast.project_assets(db, c.project_id) if ast.is_image(a)]
+        rows = rows[:MAX_REFS_SENT]
         if not rows:
             raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
         refs = [(a.data, a.mime) for a in rows]

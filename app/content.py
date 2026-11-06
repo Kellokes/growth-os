@@ -151,7 +151,8 @@ Posts visuais ganham a imagem pronta do sistema antes de você aprovar: o fundo 
 cena, sem texto) e o texto da imagem ("titulo_imagem", "texto_imagem") entra no template fixo do projeto. Se a peça pedir uma imagem livre (sem o template), use "modo_imagem": "prompt" e
 descreva a imagem inteira em "prompt_imagem"; o owner pode trocar o modo e editar o prompt antes de aprovar.
 Carrossel roda em três layouts: a capa ("titulo_imagem", "texto_imagem"), as páginas do meio ("paginas", de 3 a 8, cada uma com
-"titulo", "texto" curto e "imagem": a cena da foto daquela página, em inglês, sem texto escrito) e o CTA final ("cta", com
+"titulo", "texto" curto, "imagem": a cena da foto daquela página, em inglês, sem texto escrito, e "ativos": os nomes exatos dos
+ativos do projeto que aquela página mostra, ex.: página sobre o tabuleiro leva o tabuleiro, sobre as cartas leva as cartas) e o CTA final ("cta", com
 "titulo", "texto" e "imagem"). Preencha TUDO: o sistema gera as imagens de cada parte e só pede a aprovação do owner quando a peça
 está inteira; o que você deixar vazio o sistema completa a partir da legenda, mas o seu texto é sempre melhor. Se você achou uma foto ou um vídeo na internet que deve entrar no post, use "fonte_midia": "link"
 e o endereço direto do arquivo em "link_midia". Não gere nem peça arquivos."""
@@ -211,7 +212,7 @@ def ingest_blocks(db: DB, task: Task, text: str) -> list[ContentItem]:
                 img_text=str(it.get("texto_imagem") or "").strip()[:400],
                 image_mode=norm_mode(it.get("modo_imagem")),
                 image_prompt=str(it.get("prompt_imagem") or "").strip()[:4000],
-                slides=block_slides(it),
+                slides=block_slides(it, db, task.project_id),
                 media_source=_media_source(it),
                 media_url=_media_link(it),
                 asset_ids=resolve_names(db, task.project_id, it.get("ativos")),
@@ -284,20 +285,28 @@ def slides_json(c: ContentItem) -> list[dict]:
              "image_url": f"/api/layouts/assets/{s['image_id']}" if s.get("image_id") else ""} for s in piece_slides(c)]
 
 
-def block_slides(it: dict) -> str:
+def _slide_assets(p: dict, db, project_id) -> dict:
+    """"ativos" de uma página (nomes do catálogo) -> ids deste projeto."""
+    if db is None or project_id is None or not p.get("ativos"):
+        return {}
+    ids = json.loads(resolve_names(db, project_id, p.get("ativos")) or "[]")
+    return {"assets": ids} if ids else {}
+
+
+def block_slides(it: dict, db=None, project_id: int | None = None) -> str:
     """Páginas e CTA que o agente mandou no bloco (``paginas`` e ``cta``) -> JSON guardado na peça."""
     pages = it.get("paginas") or it.get("páginas") or []
     out = []
     for p in pages if isinstance(pages, list) else []:
         if isinstance(p, dict):
             out.append({"role": "pagina", "title": str(p.get("titulo") or "")[:120], "text": str(p.get("texto") or "")[:300],
-                        "media": str(p.get("imagem") or p.get("midia") or "")[:600]})
+                        "media": str(p.get("imagem") or p.get("midia") or "")[:600], **_slide_assets(p, db, project_id)})
         elif isinstance(p, str) and p.strip():
             out.append({"role": "pagina", "title": "", "text": p.strip()[:300]})
     cta = it.get("cta")
     if isinstance(cta, dict):
         out.append({"role": "cta", "title": str(cta.get("titulo") or "")[:120], "text": str(cta.get("texto") or "")[:300],
-                    "media": str(cta.get("imagem") or cta.get("midia") or "")[:600]})
+                    "media": str(cta.get("imagem") or cta.get("midia") or "")[:600], **_slide_assets(cta, db, project_id)})
     elif isinstance(cta, str) and cta.strip():
         out.append({"role": "cta", "title": cta.strip()[:120], "text": ""})
     return json.dumps(out, ensure_ascii=False) if out else ""

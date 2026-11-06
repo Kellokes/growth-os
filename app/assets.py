@@ -141,6 +141,7 @@ def split_tags(raw: str) -> str:
     return ", ".join(out[:20])
 
 
+
 def chosen_ids(c: ContentItem) -> list[int]:
     try:
         v = json.loads(c.asset_ids or "")
@@ -321,6 +322,36 @@ async def auto_pick(db, c: ContentItem, extra: str = "") -> None:
     c.asset_auto = json.dumps({"sig": sig, "ids": [a.id for a in got[:MAX_SENT]], "names": [label(a) for a in got[:MAX_SENT]]},
                               ensure_ascii=False)
     db.commit()
+
+
+def for_subject(db, project_id: int, text: str, forced: list[int] | None = None, limit: int = MAX_SENT) -> list[LayoutAsset]:
+    """Ativos de imagem certos para UM assunto (uma página, o CTA): os escolhidos de antemão (forced, na ordem), os "sempre" e os que
+    o assunto cita (nome, "quando usar", descrição ou tipo: falou em tabuleiro, vem o tabuleiro; falou em cartas, vêm as cartas).
+    Quem combina com mais palavras vem primeiro."""
+    rows = [a for a in project_assets(db, project_id) if is_image(a)]
+    by_id = {a.id: a for a in rows}
+    out = [by_id[i] for i in (forced or []) if i in by_id]
+    scored = [(-score(a, text), a.id, a) for a in rows if a not in out and not a.always and score(a, text)]
+    out += [a for a in rows if a.always and a not in out]
+    out += [a for _, _, a in sorted(scored)]
+    return out[:limit]
+
+
+def slide_ids(s: dict) -> list[int]:
+    v = s.get("assets")
+    return [int(x) for x in v if isinstance(x, int)] if isinstance(v, list) else []
+
+
+def for_slide(db, c: ContentItem, s: dict, limit: int = MAX_SENT) -> list[LayoutAsset]:
+    """Ativos da página: os que o agente indicou para ela, os citados com @ ou escolhidos na peça e o que o texto dela pede."""
+    forced = slide_ids(s) + [a.id for a in mentioned(db, c)] + chosen_ids(c)
+    forced = list(dict.fromkeys(forced))
+    text = " ".join(str(x) for x in (s.get("media"), s.get("title"), s.get("text")) if x)
+    picked = for_subject(db, c.project_id, text or c.media or c.title, forced, limit)
+    if not any(not a.always and a.id not in forced for a in picked):  # a página não cita nada: vale o que a IA escolheu para a peça
+        by_id = {a.id: a for a in project_assets(db, c.project_id) if is_image(a)}
+        picked += [by_id[i] for i in (_auto(c, list(by_id.values())) or []) if i in by_id and by_id[i] not in picked]
+    return picked[:limit]
 
 
 def prompt_lines(assets: list[LayoutAsset], first_index: int = 1) -> str:

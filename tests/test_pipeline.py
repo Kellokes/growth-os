@@ -203,3 +203,59 @@ def test_manual_carousel_image_also_makes_page_photos(logged, monkeypatch):
     s.close()
     slides = json.loads(load(cid).slides)
     assert load(cid).image_id and all(x.get("photo_id") and x.get("image_id") for x in slides)
+
+
+def add_asset(name, note, use_when="", category="artefato", always=False):
+    s = dbmod.new_session()
+    a = dbmod.LayoutAsset(project_id=pid("zombie-party"), kind="reference", format="", mime="image/png", data=PNG, name=name,
+                          note=note, use_when=use_when, category=category, always=always)
+    s.add(a)
+    s.commit()
+    aid = a.id
+    s.close()
+    return aid
+
+
+def test_each_page_picks_the_assets_its_text_asks_for(logged, monkeypatch):
+    make_projects("Zombie Party")
+    board = add_asset("Tabuleiro", "tabuleiro do jogo", "quando falar do tabuleiro")
+    cards = add_asset("Cartas", "baralho de cartas do jogo", "quando falar das cartas", category="carta")
+    logo = add_asset("Logo", "logo da marca", category="logo", always=True)
+    s = dbmod.new_session()
+    c = dbmod.ContentItem(project_id=pid("zombie-party"), channel="instagram", body="x", visual_format="carrossel")
+    pick = lambda text, **kw: [a.id for a in __import__("app.assets", fromlist=["x"]).for_slide(s, c, {"title": text, "text": "", **kw})]  # noqa: E731
+    assert pick("Monte o tabuleiro") == [logo, board]
+    assert pick("As cartas de ação") == [logo, cards]
+    assert pick("Sem assunto") == [logo]
+    assert set(pick("Tabuleiro e cartas")) == {logo, board, cards}
+    assert pick("Qualquer coisa", assets=[cards]) == [cards, logo]  # o agente indicou: vai primeiro
+    s.close()
+
+
+def test_free_mode_carousel_pages_get_their_own_image(logged, monkeypatch):
+    prov, seen = setup(logged, monkeypatch)
+    cards = add_asset("Cartas", "baralho de cartas do jogo", "quando falar das cartas", category="carta")
+    refs_seen: list[int] = []
+
+    async def fake(model, prompt, refs, ratio):
+        seen.append(prompt)
+        refs_seen.append(len(refs))
+        return PNG + b"F", "image/png"
+
+    monkeypatch.setattr(lay, "request_image", fake)
+    cid = agent_piece(image_mode="reference")
+    run(lay.autogen_pending())
+    item = logged.get("/api/content?project=zombie-party").json()["items"][0]
+    assert item["pipeline"]["state"] == "ready", item["pipeline"]
+    assert [s["role"] for s in item["slides"]] == ["pagina"] * 3 + ["cta"] and all(s["image_url"] for s in item["slides"])
+    assert len(seen) == 5 and all(n >= 1 for n in refs_seen)  # capa + 4, cada uma com referência
+    assert logged.post(f"/api/content/{cid}/decide", json={"approve": True}).status_code == 200
+
+
+def test_agent_page_ativos_by_name_are_resolved(logged, monkeypatch):
+    make_projects("Zombie Party")
+    board = add_asset("Tabuleiro", "tabuleiro")
+    s = dbmod.new_session()
+    out = json.loads(cnt.block_slides({"paginas": [{"titulo": "A", "texto": "B", "ativos": ["tabuleiro", "nao existe"]}]}, s, pid("zombie-party")))
+    s.close()
+    assert out[0]["assets"] == [board]

@@ -42,11 +42,11 @@ class Postiz(Connector):
     ops = {
         "listar_canais": Op("read", "lista os canais (redes) conectados no Postiz, com o id de cada um"),
         "criar_rascunho": Op("internal", "cria um rascunho no Postiz (não publica)",
-                             {"canal_id": (str, True), "texto": (str, True), "midia_ids": (str, False)}),
+                             {"canal_id": (str, True), "texto": (str, True), "midia_ids": (str, False), "tipo": (str, False)}),
         "agendar_post": Op("external", "agenda um post no Postiz para uma data/hora (ISO, UTC)",
-                           {"canal_id": (str, True), "texto": (str, True), "quando": (str, True), "midia_ids": (str, False)},
+                           {"canal_id": (str, True), "texto": (str, True), "quando": (str, True), "midia_ids": (str, False), "tipo": (str, False)},
                            risk="medio", daily_cap=10),
-        "publicar_post": Op("external", "publica agora no canal escolhido", {"canal_id": (str, True), "texto": (str, True), "midia_ids": (str, False)},
+        "publicar_post": Op("external", "publica agora no canal escolhido", {"canal_id": (str, True), "texto": (str, True), "midia_ids": (str, False), "tipo": (str, False)},
                             risk="medio", daily_cap=10),
     }
 
@@ -113,7 +113,7 @@ class Postiz(Connector):
                 raise ConnectorError("a data de agendamento já passou")
         settings = {"__type": ch.get("identifier", "")}
         if settings["__type"] in _IG_PROVIDERS:
-            settings["post_type"] = "post"  # o Postiz exige post_type (post|story) no Instagram; "post" = feed
+            settings["post_type"] = "story" if params.get("tipo") == "story" else "post"  # Postiz: post|story; reel e carrossel são "post" (vídeo/várias imagens)
         ids = [int(x) for x in str(params.get("midia_ids", "")).replace(" ", "").split(",") if x.isdigit()]
         if settings["__type"] in _IG_PROVIDERS and not ids:
             raise ConnectorError("o Instagram exige ao menos uma imagem ou vídeo na peça")

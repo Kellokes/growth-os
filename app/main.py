@@ -1790,16 +1790,40 @@ def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Dep
 
 
 @app.post("/api/content/{cid}/decide")
-def decide_content(cid: int, body: ContentDecideIn, request: Request,
-                   auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+async def decide_content(cid: int, body: ContentDecideIn, request: Request,
+                         auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     c = _content_or_404(db, cid)
     try:
         appr.decide_content(db, c, body.approve, body.note)
     except appr.ApprovalError as e:
         raise HTTPException(e.code, str(e)) from e
-    audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}",
-          client_ip(request))
+    ip = client_ip(request)
+    audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}", ip)
+    if body.approve:
+        await _auto_schedule(db, c, auth, ip)
     return _content_json(db, c)
+
+
+async def _auto_schedule(db: DB, c: ContentItem, auth: Auth, ip: str) -> None:
+    """Aprovou uma peça de rede social com data futura: já agenda no Postiz (ele publica na hora marcada).
+
+    Sem data, sem Postiz ligado ou sem um canal único da rede, nada acontece: o botão Publicar continua valendo.
+    """
+    if cnt.CHANNELS.get(c.channel, ("", ""))[1] != "social" or not (c.scheduled_at and c.scheduled_at > cnt.local_now()):
+        return
+    project = db.get(GrowthProject, c.project_id)
+    if "postiz" not in acts._ready(db, project):
+        return
+    try:
+        res = await acts.run_operation(db, acts.Ticket(0, project.id, "owner", 0), "postiz", "listar_canais", {})
+        mine = [x for x in (res.get("result") or {}).get("canais", []) if x.get("rede") == c.channel]
+        if len(mine) != 1:
+            return  # nenhum canal dessa rede, ou mais de um: o owner escolhe no Publicar
+        await _publish_piece(db, c, PublishIn(canal_id=str(mine[0]["id"])), auth, ip)
+    except HTTPException as e:
+        c.note = f"Agendamento automático não saiu: {e.detail}"[:1000]
+        cnt.touch(c)
+        db.commit()
 
 
 class PublishIn(BaseModel):
@@ -1824,13 +1848,15 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
 
     Apertar o botão é a aprovação da ação; e-mail para terceiros exige também o 2FA.
     """
-    c = _content_or_404(db, cid)
+    return await _publish_piece(db, _content_or_404(db, cid), body, auth, client_ip(request))
+
+
+async def _publish_piece(db: DB, c: ContentItem, body: PublishIn, auth: Auth, ip: str) -> dict:
     if c.status not in ("approved", "failed"):
         raise HTTPException(409, "só conteúdo aprovado pode ser publicado")
     if cnt.needs_image(c):
         raise HTTPException(409, "esta peça é visual e ainda não tem imagem: gere ou suba a imagem antes de publicar")
     project = db.get(GrowthProject, c.project_id)
-    ip = client_ip(request)
     when = None
     if c.channel == "email":
         kind, operation = "email", "enviar_email"
@@ -1844,6 +1870,8 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
         raw = {"canal_id": body.canal_id.strip(), "texto": c.body}
         if media_ids := cnt.media_asset_ids(c):
             raw["midia_ids"] = ",".join(map(str, media_ids))
+        if c.visual_format == "story":
+            raw["tipo"] = "story"
         if c.scheduled_at and c.scheduled_at > cnt.local_now():
             operation = "agendar_post"
             when = c.scheduled_at.replace(tzinfo=ZoneInfo(get_settings().timezone)).astimezone(ZoneInfo("UTC"))

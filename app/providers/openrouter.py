@@ -2,11 +2,11 @@ import asyncio
 
 import httpx
 
-from .. import calllog
+from .. import calllog, endpoints
 from ..config import get_settings
 from .base import SYSTEM_PROMPT, ChatTurn, Provider, ProviderError
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_URL = endpoints.URLS[endpoints.CHAT]
 
 # 502/503 no OpenRouter quase sempre é o provedor do modelo falhando ou sobrecarregado: costuma passar sozinho.
 RETRYABLE = {408, 429, 500, 502, 503, 504, 520, 522, 524, 529}
@@ -84,6 +84,9 @@ class OpenRouterProvider(Provider):
     async def complete(self, history: list[ChatTurn]) -> str:
         s = get_settings()
         model = self.model or s.openrouter_model
+        bad = endpoints.incompatible(model, "text")  # ex.: modelo de imagem salvo antes do registro de rotas
+        if bad:
+            raise ProviderError(bad)
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += [{"role": t.role, "content": t.content} for t in history]
         body: dict = {"model": model, "messages": messages, "usage": {"include": True}}

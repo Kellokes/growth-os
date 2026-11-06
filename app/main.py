@@ -32,7 +32,7 @@ from . import layouts as lay
 from . import media as med
 from . import assets as ast
 from . import missions
-from . import modelcfg
+from . import endpoints, modelcfg
 from . import routines
 from . import projects as proj
 from . import reset as rst
@@ -341,7 +341,9 @@ def model_settings(auth: Auth = Depends(current_auth), db: DB = Depends(get_db))
 async def openrouter_models(kind: str = "text", auth: Auth = Depends(current_auth)):
     """Modelos do OpenRouter que servem para a atividade, com preços (dólar) direto da API deles."""
     data = await modelcfg.openrouter_models()
-    return {**data, "models": modelcfg.for_kind(data["models"], kind)}
+    models = [{**m, "route": (r.route if (r := endpoints.lookup(m["id"])) else ""), "known_route": endpoints.is_known(m["id"])}
+              for m in modelcfg.for_kind(data["models"], kind)]
+    return {**data, "models": models}
 
 
 class ModelChoiceIn(BaseModel):
@@ -358,13 +360,14 @@ def save_model_setting(activity: str, body: ModelChoiceIn, request: Request,
     provider, model, reasoning = body.provider.strip(), body.model.strip(), body.reasoning.strip()
     if not provider:
         model = reasoning = ""  # sem provider = segue o padrão
-    err = modelcfg.check(provider, model, reasoning, modelcfg.kind_of(activity))
+    kind = modelcfg.kind_of(activity)
+    err = modelcfg.check(provider, model, reasoning, kind)
     if err:
         raise HTTPException(400, err)
     modelcfg.save(db, activity, provider, model, reasoning)
     audit(db, auth.user.username, "model_setting", f"{activity}: {provider or 'padrão'} {model} {reasoning}".strip(),
           client_ip(request))
-    return {"ok": True}
+    return {"ok": True, "warning": modelcfg.warning(provider, model, kind)}
 
 
 def _conv_json(c: Conversation) -> dict:

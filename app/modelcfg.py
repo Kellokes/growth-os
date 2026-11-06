@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import httpx
 from sqlalchemy.orm import Session as DB
 
+from . import endpoints
 from .db import ModelSetting, utcnow
 
 # Ids de modelo vão como argumento separado para a CLI (nunca por shell), mas validamos mesmo assim.
@@ -123,7 +124,14 @@ def check(provider: str, model: str, reasoning: str, kind: str = TEXT) -> str | 
         return "id de modelo inválido"
     if reasoning and reasoning not in {r["id"] for r in cat["reasoning"]}:
         return f"nível de raciocínio inválido para {provider}"
+    if provider == "openrouter" and model:
+        return endpoints.incompatible(model, kind)  # modelo de imagem em atividade de texto etc.
     return None
+
+
+def warning(provider: str, model: str, kind: str = TEXT) -> str:
+    """Aviso (não erro) quando o modelo do OpenRouter não está no registro de rotas."""
+    return endpoints.unknown_warning(model, kind) if provider == "openrouter" else ""
 
 
 def kind_of(activity: str) -> str:

@@ -35,7 +35,8 @@
       box.querySelector("[data-save]").onclick = async (ev) => {
         const btn = ev.currentTarget; btn.disabled = true;
         try {
-          await api(`/api/models/${a.key}`, { method: "PUT", body: JSON.stringify(pick.get()) });
+          const saved = await api(`/api/models/${a.key}`, { method: "PUT", body: JSON.stringify(pick.get()) });
+          if (saved && saved.warning) alert("Salvo, mas: " + saved.warning);
           btn.textContent = "Salvo ✓"; setTimeout(() => (btn.textContent = "Salvar"), 1500);
           const fresh = await M.load(api, true);
           document.querySelectorAll(".model-rule").forEach((el) => { el.querySelector("[data-now]").textContent = usingNow(fresh, el.dataset.key); });

@@ -183,7 +183,61 @@
   };
   if (!isChat) reloadThreads().catch(() => {});
 
-  window.GOS = { $, esc, api, fmt, icon, initProjects, threads };
+  // ---------- feedback de ações demoradas: botão/cartão "trabalhando", aviso (toast) e piscada de sucesso/erro ----------
+  function toast(message, kind = "ok", { action = null, ms = 6000 } = {}) {
+    let box = $("#toasts");
+    if (!box) { box = document.createElement("div"); box.id = "toasts"; box.setAttribute("role", "status"); box.setAttribute("aria-live", "polite"); document.body.append(box); }
+    const el = document.createElement("div");
+    el.className = `toast ${kind}`;
+    const glyph = kind === "ok" ? icon("check") : kind === "err" ? icon("close") : icon("spark");
+    el.innerHTML = `<span class="toast-ic">${glyph}</span><span class="toast-msg">${esc(message)}</span>${action ? `<button class="toast-act" type="button">${esc(action.label)}</button>` : ""}<button class="toast-x" type="button" aria-label="Fechar">${icon("close")}</button>`;
+    const bye = () => { el.classList.add("out"); setTimeout(() => el.remove(), 260); };
+    el.querySelector(".toast-x").onclick = bye;
+    if (action) el.querySelector(".toast-act").onclick = () => { bye(); action.run(); };
+    box.append(el);
+    while (box.children.length > 4) box.firstChild.remove();
+    if (ms) setTimeout(bye, kind === "err" ? ms * 2 : ms);
+    return el;
+  }
+
+  // Roda `fn` com a tela já respondendo: o botão clicado vira "Aprovando…" com spinner e brilho, o resto do cartão (ou do
+  // painel) fica travado com uma barra de progresso, e `phases` troca o texto conforme o tempo passa ([[ms, texto], ...]).
+  // Devolve {ok, value} ou {ok:false, error}; quem chama decide o aviso final.
+  async function working({ btn = null, scope = null, phases = [[0, "Processando…"]] } = {}, fn) {
+    const box = scope || btn?.closest(".cpiece, dialog, .approval, .kcard") || null;
+    const locked = box ? [...box.querySelectorAll("button, a.btn")] : (btn ? [btn] : []);
+    if (btn && !locked.includes(btn)) locked.push(btn);
+    const before = locked.map((b) => [b, b.disabled, b.getAttribute("aria-disabled")]);
+    const original = btn?.innerHTML;
+    const label = (t) => { if (btn) btn.innerHTML = `<span class="spin" aria-hidden="true"></span><span class="lbl">${esc(t)}</span>`; box?.querySelector?.(":scope > .busy-bar .busy-label")?.replaceChildren(t); };
+    locked.forEach((b) => { b.disabled = true; b.setAttribute("aria-disabled", "true"); });
+    btn?.classList.add("is-busy");
+    if (box) {
+      box.classList.add("is-busy"); box.setAttribute("aria-busy", "true");
+      if (!box.querySelector(":scope > .busy-bar")) box.insertAdjacentHTML("beforeend", '<div class="busy-bar"><i aria-hidden="true"></i><em class="busy-label" aria-live="polite"></em></div>');
+    }
+    const timers = phases.map(([ms, t]) => setTimeout(() => label(t), ms));
+    label(phases[0][1]);
+    try { return { ok: true, value: await fn() }; }
+    catch (e) { return { ok: false, error: e }; }
+    finally {
+      timers.forEach(clearTimeout);
+      box?.classList.remove("is-busy"); box?.removeAttribute("aria-busy"); box?.querySelector(":scope > .busy-bar")?.remove();
+      btn?.classList.remove("is-busy");
+      before.forEach(([b, d, a]) => { if (!b.isConnected) return; b.disabled = d; a == null ? b.removeAttribute("aria-disabled") : b.setAttribute("aria-disabled", a); });
+      if (btn?.isConnected && original != null) btn.innerHTML = original;
+    }
+  }
+
+  // Pisca um elemento (o cartão já redesenhado) em verde ou vermelho para mostrar o desfecho.
+  function flash(el, kind = "ok") {
+    if (!el) return;
+    const cls = kind === "ok" ? "flash-ok" : "flash-err";
+    el.classList.remove("flash-ok", "flash-err"); void el.offsetWidth; el.classList.add(cls);
+    setTimeout(() => el.classList.remove(cls), 1800);
+  }
+
+  window.GOS = { $, esc, api, fmt, icon, initProjects, threads, toast, working, flash };
   const call = async (path, method = "GET") => {
     const res = await fetch(path, { method, credentials: "same-origin", headers: { "X-CSRF-Token": CSRF } });
     if (res.status === 401) { location.href = "/login"; throw new Error("sessão expirada"); }

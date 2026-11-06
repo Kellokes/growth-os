@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import re
+import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
@@ -1815,9 +1816,8 @@ async def decide_content(cid: int, body: ContentDecideIn, request: Request,
         raise HTTPException(e.code, str(e)) from e
     ip = client_ip(request)
     audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}", ip)
-    if body.approve:
-        await _auto_send(db, c, auth.user.username, ip)
-    return _content_json(db, c)
+    auto = await _auto_send(db, c, auth.user.username, ip) if body.approve else None
+    return {**_content_json(db, c), "auto": auto}
 
 
 def postiz_network(identifier: str) -> str:
@@ -1830,22 +1830,66 @@ def postiz_network(identifier: str) -> str:
 
 
 AUTO_NOTE = "Envio automático ao Postiz não saiu: "
+PADRAO = "padrao_"  # chave na config do Postiz: canal escolhido por rede (padrao_instagram...)
 
 
-async def _auto_send(db: DB, c: ContentItem, actor: str, ip: str) -> None:
+def _slug(text: str) -> str:
+    """Minúsculas, sem acento e só letras/números: "A Ilha" e "a-ilha" viram "ailha"."""
+    base = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]", "", base)
+
+
+def _project_keys(project: GrowthProject) -> set[str]:
+    """Nomes pelos quais um canal do Postiz costuma citar o projeto: nome, slug e o miolo dos domínios."""
+    keys = {_slug(project.name), _slug(project.slug)}
+    for d in re.split(r"[,\s]+", project.domains or ""):
+        parts = [x for x in d.lower().split(".") if x and x not in ("www", "com", "br", "io", "net", "org", "app")]
+        keys.update(_slug(x) for x in parts)
+    return {k for k in keys if len(k) >= 3}
+
+
+def pick_postiz_channel(db: DB, project: GrowthProject, channel: str, mine: list[dict]) -> dict | None:
+    """Qual canal do Postiz recebe a peça de `channel` neste projeto, sem perguntar (None = não dá para saber).
+
+    Um só canal da rede: ele. Vários: o que o owner já escolheu antes neste projeto (guardado na integração) e,
+    sem isso, o único cujo nome cita o projeto (ex.: "A Ilha Jogo" no projeto a-ilha).
+    """
+    if len(mine) == 1:
+        return mine[0]
+    saved = routines._config(db.query(Integration).filter(Integration.project_id == project.id,
+                                                           Integration.kind == "postiz").one_or_none()).get(PADRAO + channel)
+    if saved and (hit := next((x for x in mine if str(x.get("id")) == saved), None)):
+        return hit
+    keys = _project_keys(project)
+    named = [x for x in mine if any(k in _slug(x.get("nome", "")) for k in keys)]
+    return named[0] if len(named) == 1 else None
+
+
+def remember_postiz_channel(db: DB, project: GrowthProject, channel: str, canal_id: str) -> None:
+    row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "postiz").one_or_none()
+    if row is None:
+        return
+    cfg = routines._config(row)
+    cfg[PADRAO + channel] = str(canal_id)[:120]
+    row.config = json.dumps(cfg, ensure_ascii=False)
+    db.commit()
+
+
+async def _auto_send(db: DB, c: ContentItem, actor: str, ip: str) -> dict:
     """Peça de rede social aprovada vai sozinha ao Postiz: com data futura, agenda; sem data (ou já passou), publica agora.
 
-    Se não der (Postiz desligado, nenhum canal da rede ou mais de um), a peça fica aprovada com o motivo na nota,
-    e o botão Publicar continua valendo.
+    Se não der (Postiz desligado, nenhum canal da rede ou vários sem como saber qual), a peça fica aprovada com o motivo
+    na nota, e o botão Publicar continua valendo. Devolve o desfecho para a tela: {"state", "message", "pick"}.
     """
     if c.status != "approved" or cnt.CHANNELS.get(c.channel, ("", ""))[1] != "social" or cnt.needs_image(c):
-        return
+        return {"state": "skipped", "message": "", "pick": []}
     project = db.get(GrowthProject, c.project_id)
 
-    def why(msg: str) -> None:
+    def why(msg: str, pick: list | None = None) -> dict:
         c.note = (AUTO_NOTE + msg)[:1000]
         cnt.touch(c)
         db.commit()
+        return {"state": "pick" if pick else "held", "message": msg, "pick": pick or []}
 
     if "postiz" not in acts._ready(db, project):
         return why("a integração Postiz não está ligada e pronta neste projeto (Automações > Integrações).")
@@ -1857,11 +1901,18 @@ async def _auto_send(db: DB, c: ContentItem, actor: str, ip: str) -> None:
         mine = [x for x in canais if postiz_network(x.get("rede", "")) == c.channel]
         if not mine:
             return why(f"nenhum canal de {cnt.CHANNELS[c.channel][0]} conectado no Postiz.")
-        if len(mine) > 1:
-            return why(f"há {len(mine)} canais de {cnt.CHANNELS[c.channel][0]} no Postiz; escolha um no Publicar.")
-        await _publish_piece(db, c, PublishIn(canal_id=str(mine[0]["id"])), _Actor(actor), ip)
+        chosen = pick_postiz_channel(db, project, c.channel, mine)
+        if chosen is None:
+            return why(f"há {len(mine)} canais de {cnt.CHANNELS[c.channel][0]} no Postiz e nenhum leva o nome de {project.name}; escolha um.",
+                       [{"id": str(x["id"]), "nome": x.get("nome") or str(x["id"]), "rede": x.get("rede", "")} for x in mine])
+        later = bool(c.scheduled_at and c.scheduled_at > cnt.local_now())
+        out = await _publish_piece(db, c, PublishIn(canal_id=str(chosen["id"])), _Actor(actor), ip)
+        action = out.get("action") or {}
+        if c.status == "sent":
+            return {"state": "sent", "message": f"{'Agendada' if later else 'Publicada'} no Postiz ({chosen.get('nome') or chosen['id']}).", "pick": []}
+        return {"state": "failed", "message": action.get("error") or c.note, "pick": []}
     except HTTPException as e:
-        why(str(e.detail))
+        return why(str(e.detail))
 
 
 async def _auto_send_loop() -> None:
@@ -1910,6 +1961,7 @@ async def auto_send_pending() -> None:
 
 class PublishIn(BaseModel):
     canal_id: str = Field(default="", max_length=120)
+    lembrar: bool = False  # vale como o canal padrão desta rede neste projeto
     totp: str = Field(default="", max_length=12)
 
 
@@ -1982,6 +2034,8 @@ async def _publish_piece(db: DB, c: ContentItem, body: PublishIn, auth: Auth, ip
                  "2fa" if op.risk == "alto" else "clique")
     audit(db, auth.user.username, "content_publish", f"#{c.id} {c.channel} via {kind}.{operation}", ip)
     await acts.execute_approved(db, a)
+    if body.lembrar and kind == "postiz" and a.status == "done":
+        remember_postiz_channel(db, project, c.channel, body.canal_id.strip())
     if a.status == "done":
         c.status, c.sent_at, c.note = "sent", utcnow(), ""
         if a.external_ref.startswith("http"):

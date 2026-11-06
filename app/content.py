@@ -251,6 +251,7 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         "media_file_url": f"/api/layouts/assets/{c.media_id}" if c.media_id else "",
         "media_generating": bool(c.media_job),
         "asset_ids": _json_list(c.asset_ids),
+        "assets_auto": _json_obj(c.asset_auto).get("names", []),
         "status": c.status, "stage": stage(c, now), "link": c.link, "note": c.note,
         "scheduled_at": c.scheduled_at.isoformat(timespec="minutes") if c.scheduled_at else None,
         "sent_at": c.sent_at.isoformat() if c.sent_at else None,

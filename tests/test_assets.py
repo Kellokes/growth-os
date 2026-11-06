@@ -162,3 +162,85 @@ def test_mentions_in_media_field_with_a_layout(studio, monkeypatch):
     assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
     p = AI[-1]["prompt"]
     assert "Cartas (image 2)" in p and "image 2 = Cartas" in p and "image 3 = Logo" in p  # image 1 é a arte do layout
+
+
+def _piece(body, **kw):
+    s = dbmod.new_session()
+    c = dbmod.ContentItem(project_id=pid("zombie-party"), channel="instagram", body=body, visual_format="story",
+                          status="pending", **kw)
+    s.add(c)
+    s.commit()
+    return s, c
+
+
+def test_tags_and_synonyms_match_the_piece_subject(studio):
+    add(studio, name="Board", category="outro", note="o tabuleiro", tags="Tabuleiro, mapa")
+    add(studio, name="Cartas", category="carta", note="baralho")
+    add(studio, name="Dado", category="artefato", note="dado do jogo", tags="dice")
+    r = studio.post("/api/assets", json={"project": "zombie-party", "data": B64, "name": "X", "tags": " Tabuleiro ;board,, Board "})
+    assert r.json()["tags"] == "tabuleiro, board"
+    s, c = _piece("Hoje vamos falar do tabuleiro e das novidades!")
+    assert [a.name for a in ast.for_piece(s, c)][:2] == ["Board", "X"]  # "tabuleiro" ~ "board", por tag e por nome/sinônimo
+    c.body = "Sorteio de cartas raras e um dado especial"
+    assert {a.name for a in ast.for_piece(s, c)} == {"Cartas", "Dado"}
+    c.body = "Promoção de fim de semana"
+    assert ast.for_piece(s, c) == []
+    s.close()
+
+
+def test_llm_choice_reaches_the_image_call_and_owner_can_override(studio, monkeypatch):
+    ai_template(studio, monkeypatch, PLAIN)
+    board = add(studio, name="Tabuleiro", category="outro", note="tabuleiro do jogo", tags="board")
+    add(studio, name="Cartas", category="carta", note="cartas do jogo")
+    add(studio, name="Logo", category="logo", note="logo", always=True)
+    make_projects("A Ilha")
+    studio.post("/api/assets", json={"project": "a-ilha", "data": B64, "name": "Mapa da Ilha"})
+    calls = []
+
+    class Fake:
+        id, model = "fake", "fake-1"
+
+        async def complete(self, history):
+            calls.append(history[-1].content)
+            return 'claro {"ativos": ["tabuleiro", "Mapa da Ilha", "Logo"]}'
+
+    monkeypatch.setattr(growth, "pick_provider", lambda *a, **k: Fake())
+    s, c = _piece("Uma partida do nosso jogo, mesa cheia de gente")  # nada casa por palavra: só a IA entende
+    cid = c.id
+    assert [a.name for a in ast.for_piece(s, c)] == ["Logo"]
+    s.close()
+    AI.clear()
+    assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
+    assert len(calls) == 1 and "Tabuleiro" in calls[0] and "Mapa da Ilha" not in calls[0]  # só a biblioteca deste projeto
+    assert "Tabuleiro" in AI[-1]["prompt"] and "Mapa da Ilha" not in AI[-1]["prompt"] and "faithfully" in AI[-1]["prompt"]
+    assert AI[-1]["refs"] == 3  # arte do layout + logo + tabuleiro
+    item = [i for i in studio.get("/api/content?project=zombie-party").json()["items"] if i["id"] == cid][0]
+    assert item["assets_auto"] == ["Tabuleiro"]
+    AI.clear()
+    studio.post(f"/api/content/{cid}/image", json={})
+    assert len(calls) == 1  # mesma peça, mesmo assunto: não chama a IA de novo
+
+    # o owner escolhe: manda a escolha dele, sem perguntar à IA
+    studio.patch(f"/api/content/{cid}", json={"body": "outro assunto", "asset_ids": [board["id"]]})
+    AI.clear()
+    studio.post(f"/api/content/{cid}/image", json={})
+    assert len(calls) == 1 and AI[-1]["refs"] == 2
+
+
+def test_llm_failure_falls_back_to_keywords(studio, monkeypatch):
+    ai_template(studio, monkeypatch, PLAIN)
+    add(studio, name="Tabuleiro", category="outro", note="tabuleiro")
+
+    class Broken:
+        id, model = "fake", "fake-1"
+
+        async def complete(self, history):
+            raise growth.ProviderError("sem créditos")
+
+    monkeypatch.setattr(growth, "pick_provider", lambda *a, **k: Broken())
+    s, c = _piece("Olha o tabuleiro novo")
+    cid = c.id
+    s.close()
+    AI.clear()
+    assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
+    assert "Tabuleiro" in AI[-1]["prompt"]

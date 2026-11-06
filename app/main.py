@@ -2380,6 +2380,7 @@ class AssetIn(BaseModel):
     category: str = Field(default="outro", max_length=20)
     note: str = Field(default="", max_length=500)  # o que é
     use_when: str = Field(default="", max_length=500)  # quando usar
+    tags: str = Field(default="", max_length=600)  # palavras que ligam o ativo ao assunto ("tabuleiro, board, mapa")
     always: bool = False
 
 
@@ -2388,6 +2389,7 @@ class AssetEditIn(BaseModel):
     category: str | None = Field(default=None, max_length=20)
     note: str | None = Field(default=None, max_length=500)
     use_when: str | None = Field(default=None, max_length=500)
+    tags: str | None = Field(default=None, max_length=600)
     always: bool | None = None
     link: str | None = Field(default=None, max_length=1000)
     text: str | None = Field(default=None, max_length=4000)
@@ -2425,7 +2427,7 @@ def assets_add(body: AssetIn, request: Request, auth: Auth = Depends(current_aut
             raise HTTPException(422, str(e)) from e
     a = LayoutAsset(project_id=p.id, kind="reference", mime=mime, data=data, url=url, name=body.name.strip(),
                     category=ast.norm_category(body.category, bool(url), mime == ast.TEXT_MIME), note=body.note.strip(),
-                    use_when=body.use_when.strip(), always=0 if url or mime == ast.TEXT_MIME else int(body.always))
+                    use_when=body.use_when.strip(), tags=ast.split_tags(body.tags), always=0 if url or mime == ast.TEXT_MIME else int(body.always))
     db.add(a)
     db.commit()
     audit(db, auth.user.username, "asset_add", f"{p.slug} #{a.id} {a.category} {a.name}"[:500], client_ip(request))
@@ -2446,6 +2448,8 @@ def assets_edit(aid: int, body: AssetEditIn, request: Request, auth: Auth = Depe
         val = getattr(body, field)
         if val is not None:
             setattr(a, field, val.strip())
+    if body.tags is not None:
+        a.tags = ast.split_tags(body.tags)
     if body.category is not None:
         a.category = ast.norm_category(body.category, ast.is_link(a), ast.is_text(a))
     if body.always is not None:

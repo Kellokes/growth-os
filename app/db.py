@@ -356,6 +356,7 @@ class ContentItem(Base):
     media_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=media): foto ou vídeo da peça
     media_job: Mapped[str] = mapped_column(String(120), default="")  # vídeo em geração no OpenRouter (id do job)
     asset_ids: Mapped[str] = mapped_column(Text, default="")  # ativos escolhidos para a arte (JSON de ids); vazio = automático
+    asset_auto: Mapped[str] = mapped_column(Text, default="")  # escolha automática da IA (JSON {sig, ids, names}); só vale com o mesmo assunto
     # linha de produção (app/pipeline.py): {"attempts": {parte: n}, "errors": {parte: msg}, "next": {parte: quando tentar}}
     pipeline: Mapped[str] = mapped_column(Text, default="")
     # pending (aguardando aprovação) | approved | sent | rejected | failed
@@ -404,6 +405,7 @@ class LayoutAsset(Base):
     category: Mapped[str] = mapped_column(String(20), default="")
     use_when: Mapped[str] = mapped_column(Text, default="")  # "quando falar do jogo, use isto"
     always: Mapped[int] = mapped_column(Integer, default=0)  # 1 = vai em toda arte (ex.: a logo)
+    tags: Mapped[str] = mapped_column(Text, default="")  # palavras que ligam o ativo ao assunto da peça: "tabuleiro, board, mapa"
     url: Mapped[str] = mapped_column(String(1000), default="")  # ativo que é um link (vídeo do site); data fica vazio
     boxes: Mapped[str] = mapped_column(Text, default="")  # kind=template feito no editor: caixas de título, texto e imagem (JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
@@ -534,7 +536,7 @@ _NEW_COLUMNS = {
         "media_url": "VARCHAR(1000) NOT NULL DEFAULT ''",
         "media_id": "INTEGER NULL",
         "media_job": "VARCHAR(120) NOT NULL DEFAULT ''",
-        "asset_ids": "TEXT NOT NULL DEFAULT ''",
+        "asset_ids": "TEXT NOT NULL DEFAULT ''", "asset_auto": "TEXT NOT NULL DEFAULT ''",
         "pipeline": "TEXT NOT NULL DEFAULT ''",
     },
     "ai_calls": {"input_tokens": "INTEGER NULL", "output_tokens": "INTEGER NULL", "cost_usd": "FLOAT NULL",
@@ -544,7 +546,7 @@ _NEW_COLUMNS = {
         "name": "VARCHAR(80) NOT NULL DEFAULT ''", "role": "VARCHAR(12) NOT NULL DEFAULT ''",
         "is_default": "INTEGER NOT NULL DEFAULT 0",
         "category": "VARCHAR(20) NOT NULL DEFAULT ''", "use_when": "TEXT NOT NULL DEFAULT ''",
-        "always": "INTEGER NOT NULL DEFAULT 0", "url": "VARCHAR(1000) NOT NULL DEFAULT ''",
+        "always": "INTEGER NOT NULL DEFAULT 0", "tags": "TEXT NOT NULL DEFAULT ''", "url": "VARCHAR(1000) NOT NULL DEFAULT ''",
         "boxes": "TEXT NOT NULL DEFAULT ''",
     },
 }

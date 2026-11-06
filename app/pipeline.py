@@ -400,7 +400,7 @@ async def run_piece(db: DB, c: ContentItem, force: bool = False) -> dict:
     if todo("copy"):
         await _attempt(db, c, "copy", lambda: complete_copy(db, c))
     if c.visual_format and todo("capa"):
-        await _attempt(db, c, "capa", lambda: lay.generate_piece_image(db, c))
+        await _attempt(db, c, "capa", lambda: lay.generate_cover(db, c))
         db.refresh(c)
     if _is_template_carousel(c) and c.image_id:
         for i, s in enumerate(lay.piece_slides(c)):

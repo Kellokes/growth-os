@@ -1153,7 +1153,9 @@ def slide_wants_photo(db, c: ContentItem, s: dict) -> bool:
     if t is None:
         return False
     plate = _plate(db, t)
-    return "midia" in template_boxes(t) or motion.has_media_slot(t.html) or (plate is not None and has_alpha(plate.data, plate.mime))
+    if plate is None:  # sem arte: a foto da página vira o fundo (senão todas as páginas ficam iguais à capa, sem imagem)
+        return True
+    return "midia" in template_boxes(t) or motion.has_media_slot(t.html) or (has_alpha(plate.data, plate.mime))
 
 
 def build_slide_photo_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, feedback: str = "") -> str:
@@ -1227,7 +1229,9 @@ async def generate_slide_photo(db, c: ContentItem, s: dict, feedback: str = "") 
     w, h = CANVAS[c.visual_format]
     ratio = nearest_ratio(box["w"] * w, box["h"] * h) if box else FORMATS[c.visual_format][1]
     choice = image_choice(db, log=True, project_id=c.project_id)
-    picked = ast.for_piece(db, c)
+    page_text = " ".join(str(s.get(k) or "") for k in ("title", "text", "media"))
+    await ast.auto_pick(db, c)
+    picked = ast.for_piece(db, c, extra=page_text)
     prompt = build_slide_photo_prompt(name, brief, c, s, ratio, feedback)
     if picked:
         prompt += "\n" + ast.prompt_lines(picked, 1).replace("reproduce them faithfully when they appear",
@@ -1278,7 +1282,46 @@ def rerender_piece(db, c: ContentItem) -> None:
         db.commit()
 
 
+async def generate_slide_photos(db, c: ContentItem) -> str:
+    """Foto de cada página/CTA do carrossel que ainda não tem (as que já têm ficam) e refaz as imagens das páginas com elas.
+    -> erros (vazio = tudo certo). Uma foto que falha não impede as outras."""
+    if c.visual_format != "carrossel" or (c.image_mode or "template") != "template" or not c.image_id:
+        return ""
+    errors, made = [], False
+    for i in range(len(piece_slides(c))):
+        slides = piece_slides(c)
+        s = slides[i]
+        if s.get("photo_id") or not slide_wants_photo(db, c, s):
+            continue
+        try:
+            await generate_slide_photo(db, c, s)
+        except ProviderError as e:
+            db.rollback()
+            errors.append(f"{role_label('carrossel', s['role'])}: {e}")
+            continue
+        c.slides = json.dumps(slides, ensure_ascii=False)
+        db.commit()
+        made = True
+    if made:
+        template = piece_template(db, c)
+        err = await asyncio.to_thread(render_slides, db, c, cover_layers(db, c, template)[0]) if template else ""
+        if err:
+            errors.append(err)
+        db.commit()
+    return "; ".join(errors)[:500]
+
+
 async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
+    """Capa da peça e, no carrossel, a foto de cada página e do CTA (ver generate_cover)."""
+    await generate_cover(db, c, feedback)
+    if c.visual_format == "carrossel" and c.image_id and not c.media_job:
+        err = await generate_slide_photos(db, c)
+        if err:
+            c.image_error = err
+            db.commit()
+
+
+async def generate_cover(db, c: ContentItem, feedback: str = "") -> None:
     """Imagem da peça no layout escolhido, com a mídia da fonte escolhida:
     gerar_imagem: a IA refaz só o cenário dentro da arte (1 imagem paga); gerar_video: pede o vídeo (fica pronto em minutos);
     upload/link: a foto ou o vídeo entram no layout (sem IA se o template tem a janela {{midia}}); nenhuma: só arte e texto."""
@@ -1287,6 +1330,7 @@ async def generate_piece_image(db, c: ContentItem, feedback: str = "") -> None:
     if not c.visual_format:
         raise ProviderError("esta peça não é visual (story, carrossel ou reel)")
     mode = c.image_mode or "template"
+    await ast.auto_pick(db, c)  # escolhe sozinho as referências do jogo que a peça cita (tabuleiro, cartas...)
     if mode != "template":
         return await _generate_free_image(db, c, mode, feedback)
     template = piece_template(db, c)

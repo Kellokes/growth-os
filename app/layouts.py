@@ -16,7 +16,7 @@ import time
 import httpx
 
 from . import assets as ast
-from . import calllog, modelcfg
+from . import calllog, endpoints, modelcfg
 from .config import get_settings
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
@@ -165,8 +165,10 @@ def _is_modality_error(status: int, msg: str) -> bool:
 
 async def request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
     """Pede UMA imagem ao OpenRouter, com as referências junto."""
-    with calllog.track("openrouter", model, "image", f"imagem {ratio} · {len(refs[:MAX_REFS_SENT])} referência(s) · "
-                       f"prompt de {len(prompt)} caracteres") as call:
+    route = endpoints.route_for(model, "image")
+    note = "" if endpoints.is_known(model) else " · rota NÃO registrada, usando a padrão"
+    with calllog.track("openrouter", model, "image", f"imagem {ratio} · rota {route}{note} · {len(refs[:MAX_REFS_SENT])} "
+                       f"referência(s) · prompt de {len(prompt)} caracteres") as call:
         data, mime = await _request_image(model, prompt, refs, ratio)
         call.done(summarize_bytes(mime, len(data)))
         return data, mime
@@ -217,10 +219,87 @@ def _is_scheme_error(status: int, msg: str) -> bool:
     return status == 400 and ("url scheme" in m or "data url" in m)
 
 
+def extract_images_endpoint(data: dict) -> tuple[bytes, str] | str:
+    """Resposta do /images: data[0].b64_json (ou data URL). Devolve (bytes, mime), ou o link https se vier só url."""
+    items = data.get("data") if isinstance(data, dict) else None
+    for it in items if isinstance(items, list) else []:
+        it = it if isinstance(it, dict) else {}
+        raw = it.get("b64_json") or it.get("image") or ""
+        url = it.get("url") or ""
+        if raw:
+            try:
+                return decode_image(raw)
+            except ValueError:
+                continue
+        if url.startswith("data:"):
+            try:
+                return decode_image(url)
+            except ValueError:
+                continue
+        if url.startswith("https://"):
+            return url
+    raise ProviderError("o modelo não devolveu nenhuma imagem; tente de novo ou escolha outro modelo de imagem em /settings")
+
+
+async def _request_image_endpoint(key: str, model: str, prompt: str, ratio: str,
+                                  refs: list[tuple[bytes, str]] | None = None) -> tuple[bytes, str]:
+    """Modelos só de imagem (rota /images). As referências vão em "input_references" (image_url), como na doc do OpenRouter;
+    antes só o prompt ia e as imagens eram ignoradas sem aviso. Se o provedor recusar data URL, refaz com links HTTPS."""
+    refs = (refs or [])[:MAX_REFS_SENT]
+    urls = [data_url(d, m) for d, m in refs]
+    links: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            while True:
+                body = {"model": model, "prompt": prompt, "n": 1, "aspect_ratio": ratio}
+                if urls:
+                    body["input_references"] = [{"type": "image_url", "image_url": {"url": u}} for u in urls]
+                resp = await client.post(endpoints.URLS[endpoints.IMAGES], json=body, headers={"Authorization": f"Bearer {key}"})
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    payload = {}
+                payload = payload if isinstance(payload, dict) else {}
+                if resp.status_code == 200:
+                    break
+                _, msg = _error_detail(payload)
+                if refs and not links and _is_scheme_error(resp.status_code, msg):
+                    links = [share_image(d, m) for d, m in refs]
+                    if not all(links):
+                        raise ProviderError(f"{model} não aceita as imagens de referência embutidas e pede links HTTPS: defina "
+                                            "GOS_PUBLIC_URL=https://os.takeonestudio.io no .env do VPS (ou escolha outro modelo "
+                                            "de imagem em /settings)")
+                    urls = links
+                    continue
+                if urls and resp.status_code == 400 and "input_reference" in msg.lower():
+                    raise ProviderError(f"{model} não aceita imagens de referência (input_references): escolha outro modelo de "
+                                        "imagem em /settings para usar ativos, ou tire as referências desta arte")
+                raise _explain(resp.status_code, msg, model)
+            calllog.note_usage(payload.get("usage"))
+            got = extract_images_endpoint(payload)
+            if isinstance(got, str):  # só veio um link: baixa uma vez
+                dl = await client.get(got)
+                if dl.status_code != 200:
+                    raise ProviderError(f"não consegui baixar a imagem gerada ({dl.status_code})")
+                return decode_image(base64.b64encode(dl.content).decode())
+            return got
+    except httpx.HTTPError as e:
+        raise ProviderError(f"não consegui falar com o OpenRouter: {type(e).__name__}") from e
+    except ValueError as e:
+        raise ProviderError(str(e)) from e
+    finally:
+        unshare(links)
+
+
 async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]], ratio: str) -> tuple[bytes, str]:
     key = _api_key()
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
+    bad = endpoints.incompatible(model, "image")
+    if bad:
+        raise ProviderError(bad)
+    if endpoints.route_for(model, "image") == endpoints.IMAGES:
+        return await _request_image_endpoint(key, model, prompt, ratio, refs)
     refs = refs[:MAX_REFS_SENT]
     urls = [data_url(d, m) for d, m in refs]
     links: list[str] = []
@@ -236,6 +315,7 @@ async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]],
                 "image_config": {"aspect_ratio": ratio},
                 "usage": {"include": True},
             }
+            calllog.note_prompt(messages=body["messages"])
             status, payload = await _post_chat(key, body)
             if status == 200:
                 calllog.note_usage(payload.get("usage"))
@@ -252,6 +332,9 @@ async def _request_image(model: str, prompt: str, refs: list[tuple[bytes, str]],
                                         "imagem em /settings)")
                 urls = links
                 continue
+            # Modelo fora do registro que o OpenRouter manda para o /images: troca de rota (e o log mostra a mensagem original).
+            if not endpoints.is_known(model) and endpoints.wrong_route_hint(msg) == endpoints.IMAGES:
+                return await _request_image_endpoint(key, model, prompt, ratio, refs)
             raise _explain(status, msg, model)
         raise ProviderError("o OpenRouter recusou o pedido de imagem")  # inalcançável: o laço sempre retorna ou levanta
     finally:
@@ -409,12 +492,16 @@ async def request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str
 
 
 async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> str:
+    bad = endpoints.incompatible(model, "text")
+    if bad:
+        raise ProviderError(bad)
     key = _api_key()
     if not key:
         raise ProviderError("OpenRouter sem chave: defina GOS_OPENROUTER_API_KEY no .env do VPS")
     body = {"model": model, "messages": [{"role": "user", "content": [
         {"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url(*image)}}]}],
             "usage": {"include": True}}
+    calllog.note_prompt(messages=body["messages"])
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             resp = await client.post(OPENROUTER_URL, json=body, headers={"Authorization": f"Bearer {key}"})
@@ -434,6 +521,7 @@ async def _request_html(model: str, prompt: str, image: tuple[bytes, str]) -> st
         content = ""
     if isinstance(content, list):
         content = "".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+    calllog.note_reply(content or "")
     return str(content or "")
 
 
@@ -517,16 +605,15 @@ def _num(v, lo: float, hi: float, default: float) -> float:
 
 
 def clean_boxes(raw) -> dict:
-    """Caixas do editor, em % da arte (x, y, w, h). Título e texto são obrigatórios; a imagem é opcional. ValueError se inválido."""
+    """Caixas do editor, em % da arte (x, y, w, h). Título, texto e imagem são todos opcionais (um Reels pode não ter texto),
+    mas precisa haver ao menos uma caixa. ValueError se inválido."""
     if not isinstance(raw, dict):
         raise ValueError("caixas inválidas")
     out: dict = {}
     for key in BOX_KEYS:
         b = raw.get(key)
         if not isinstance(b, dict):
-            if key == "midia":
-                continue
-            raise ValueError(f"falta a caixa de {key}")
+            continue
         x, y = _num(b.get("x"), 0, 95, 8), _num(b.get("y"), 0, 95, 50)
         box = {"x": x, "y": y, "w": _num(b.get("w"), 5, 100 - x, 50), "h": _num(b.get("h"), 3, 100 - y, 10)}
         if key == "midia":
@@ -540,6 +627,8 @@ def clean_boxes(raw) -> dict:
             box["color"] = b.get("color") if isinstance(b.get("color"), str) and _COLOR.fullmatch(b["color"]) else d["color"]
             box["weight"] = 800 if int(_num(b.get("weight"), 100, 900, d["weight"])) >= 650 else 500
         out[key] = box
+    if not out:
+        raise ValueError("adicione ao menos uma caixa (título, texto ou imagem)")
     return out
 
 
@@ -566,7 +655,9 @@ def box_template(fmt: str, boxes: dict) -> str:
         parts.append('<div class="photo">{{midia}}</div>')
     flex = {"top": "flex-start", "middle": "center", "bottom": "flex-end"}
     for key, cls in (("titulo", "t"), ("texto", "s")):
-        b = boxes[key]
+        b = boxes.get(key)
+        if b is None:
+            continue
         lh = 1.12 if key == "titulo" else 1.28
         css.append(f".{cls} {{ left: {b['x']}%; top: {b['y']}%; width: {b['w']}%; height: {b['h']}%; "
                    f"justify-content: {flex[b['valign']]}; text-align: {b['align']}; color: {b['color']}; "
@@ -579,7 +670,7 @@ def box_template(fmt: str, boxes: dict) -> str:
 def text_limits(t: LayoutAsset | None) -> tuple[int, int]:
     """Máximo de caracteres do título e do texto no template (os do editor, ou os de sempre)."""
     b = template_boxes(t)
-    return (b["titulo"]["max"], b["texto"]["max"]) if b else DEFAULT_LIMITS
+    return (b.get("titulo", {}).get("max", DEFAULT_LIMITS[0]), b.get("texto", {}).get("max", DEFAULT_LIMITS[1])) if b else DEFAULT_LIMITS
 
 
 def fit_text(text: str, limit: int) -> str:
@@ -608,7 +699,10 @@ def limits_brief(db, project_id: int) -> str:
             t = approved_template(db, project_id, fmt, role)
             if t is not None and t.boxes:
                 lt, ls = text_limits(t)
-                parts.append(f"{FORMATS[fmt][0]}{(' · ' + role_label(fmt, role)) if role else ''}: título até {lt}, texto até {ls}")
+                bx = template_boxes(t)
+                desc = ", ".join([f"título até {lt}" if "titulo" in bx else "sem título",
+                                  f"texto até {ls}" if "texto" in bx else "sem texto"])
+                parts.append(f"{FORMATS[fmt][0]}{(' · ' + role_label(fmt, role)) if role else ''}: {desc}")
     if not parts:
         return ""
     return ("LIMITES DE TEXTO NA ARTE (\"titulo_imagem\"/\"texto_imagem\", páginas e CTA; acima disso o texto é cortado): "
@@ -632,9 +726,9 @@ def save_box_template(db, src: LayoutAsset, boxes: dict) -> LayoutAsset:
     else:
         raise ValueError("aprove a arte antes de montar o template")
     project = db.get(GrowthProject, src.project_id)
-    sample_t = fit_text("Título do post com o tamanho máximo que esta caixa aceita", boxes["titulo"]["max"])
+    sample_t = fit_text("Título do post com o tamanho máximo que esta caixa aceita", boxes["titulo"]["max"]) if "titulo" in boxes else ""
     sample_s = fit_text("Frase de apoio do post, ocupando o espaço que você reservou para o texto nesta arte, até o limite "
-                        "de caracteres definido no editor de caixas.", boxes["texto"]["max"])
+                        "de caracteres definido no editor de caixas.", boxes["texto"]["max"]) if "texto" in boxes else ""
     preview = motion.render_still(html, src.format, art, sample_t, sample_s, project.name if project else "")
     if src.kind == "template":
         src.html, src.data, src.mime, src.boxes, src.model = html, preview, "image/png", json.dumps(boxes), "editor"

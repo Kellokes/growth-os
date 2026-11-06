@@ -18,7 +18,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from . import calllog, modelcfg
+from . import calllog, endpoints, modelcfg
 from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.base import ProviderError
 
@@ -36,7 +36,7 @@ MAX_VIDEO_BYTES = 25_000_000
 MAX_REDIRECTS = 3
 DOWNLOAD_TIMEOUT = 60.0
 
-VIDEO_URL = "https://openrouter.ai/api/v1/videos"
+VIDEO_URL = endpoints.URLS[endpoints.VIDEO]
 VIDEO_RATIO = {"story": "9:16", "reel": "9:16", "carrossel": "3:4"}  # 4:5 não existe nos modelos de vídeo
 
 
@@ -217,8 +217,12 @@ def _error(resp: httpx.Response, model: str) -> ProviderError:
 
 async def submit_video(model: str, prompt: str, ratio: str) -> str:
     """Pede o vídeo; devolve o id do job (o vídeo leva minutos e é buscado pelo agendador)."""
+    bad = endpoints.incompatible(model, "video")
+    if bad:
+        raise ProviderError(bad)
     key = _key()
     with calllog.track("openrouter", model, "video", f"vídeo {ratio} · prompt de {len(prompt)} caracteres") as call:
+        calllog.note_prompt(text=prompt)
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(VIDEO_URL, json={"model": model, "prompt": prompt, "aspect_ratio": ratio},
@@ -258,10 +262,11 @@ async def poll_video(job: str) -> tuple[str, bytes | None, str]:
 async def start_video(db, c: ContentItem) -> None:
     choice = video_choice(db, log=True, project_id=c.project_id)
     project = db.get(GrowthProject, c.project_id)
-    from .assets import for_piece, text_lines
+    from .assets import for_piece, rewrite_mentions, text_lines
 
     prompt = video_prompt(project.name if project else "", (project.style_brief if project else "") or "", c,
                           text_lines(for_piece(db, c)))
+    prompt = rewrite_mentions(db, c, prompt, [], 1)  # vídeo não recebe imagem: @Texto entra inteiro, @Imagem vira só o nome
     with calllog.context("video", c.project_id):
         c.media_job = await submit_video(choice.model, prompt, VIDEO_RATIO.get(c.visual_format, "9:16"))
     c.image_error = ""

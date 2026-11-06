@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import re
+import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
@@ -32,7 +33,7 @@ from . import layouts as lay
 from . import media as med
 from . import assets as ast
 from . import missions
-from . import modelcfg
+from . import endpoints, modelcfg
 from . import pipeline
 from . import routines
 from . import projects as proj
@@ -98,9 +99,11 @@ async def lifespan(_app: FastAPI):
     finally:
         db.close()
     scheduler = asyncio.create_task(growth.scheduler_loop()) if get_settings().scheduler_enabled else None
+    sender = asyncio.create_task(_auto_send_loop()) if get_settings().scheduler_enabled else None
     yield
-    if scheduler:
-        scheduler.cancel()
+    for t in (scheduler, sender):
+        if t:
+            t.cancel()
 
 
 app = FastAPI(title="Growth OS", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -342,7 +345,9 @@ def model_settings(auth: Auth = Depends(current_auth), db: DB = Depends(get_db))
 async def openrouter_models(kind: str = "text", auth: Auth = Depends(current_auth)):
     """Modelos do OpenRouter que servem para a atividade, com preços (dólar) direto da API deles."""
     data = await modelcfg.openrouter_models()
-    return {**data, "models": modelcfg.for_kind(data["models"], kind)}
+    models = [{**m, "route": (r.route if (r := endpoints.lookup(m["id"])) else ""), "known_route": endpoints.is_known(m["id"])}
+              for m in modelcfg.for_kind(data["models"], kind)]
+    return {**data, "models": models}
 
 
 class ModelChoiceIn(BaseModel):
@@ -359,13 +364,14 @@ def save_model_setting(activity: str, body: ModelChoiceIn, request: Request,
     provider, model, reasoning = body.provider.strip(), body.model.strip(), body.reasoning.strip()
     if not provider:
         model = reasoning = ""  # sem provider = segue o padrão
-    err = modelcfg.check(provider, model, reasoning, modelcfg.kind_of(activity))
+    kind = modelcfg.kind_of(activity)
+    err = modelcfg.check(provider, model, reasoning, kind)
     if err:
         raise HTTPException(400, err)
     modelcfg.save(db, activity, provider, model, reasoning)
     audit(db, auth.user.username, "model_setting", f"{activity}: {provider or 'padrão'} {model} {reasoning}".strip(),
           client_ip(request))
-    return {"ok": True}
+    return {"ok": True, "warning": modelcfg.warning(provider, model, kind)}
 
 
 def _conv_json(c: Conversation) -> dict:
@@ -673,9 +679,19 @@ def ai_calls(limit: int = 100, status: str = "", activity: str = "", after_id: i
     failed_total = base.filter(AiCall.status == "error").count()
     latest_id = db.query(func.max(AiCall.id)).scalar() or 0
     labels = {a["key"]: a["label"] for a in modelcfg.ACTIVITIES} | calllog.ACTIVITY_LABELS
-    return {"running": running, "failed_24h": failed, "failed_total": failed_total, "latest_id": latest_id, "calls": [
+    return {"running": running, "failed_24h": failed, "failed_total": failed_total, "latest_id": latest_id,
+            "log_prompts": calllog.full_enabled(), "calls": [
         calllog.call_json(r) | {"project": names.get(r.project_id, ""), "activity_label": labels.get(r.activity, r.activity)}
         for r in rows]}
+
+
+@app.get("/api/calls/{call_id}")
+def ai_call_detail(call_id: int, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Uma chamada com o prompt enviado e o retorno completos (só existem nas gravadas com GOS_LOG_PROMPTS=true)."""
+    r = db.get(AiCall, call_id)
+    if r is None:
+        raise HTTPException(404, "chamada não encontrada")
+    return calllog.full_json(r)
 
 
 @app.get("/api/costs")
@@ -1040,7 +1056,7 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
     """Aprova ou rejeita cartões de qualquer tipo. Ação externa de risco alto exige o código 2FA (consumido uma vez)."""
     ip = client_ip(request)
     seen: set[tuple[str, int]] = set()
-    done, errors, to_run = [], [], []
+    done, errors, to_run, to_send = [], [], [], []
     totp_ok: bool | None = None
     for it in body.items:
         key = (it.kind, it.ref_id)
@@ -1059,6 +1075,8 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
             elif it.kind == "content":
                 c = _content_or_404(db, it.ref_id)
                 appr.decide_content(db, c, body.approve, body.note)
+                if body.approve:
+                    to_send.append(c)
                 detail = f"#{c.id} {c.channel}"
             elif it.kind == "mission":
                 m = db.get(Mission, it.ref_id)
@@ -1096,6 +1114,8 @@ async def decide_approvals(body: ApprovalDecideIn, request: Request, auth: Auth 
         await acts.execute_approved(db, a)
         audit(db, auth.user.username, "action_executed", f"#{a.id} {a.integration}.{a.operation} -> {a.status}", ip)
         growth.action_settled(db, a)  # feita ou falhou: a tarefa que esperava continua com o desfecho
+    for c in to_send:  # peça de rede social aprovada: vai sozinha ao Postiz (agenda ou publica)
+        await _auto_send(db, c, auth.user.username, ip)
     return {"decided": done, "errors": errors,
             "actions": [{"id": a.id, "status": a.status, "error": a.error} for a in to_run]}
 
@@ -1790,20 +1810,193 @@ def update_content(cid: int, body: ContentIn, request: Request, auth: Auth = Dep
 
 
 @app.post("/api/content/{cid}/decide")
-def decide_content(cid: int, body: ContentDecideIn, request: Request,
-                   auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+async def decide_content(cid: int, body: ContentDecideIn, request: Request,
+                         auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
     c = _content_or_404(db, cid)
     try:
         appr.decide_content(db, c, body.approve, body.note)
     except appr.ApprovalError as e:
         raise HTTPException(e.code, str(e)) from e
-    audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}",
-          client_ip(request))
-    return _content_json(db, c)
+    ip = client_ip(request)
+    audit(db, auth.user.username, "content_" + ("approve" if body.approve else "reject"), f"#{c.id} {c.channel}", ip)
+    auto = await _auto_send(db, c, auth.user.username, ip) if body.approve else None
+    return {**_content_json(db, c), "auto": auto}
+
+
+def postiz_network(identifier: str) -> str:
+    """Canal do OS para um provedor do Postiz: "instagram-standalone" e "instagram" são Instagram, "linkedin-page" é LinkedIn..."""
+    ident = str(identifier or "").strip().lower()
+    if ident in cnt.CHANNELS:
+        return ident
+    head = ident.split("-")[0]
+    return head if head in cnt.CHANNELS else ident
+
+
+def choose_postiz_channel(db: DB, project: GrowthProject, channel: str, mine: list[dict]) -> tuple[str, str]:
+    """Qual canal do Postiz leva a peça do projeto: (id, "") ou ("", motivo). O Postiz é um só; cada projeto tem o seu canal.
+
+    1) o campo "canal" da integração do projeto (nome ou id); 2) o canal da rede cujo nome cita o projeto;
+    3) o único canal da rede. Se ainda sobrar dúvida, o owner escolhe no Publicar.
+    """
+    net = cnt.CHANNELS[channel][0]
+    row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "postiz").one_or_none()
+    want = str(routines._config(row).get("canal", "")).strip().lower()
+    if want:
+        hit = ([x for x in mine if str(x.get("id")).lower() == want or str(x.get("nome", "")).strip().lower() == want]
+               or [x for x in mine if want in str(x.get("nome", "")).lower()])
+        if len(hit) == 1:
+            return str(hit[0]["id"]), ""
+        return "", (f'o canal "{want}" configurado em Integrações > Postiz '
+                    f'{"não foi achado entre os canais de " + net if not hit else "bate com mais de um canal de " + net}.')
+    named = [x for x in mine if project.name.strip().lower() in str(x.get("nome", "")).lower()]
+    pool = named or mine
+    if len(pool) == 1:
+        return str(pool[0]["id"]), ""
+    return "", (f"há {len(pool)} canais de {net} no Postiz; preencha o campo Canal em Integrações > Postiz deste projeto "
+                "ou escolha um no Publicar.")
+
+
+AUTO_NOTE = "Envio automático ao Postiz não saiu: "
+PADRAO = "padrao_"  # chave na config do Postiz: canal escolhido por rede (padrao_instagram...)
+
+
+def _slug(text: str) -> str:
+    """Minúsculas, sem acento e só letras/números: "A Ilha" e "a-ilha" viram "ailha"."""
+    base = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]", "", base)
+
+
+def _project_keys(project: GrowthProject) -> set[str]:
+    """Nomes pelos quais um canal do Postiz costuma citar o projeto: nome, slug e o miolo dos domínios."""
+    keys = {_slug(project.name), _slug(project.slug)}
+    for d in re.split(r"[,\s]+", project.domains or ""):
+        parts = [x for x in d.lower().split(".") if x and x not in ("www", "com", "br", "io", "net", "org", "app")]
+        keys.update(_slug(x) for x in parts)
+    return {k for k in keys if len(k) >= 3}
+
+
+def pick_postiz_channel(db: DB, project: GrowthProject, channel: str, mine: list[dict]) -> dict | None:
+    """Qual canal do Postiz recebe a peça de `channel` neste projeto, sem perguntar (None = não dá para saber).
+
+    Um só canal da rede: ele. Vários: o que o owner já escolheu antes neste projeto (guardado na integração) e,
+    sem isso, o único cujo nome cita o projeto (ex.: "A Ilha Jogo" no projeto a-ilha).
+    """
+    if str(routines._config(db.query(Integration).filter(Integration.project_id == project.id,
+                                                          Integration.kind == "postiz").one_or_none()).get("canal", "")).strip():
+        found, _ = choose_postiz_channel(db, project, channel, mine)  # campo "Canal" da integração manda mais que tudo
+        return next((x for x in mine if str(x["id"]) == found), None)
+    if len(mine) == 1:
+        return mine[0]
+    saved = routines._config(db.query(Integration).filter(Integration.project_id == project.id,
+                                                           Integration.kind == "postiz").one_or_none()).get(PADRAO + channel)
+    if saved and (hit := next((x for x in mine if str(x.get("id")) == saved), None)):
+        return hit
+    keys = _project_keys(project)
+    named = [x for x in mine if any(k in _slug(x.get("nome", "")) for k in keys)]
+    return named[0] if len(named) == 1 else None
+
+
+def remember_postiz_channel(db: DB, project: GrowthProject, channel: str, canal_id: str) -> None:
+    row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "postiz").one_or_none()
+    if row is None:
+        return
+    cfg = routines._config(row)
+    cfg[PADRAO + channel] = str(canal_id)[:120]
+    row.config = json.dumps(cfg, ensure_ascii=False)
+    db.commit()
+
+
+async def _auto_send(db: DB, c: ContentItem, actor: str, ip: str) -> dict:
+    """Peça de rede social aprovada vai sozinha ao Postiz: com data futura, agenda; sem data (ou já passou), publica agora.
+
+    Se não der (Postiz desligado, nenhum canal da rede ou vários sem como saber qual), a peça fica aprovada com o motivo
+    na nota, e o botão Publicar continua valendo. Devolve o desfecho para a tela: {"state", "message", "pick"}.
+    """
+    if c.status != "approved" or cnt.CHANNELS.get(c.channel, ("", ""))[1] != "social" or cnt.needs_image(c):
+        return {"state": "skipped", "message": "", "pick": []}
+    project = db.get(GrowthProject, c.project_id)
+
+    def why(msg: str, pick: list | None = None) -> dict:
+        c.note = (AUTO_NOTE + msg)[:1000]
+        cnt.touch(c)
+        db.commit()
+        return {"state": "pick" if pick else "held", "message": msg, "pick": pick or []}
+
+    if "postiz" not in acts._ready(db, project):
+        return why("a integração Postiz não está ligada e pronta neste projeto (Automações > Integrações).")
+    try:
+        res = await acts.run_operation(db, acts.Ticket(0, project.id, "owner", 0), "postiz", "listar_canais", {})
+        if res.get("status") != "done":
+            return why(res.get("message") or "não consegui listar os canais do Postiz.")
+        canais = [x for x in (res.get("result") or {}).get("canais", []) if not x.get("desativado")]
+        mine = [x for x in canais if postiz_network(x.get("rede", "")) == c.channel]
+        if not mine:
+            return why(f"nenhum canal de {cnt.CHANNELS[c.channel][0]} conectado no Postiz.")
+        chosen = pick_postiz_channel(db, project, c.channel, mine)
+        if chosen is None:
+            cfg_msg = choose_postiz_channel(db, project, c.channel, mine)[1] if routines._config(
+                db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "postiz").one_or_none()).get("canal") else ""
+            if cfg_msg:  # o Canal configurado não bate: corrigir a configuração, não escolher no ato
+                return why(cfg_msg)
+            return why(f"há {len(mine)} canais de {cnt.CHANNELS[c.channel][0]} no Postiz e nenhum leva o nome de {project.name}; escolha um.",
+                       [{"id": str(x["id"]), "nome": x.get("nome") or str(x["id"]), "rede": x.get("rede", "")} for x in mine])
+        later = bool(c.scheduled_at and c.scheduled_at > cnt.local_now())
+        out = await _publish_piece(db, c, PublishIn(canal_id=str(chosen["id"])), _Actor(actor), ip)
+        action = out.get("action") or {}
+        if c.status == "sent":
+            return {"state": "sent", "message": f"{'Agendada' if later else 'Publicada'} no Postiz ({chosen.get('nome') or chosen['id']}).", "pick": []}
+        return {"state": "failed", "message": action.get("error") or c.note, "pick": []}
+    except HTTPException as e:
+        return why(str(e.detail))
+
+
+async def _auto_send_loop() -> None:
+    while True:
+        try:
+            await auto_send_pending()
+        except Exception:  # noqa: BLE001 - o laço nunca pode morrer
+            growth.log.exception("envio automático ao Postiz")
+        await asyncio.sleep(60)
+
+
+class _Actor:
+    """Quem dispara um envio fora de uma requisição (aprovação em lote, varredura do agendador)."""
+
+    def __init__(self, username: str, user=None):
+        self.user = user or type("U", (), {"username": username})()
+
+
+async def auto_send_pending() -> None:
+    """Varredura do agendador: peça social aprovada que nunca foi ao Postiz vai agora.
+
+    Pega aprovações por qualquer caminho (lote, peça criada pelo owner, data ou imagem acertadas depois).
+    Só olha peças com data futura ou aprovadas nas últimas 24 h, e pula as que já tentaram (há uma ação)
+    ou já têm o motivo de não ter ido na nota.
+    """
+    db = new_session()
+    try:
+        social = [k for k, v in cnt.CHANNELS.items() if v[1] == "social"]
+        since = utcnow() - timedelta(hours=24)
+        rows = (db.query(ContentItem)
+                .filter(ContentItem.status == "approved", ContentItem.channel.in_(social),
+                        or_(ContentItem.scheduled_at > cnt.local_now(), ContentItem.decided_at >= since))
+                .order_by(ContentItem.id).limit(20).all())
+        for c in rows:
+            if (c.note or "").startswith(AUTO_NOTE) or cnt.needs_image(c):
+                continue
+            if db.query(Action).filter(Action.idempotency_key.like(f"conteudo-{c.id}-%")).count():
+                continue
+            try:
+                await _auto_send(db, c, "agendador", "")
+            except Exception:  # noqa: BLE001 - uma peça com problema não trava as outras
+                growth.log.exception("envio automático da peça #%s", c.id)
+    finally:
+        db.close()
 
 
 class PublishIn(BaseModel):
     canal_id: str = Field(default="", max_length=120)
+    lembrar: bool = False  # vale como o canal padrão desta rede neste projeto
     totp: str = Field(default="", max_length=12)
 
 
@@ -1824,13 +2017,15 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
 
     Apertar o botão é a aprovação da ação; e-mail para terceiros exige também o 2FA.
     """
-    c = _content_or_404(db, cid)
+    return await _publish_piece(db, _content_or_404(db, cid), body, auth, client_ip(request))
+
+
+async def _publish_piece(db: DB, c: ContentItem, body: PublishIn, auth: Auth, ip: str) -> dict:
     if c.status not in ("approved", "failed"):
         raise HTTPException(409, "só conteúdo aprovado pode ser publicado")
     if cnt.needs_image(c):
         raise HTTPException(409, "esta peça é visual e ainda não tem imagem: gere ou suba a imagem antes de publicar")
     project = db.get(GrowthProject, c.project_id)
-    ip = client_ip(request)
     when = None
     if c.channel == "email":
         kind, operation = "email", "enviar_email"
@@ -1839,9 +2034,19 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
         raw = {"para": c.recipient, "assunto": c.title or "(sem assunto)", "texto": c.body}
     elif cnt.CHANNELS.get(c.channel, ("", ""))[1] == "social":
         kind, operation = "postiz", "publicar_post"
-        if not body.canal_id.strip():
-            raise HTTPException(422, "escolha o canal do Postiz")
-        raw = {"canal_id": body.canal_id.strip(), "texto": c.body}
+        canal = body.canal_id.strip()
+        if not canal:  # sem canal escolhido: o do projeto (campo Canal da integração, nome citando o projeto ou o único)
+            res = await acts.run_operation(db, acts.Ticket(0, project.id, "owner", 0), "postiz", "listar_canais", {})
+            mine = [x for x in (res.get("result") or {}).get("canais", []) if not x.get("desativado")
+                    and postiz_network(x.get("rede", "")) == c.channel]
+            canal, msg = choose_postiz_channel(db, project, c.channel, mine) if mine else ("", "nenhum canal desta rede no Postiz")
+            if not canal:
+                raise HTTPException(422, f"escolha o canal do Postiz: {msg}")
+        raw = {"canal_id": canal, "texto": c.body}
+        if media_ids := cnt.media_asset_ids(c):
+            raw["midia_ids"] = ",".join(map(str, media_ids))
+        if c.visual_format == "story":
+            raw["tipo"] = "story"
         if c.scheduled_at and c.scheduled_at > cnt.local_now():
             operation = "agendar_post"
             when = c.scheduled_at.replace(tzinfo=ZoneInfo(get_settings().timezone)).astimezone(ZoneInfo("UTC"))
@@ -1870,6 +2075,8 @@ async def publish_content(cid: int, body: PublishIn, request: Request,
                  "2fa" if op.risk == "alto" else "clique")
     audit(db, auth.user.username, "content_publish", f"#{c.id} {c.channel} via {kind}.{operation}", ip)
     await acts.execute_approved(db, a)
+    if body.lembrar and kind == "postiz" and a.status == "done":
+        remember_postiz_channel(db, project, c.channel, body.canal_id.strip())
     if a.status == "done":
         c.status, c.sent_at, c.note = "sent", utcnow(), ""
         if a.external_ref.startswith("http"):
@@ -1949,9 +2156,10 @@ async def content_complete(cid: int, request: Request, auth: Auth = Depends(curr
 
 
 @app.post("/api/content/{cid}/image/upload")
-def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: Auth = Depends(current_auth),
-                         db: DB = Depends(get_db)):
-    """Imagem própria do owner no lugar da gerada (ou quando a geração não é possível)."""
+async def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: Auth = Depends(current_auth),
+                               db: DB = Depends(get_db)):
+    """Imagem do owner para a peça. Se a peça usa um layout (modo template com template definido), a imagem ENTRA no
+    layout, como a mídia da peça; só sem layout ela substitui a imagem final como está."""
     c = _content_or_404(db, cid)
     if c.status not in cnt.EDITABLE:
         raise HTTPException(409, "só dá para mudar a imagem de uma peça em aprovação ou aprovada")
@@ -1961,8 +2169,20 @@ def content_upload_image(cid: int, body: PieceUploadIn, request: Request, auth: 
         data, mime = lay.decode_image(body.data)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+    template = None
+    if (c.image_mode or "template") == "template":
+        try:
+            template = lay.piece_template(db, c)
+        except ProviderError as e:
+            raise HTTPException(422, str(e)) from e
+    if template is not None:
+        c.media_source = "upload"
+        med.set_media(db, c, data, mime, "upload")
+        audit(db, auth.user.username, "content_image_upload", f"#{c.id} no layout #{template.id}", client_ip(request))
+        await _compose_after_media(db, c)
+        return _content_json(db, c)
     lay.set_piece_image(db, c, data, mime, model="upload")
-    audit(db, auth.user.username, "content_image_upload", f"#{c.id}", client_ip(request))
+    audit(db, auth.user.username, "content_image_upload", f"#{c.id} substitui (sem layout)", client_ip(request))
     return _content_json(db, c)
 
 

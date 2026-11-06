@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     codex_bin: str = "codex"
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
+    # GOS_LOG_PROMPTS=true grava no log de chamadas o prompt inteiro (sistema + mensagens) e o retorno completo de cada
+    # chamada à IA. Desligado por padrão: o log normal guarda só resumos. Chaves e tokens são tirados mesmo ligado.
+    log_prompts: bool = False
     # Serviço de vídeo (HyperFrames + Chromium + ffmpeg, rede interna sem internet) que anima o template da peça em MP4.
     motion_url: str = "http://motion:3000"
 

@@ -173,7 +173,8 @@ INTEGRATIONS = [
      "secret": "ACCESS_TOKEN", "kpis": "seguidores, engajamento"},
     {"kind": "postiz", "name": "Postiz", "icon": "🗓", "category": "Redes sociais", "cost": "Open source · self-hosted",
      "about": "Agenda e publica posts em várias redes. Rascunhos saem direto; agendar e publicar sempre pedem a sua aprovação.",
-     "fields": [("url", "URL do Postiz", "https://postiz.seudominio.com")],
+     "fields": [("url", "URL do Postiz", "https://postiz.seudominio.com"),
+                ("canal", "Canal deste projeto (nome ou id, se houver vários)", "ex.: A Ilha")],
      "secret": "API_KEY", "kpis": ""},
     {"kind": "telegram", "name": "Telegram do owner", "icon": "✈️", "category": "Avisos", "cost": "Grátis",
      "about": "Os agentes avisam você no Telegram. Por padrão cada aviso pede aprovação; escreva \"sim\" em liberar para dispensar.",
@@ -265,6 +266,7 @@ def save_integration(db: DB, project: GrowthProject, kind: str, config: dict, en
     allowed = {k for k, *_ in meta["fields"]}
     clean = {k: str(v).strip()[:300] for k, v in (config or {}).items() if k in allowed and str(v or "").strip()}
     row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == kind).one_or_none()
+    clean.update({k: v for k, v in _config(row).items() if k.startswith("padrao_")})  # escolhas guardadas pelo OS
     if row is None:
         row = Integration(project_id=project.id, kind=kind)
         db.add(row)

@@ -120,7 +120,7 @@ async def run_operation(db: DB, ticket: Ticket, kind: str, operation: str, raw_p
     except ConnectorError as e:
         return {"status": "error", "message": str(e)}
     row = db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == kind).one()
-    ctx = Ctx(config=routines._config(row), secret=_secret(project, kind), transport=transport)
+    ctx = Ctx(config=routines._config(row), secret=_secret(project, kind), transport=transport, project_id=project.id)
     title = f"{ready[kind]['name']}: {operation}"
 
     if op.effect == "external":
@@ -179,7 +179,8 @@ async def execute_approved(db: DB, action: Action, transport: httpx.AsyncBaseTra
     if project is None or conn is None or row is None or not row.enabled:
         error = "a integração não está mais ligada neste projeto"
     else:
-        ctx = Ctx(config=routines._config(row), secret=_secret(project, action.integration), transport=transport)
+        ctx = Ctx(config=routines._config(row), secret=_secret(project, action.integration), transport=transport,
+                  project_id=project.id)
         params = json.loads(action.params or "{}")
         for attempt in range(len(RETRY_DELAYS) + 1):
             action.attempts += 1

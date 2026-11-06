@@ -61,6 +61,7 @@ class Ctx:
     config: dict
     secret: str = ""
     transport: httpx.AsyncBaseTransport | None = None  # os testes trocam por um transporte falso
+    project_id: int = 0  # projeto dono da operação (limita quais arquivos do OS um conector pode anexar)
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=20, transport=self.transport, follow_redirects=False)

@@ -4,7 +4,7 @@ from app import growth
 from app import layouts as lay
 
 from .test_growth import pid  # noqa: F401 - fixtures
-from .test_layout_variants import AI, RENDERS, new_piece, studio, upload_template  # noqa: F401 - fixtures
+from .test_layout_variants import AI, B64, RENDERS, new_piece, studio, upload_template  # noqa: F401 - fixtures
 
 BOXES = {
     "titulo": {"x": 6, "y": 20, "w": 88, "h": 10, "max": 30, "size": 64, "align": "center", "color": "#f5d27a", "weight": 800},
@@ -23,7 +23,7 @@ def test_clean_boxes_validates_and_clamps():
     assert b["titulo"] == {"x": 0, "y": 95, "w": 100, "h": 3, "max": 400, "size": 16, "align": "center", "valign": "middle",
                            "color": "#ffffff", "weight": 800}
     assert "midia" not in b and b["texto"]["max"] == 140
-    for bad in ({}, {"titulo": {}}, "x"):
+    for bad in ({}, {"titulo": "x"}, "x"):
         try:
             lay.clean_boxes(bad)
         except ValueError:
@@ -51,7 +51,23 @@ def test_editor_from_art_makes_approved_template_and_edits_in_place(studio):
     edited.pop("midia")
     t2 = studio.post(f"/api/layouts/{t['id']}/boxes", json={"boxes": edited}).json()
     assert t2["id"] == t["id"] and t2["boxes"]["titulo"]["max"] == 40 and not t2["media_slot"]
-    assert studio.post(f"/api/layouts/{aid}/boxes", json={"boxes": {"titulo": {}}}).status_code == 422
+    assert studio.post(f"/api/layouts/{aid}/boxes", json={"boxes": {}}).status_code == 422
+
+
+def test_boxes_are_optional_but_at_least_one():
+    only_img = lay.clean_boxes({"midia": BOXES["midia"]})
+    assert list(only_img) == ["midia"] and lay.text_limits(None) == lay.DEFAULT_LIMITS
+    html = lay.box_template("reel", only_img)
+    assert "{{midia}}" in html and 'class="bx t"' not in html and 'class="bx s"' not in html
+    only_title = lay.clean_boxes({"titulo": BOXES["titulo"]})
+    assert list(only_title) == ["titulo"] and "{{texto}}" not in lay.box_template("story", only_title)
+
+
+def test_editor_saves_layout_without_text_boxes(studio):
+    aid = art_id(studio)
+    t = studio.post(f"/api/layouts/{aid}/boxes", json={"boxes": {"midia": BOXES["midia"]}})
+    assert t.status_code == 200, t.text
+    assert list(t.json()["boxes"]) == ["midia"] and t.json()["media_slot"]
 
 
 def test_ai_photo_goes_only_into_image_box(studio):
@@ -94,3 +110,18 @@ def test_agents_get_text_limits(studio):
     finally:
         s.close()
     assert "Story: título até 30, texto até 50" in brief
+
+
+def test_upload_goes_into_layout_or_replaces_without_one(studio):
+    cid = new_piece()
+    r = studio.post(f"/api/content/{cid}/image/upload", json={"data": B64})  # sem template: substitui como está
+    assert r.status_code == 200 and r.json()["image_url"] and not r.json()["media_file_url"]
+
+    aid = art_id(studio)
+    tid = studio.post(f"/api/layouts/{aid}/boxes", json={"boxes": BOXES}).json()["id"]
+    studio.post(f"/api/layouts/{tid}/default")
+    AI.clear()
+    RENDERS.clear()
+    item = studio.post(f"/api/content/{cid}/image/upload", json={"data": B64}).json()
+    assert item["media_source"] == "upload" and item["media_file_url"] and item["image_url"]
+    assert not AI and RENDERS[-1]["media"] and '<div class="photo"><img class="m-media"' in RENDERS[-1]["html"]

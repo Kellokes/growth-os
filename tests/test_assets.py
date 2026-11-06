@@ -144,3 +144,21 @@ def test_mentions_accept_text_and_video_assets(studio, monkeypatch):
     assert AI[-1]["refs"] == 1 and 'Tom ("Novo tom.")' in AI[-1]["prompt"]
     # o texto não aparece como imagem nas listas de referência do estúdio
     assert all(x["name"] != "Tom" for x in studio.get("/api/layouts?project=zombie-party").json().get("references", []))
+
+
+def test_mentions_in_media_field_with_a_layout(studio, monkeypatch):
+    ai_template(studio, monkeypatch, PLAIN)
+    add(studio, name="Logo", category="logo", note="logo verde", always=True)
+    add(studio, name="Cartas", category="carta", note="cartas do jogo")
+    s = dbmod.new_session()
+    c = dbmod.ContentItem(project_id=pid("zombie-party"), channel="instagram", body="x", visual_format="story",
+                          status="pending", media="Close na mão segurando as @Cartas, grupo ao fundo")
+    s.add(c)
+    s.commit()
+    cid = c.id
+    assert [a.name for a in ast.for_piece(s, c)] == ["Cartas", "Logo"]  # citado primeiro, depois o "sempre"
+    s.close()
+    AI.clear()
+    assert studio.post(f"/api/content/{cid}/image", json={}).status_code == 200
+    p = AI[-1]["prompt"]
+    assert "Cartas (image 2)" in p and "image 2 = Cartas" in p and "image 3 = Logo" in p  # image 1 é a arte do layout

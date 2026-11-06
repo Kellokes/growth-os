@@ -51,7 +51,7 @@
       <figure class="lay-thumb ${ratioCls()} ${t.is_default ? "official" : ""}">
         <img src="${esc(t.url)}" alt="template ${esc(t.name)}" loading="lazy">
         <figcaption><span class="lay-name">${esc(t.name || `Template #${t.id}`)}</span>${t.is_default ? '<span class="lay-badge def">padrão</span>' : `<span class="lay-badge">${STATUS[t.status] || t.status}</span>`}
-          <br>${t.model === "editor" ? `caixas do editor · título ${t.boxes.titulo.max} / texto ${t.boxes.texto.max} caracteres` : t.model === "texto-padrao" ? "texto padrão" : "texto pela IA"}${t.media_slot ? " · com caixa de imagem" : ""}</figcaption>
+          <br>${t.model === "editor" ? `caixas do editor · ${[t.boxes.titulo && `título ${t.boxes.titulo.max}`, t.boxes.texto && `texto ${t.boxes.texto.max}`].filter(Boolean).join(" / ") || "só imagem"}${t.boxes.titulo || t.boxes.texto ? " caracteres" : ""}` : t.model === "texto-padrao" ? "texto padrão" : "texto pela IA"}${t.media_slot ? " · com caixa de imagem" : ""}</figcaption>
         <div class="row">
           ${t.status !== "approved" ? `<button class="btn small primary" type="button" data-ok="${t.id}">Aprovar</button>` : ""}
           ${t.status === "approved" && !t.is_default ? `<button class="btn small" type="button" data-def="${t.id}">Tornar padrão</button>` : ""}
@@ -101,11 +101,13 @@
     texto: "Frase de apoio do post, ocupando o espaço que você reservou para o texto nesta arte, até o limite de caracteres definido aqui no editor de caixas.",
   };
   const fit = (t, n) => { if (t.length <= n) return t; let c = t.slice(0, n - 1); if (t[n - 1] !== " ") c = c.replace(/\s+\S*$/, ""); return c.replace(/[\s,;:.-]+$/, "") + "…"; };
-  let ed = null; // { id, fmt, boxes, sel, imgOn }
+  let ed = null; // { id, fmt, boxes, sel }  boxes: só as caixas que existem (titulo, texto, midia)
+  const KEYS = ["titulo", "texto", "midia"];
 
   function openEditor(id, artUrl, format, boxes) {
-    const b = JSON.parse(JSON.stringify(boxes && boxes.titulo ? boxes : { titulo: BX_DEF.titulo, texto: BX_DEF.texto }));
-    ed = { id, fmt: format, sel: "titulo", imgOn: !!b.midia, boxes: { titulo: b.titulo, texto: b.texto, midia: b.midia || { ...BX_DEF.midia } } };
+    const src = boxes && Object.keys(boxes).length ? boxes : { titulo: BX_DEF.titulo, texto: BX_DEF.texto };
+    const b = JSON.parse(JSON.stringify(src));
+    ed = { id, fmt: format, boxes: b, sel: KEYS.find((k) => b[k]) || "" };
     const stage = $("#bx-stage");
     const [w, h] = CANVAS[format] || CANVAS.story;
     stage.style.aspectRatio = `${w} / ${h}`;
@@ -120,9 +122,11 @@
     if (!ed) return;
     const stage = $("#bx-stage");
     const scale = stage.clientWidth / (CANVAS[ed.fmt] || CANVAS.story)[0];
-    for (const k of ["titulo", "texto", "midia"]) {
+    if (!ed.boxes[ed.sel]) ed.sel = KEYS.find((k) => ed.boxes[k]) || "";
+    for (const k of KEYS) {
       const el = stage.querySelector(`[data-box="${k}"]`); const b = ed.boxes[k];
-      el.hidden = k === "midia" && !ed.imgOn;
+      el.hidden = !b;
+      if (!b) continue;
       el.classList.toggle("sel", ed.sel === k);
       Object.assign(el.style, { left: `${b.x}%`, top: `${b.y}%`, width: `${b.w}%`, height: `${b.h}%` });
       const sm = el.querySelector(".bx-sample");
@@ -131,11 +135,16 @@
       Object.assign(sm.style, { fontSize: `${b.size * scale}px`, fontWeight: String(b.weight), color: b.color, textAlign: b.align,
         justifyContent: { top: "flex-start", middle: "center", bottom: "flex-end" }[b.valign || "middle"], lineHeight: k === "titulo" ? "1.12" : "1.28" });
     }
-    document.querySelectorAll("#bx-tabs [data-bx]").forEach((t) => { t.classList.toggle("on", t.dataset.bx === ed.sel); t.setAttribute("aria-selected", t.dataset.bx === ed.sel); });
+    document.querySelectorAll("#bx-tabs [data-bx]").forEach((t) => { t.hidden = !ed.boxes[t.dataset.bx]; t.classList.toggle("on", t.dataset.bx === ed.sel); t.setAttribute("aria-selected", t.dataset.bx === ed.sel); });
+    document.querySelectorAll("#bx-add [data-add]").forEach((t) => { t.hidden = !!ed.boxes[t.dataset.add]; });
+    const has = !!ed.sel;
+    $("#bx-none").hidden = has; $("#bx-tabs").hidden = !has; $("#bx-remove").hidden = !has;
+    if (has) $("#bx-remove").textContent = `Remover ${BX_NAME[ed.sel].toLowerCase()}`;
     const isImg = ed.sel === "midia";
-    $("#bx-text-opts").hidden = isImg; $("#bx-img-opts").hidden = !isImg;
+    $("#bx-text-opts").hidden = !has || isImg; $("#bx-img-opts").hidden = !has || !isImg;
+    if (!has) return;
     const b = ed.boxes[ed.sel];
-    if (isImg) { $("#bx-img-on").checked = ed.imgOn; $("#bx-radius").value = b.radius || 0; $("#bx-radius").disabled = !ed.imgOn; }
+    if (isImg) { $("#bx-radius").value = b.radius || 0; }
     else {
       $("#bx-max").value = b.max; $("#bx-size").value = b.size; $("#bx-align").value = b.align;
       $("#bx-valign").value = b.valign || "middle"; $("#bx-color").value = b.color; $("#bx-bold").checked = b.weight >= 650;
@@ -170,7 +179,7 @@
     drawEditor(); box.focus();
   });
   $("#bx-tabs").addEventListener("click", (ev) => { const t = ev.target.closest("[data-bx]"); if (t && ed) { ed.sel = t.dataset.bx; drawEditor(); } });
-  const setOpt = (fn) => () => { if (ed) { fn(ed.boxes[ed.sel]); drawEditor(); } };
+  const setOpt = (fn) => () => { if (ed && ed.boxes[ed.sel]) { fn(ed.boxes[ed.sel]); drawEditor(); } };
   $("#bx-max").oninput = setOpt((b) => { b.max = clamp(Number($("#bx-max").value) || b.max, 5, 400); });
   $("#bx-size").oninput = setOpt((b) => { b.size = clamp(Number($("#bx-size").value) || b.size, 16, 180); });
   $("#bx-align").onchange = setOpt((b) => { b.align = $("#bx-align").value; });
@@ -178,12 +187,19 @@
   $("#bx-color").oninput = setOpt((b) => { b.color = $("#bx-color").value; });
   $("#bx-bold").onchange = setOpt((b) => { b.weight = $("#bx-bold").checked ? 800 : 500; });
   $("#bx-radius").oninput = setOpt((b) => { b.radius = clamp(Number($("#bx-radius").value) || 0, 0, 200); });
-  $("#bx-img-on").onchange = () => { if (ed) { ed.imgOn = $("#bx-img-on").checked; drawEditor(); } };
+  $("#bx-add").addEventListener("click", (ev) => { // botão "Adicionar": funciona com toque, sem precisar arrastar nada
+    const k = ev.target.closest("[data-add]")?.dataset.add; if (!k || !ed || ed.boxes[k]) return;
+    const off = Object.keys(ed.boxes).length * 3; // cada caixa nova nasce um pouco deslocada para não cobrir a outra
+    ed.boxes[k] = { ...BX_DEF[k], y: Math.min(BX_DEF[k].y + off, 100 - BX_DEF[k].h) };
+    ed.sel = k; drawEditor();
+  });
+  $("#bx-remove").onclick = () => { if (ed && ed.boxes[ed.sel]) { delete ed.boxes[ed.sel]; drawEditor(); } };
   $("#bx-close").onclick = () => { $("#bx-dlg").close(); ed = null; };
   window.addEventListener("resize", drawEditor);
   $("#bx-save").onclick = async () => {
     if (!ed) return;
-    const boxes = { titulo: ed.boxes.titulo, texto: ed.boxes.texto, ...(ed.imgOn ? { midia: ed.boxes.midia } : {}) };
+    const boxes = ed.boxes;
+    if (!Object.keys(boxes).length) { $("#bx-msg").textContent = "Adicione ao menos uma caixa."; return; }
     const btn = $("#bx-save"); btn.disabled = true; $("#bx-msg").textContent = "Montando a prévia…";
     try {
       await api(`/api/layouts/${ed.id}/boxes`, { method: "POST", body: JSON.stringify({ boxes }) });

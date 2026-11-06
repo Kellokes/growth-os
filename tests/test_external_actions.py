@@ -89,7 +89,7 @@ def test_postiz_flow_approve_publishes_once_with_raw_key(logged, monkeypatch):
     def handler(req: httpx.Request):
         calls.append((req.method, req.url.path, req.headers.get("authorization"), json.loads(req.content or b"null")))
         if req.url.path.endswith("/integrations"):
-            return httpx.Response(200, json=[{"id": "c1", "name": "Loja", "identifier": "instagram"}])
+            return httpx.Response(200, json=[{"id": "c1", "name": "Loja", "identifier": "linkedin"}])
         return httpx.Response(200, json=[{"postId": "p-9"}])
 
     assert run(a, "postiz", "listar_canais", transport=mock(handler))["result"]["canais"][0]["id"] == "c1"
@@ -107,29 +107,71 @@ def test_postiz_flow_approve_publishes_once_with_raw_key(logged, monkeypatch):
     assert len(posts) == 1 and posts[0][2] == "chave-secreta"  # sem "Bearer": o Postiz usa a chave direto
     body = posts[0][3]
     assert body["type"] == "now" and body["posts"][0]["integration"]["id"] == "c1"
-    assert body["posts"][0]["value"][0]["content"] == "Promo!" and body["posts"][0]["settings"]["__type"] == "instagram"
+    assert body["posts"][0]["value"][0]["content"] == "Promo!" and body["posts"][0]["settings"]["__type"] == "linkedin"
     s = dbmod.new_session()
     assert s.get(dbmod.Action, r["action_id"]).external_ref == "p-9"
     s.close()
 
 
-def test_postiz_instagram_payload_has_post_type_in_all_paths(logged, monkeypatch):
-    posts = []
+def _assets(project_slug, n):
+    s = dbmod.new_session()
+    pid_ = s.query(dbmod.GrowthProject).filter_by(slug=project_slug).one().id
+    ids = []
+    for i in range(n):
+        row = dbmod.LayoutAsset(project_id=pid_, kind="piece", mime="image/png", data=b"png%d" % i)
+        s.add(row)
+        s.flush()
+        ids.append(row.id)
+    s.commit()
+    s.close()
+    return pid_, ids
+
+
+def test_postiz_instagram_payload_has_post_type_and_media_in_all_paths(logged, monkeypatch):
+    (slug,) = make_projects("Zombie Party")
+    project_id, ids = _assets(slug, 2)
+    posts, uploads = [], []
 
     def handler(req: httpx.Request):
         if req.method == "GET":
             return httpx.Response(200, json=[{"id": "ig", "name": "IG", "identifier": "instagram"},
                                              {"id": "li", "name": "LI", "identifier": "linkedin"}])
+        if req.url.path.endswith("/upload"):
+            uploads.append(req.content)
+            n = len(uploads)
+            return httpx.Response(200, json={"id": f"m{n}", "path": f"https://cdn/{n}.png"})
         posts.append(json.loads(req.content))
         return httpx.Response(200, json=[{"postId": "p"}])
 
     conn = senders.Postiz()
-    ctx = senders.Ctx(config=POSTIZ, secret="k", transport=mock(handler))
+    ctx = senders.Ctx(config=POSTIZ, secret="k", transport=mock(handler), project_id=project_id)
+    midia = ",".join(map(str, ids))
     when = "2999-01-01T10:00:00Z"
     for op, extra in (("publicar_post", {}), ("agendar_post", {"quando": when}), ("criar_rascunho", {})):
-        asyncio.run(conn.run(ctx, op, {"canal_id": "ig", "texto": "x", **extra}))
+        asyncio.run(conn.run(ctx, op, {"canal_id": "ig", "texto": "x", "midia_ids": midia, **extra}))
     asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "li", "texto": "x"}))
     assert [p["posts"][0]["settings"].get("post_type") for p in posts] == ["post", "post", "post", None]
+    # as duas imagens sobem em ordem e vão no post (carrossel); sem mídia, o LinkedIn manda image vazio
+    assert [p["posts"][0]["value"][0]["image"] for p in posts[:1]] == [[{"id": "m1", "path": "https://cdn/1.png"},
+                                                                         {"id": "m2", "path": "https://cdn/2.png"}]]
+    assert b"png0" in uploads[0] and b"png1" in uploads[1]
+    assert posts[3]["posts"][0]["value"][0]["image"] == []
+    posts.clear()
+    asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "ig", "texto": "x", "midia_ids": str(ids[0]), "tipo": "story"}))
+    assert posts[0]["posts"][0]["settings"]["post_type"] == "story"
+
+
+def test_postiz_instagram_without_media_and_foreign_asset_are_refused(logged, monkeypatch):
+    a, b = make_projects("Zombie Party", "A Ilha")
+    _, mine = _assets(a, 1)
+    other_pid, theirs = _assets(b, 1)
+    handler = lambda req: httpx.Response(200, json=[{"id": "ig", "name": "IG", "identifier": "instagram"}])  # noqa: E731
+    conn = senders.Postiz()
+    ctx = senders.Ctx(config=POSTIZ, secret="k", transport=mock(handler), project_id=other_pid)
+    with pytest.raises(senders.ConnectorError, match="exige ao menos uma imagem"):
+        asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "ig", "texto": "x"}))
+    with pytest.raises(senders.ConnectorError, match="não existe neste projeto"):
+        asyncio.run(conn.run(ctx, "publicar_post", {"canal_id": "ig", "texto": "x", "midia_ids": str(mine[0])}))
 
 
 def test_postiz_rejects_unknown_channel_and_past_schedule(logged, monkeypatch):
@@ -261,6 +303,115 @@ def test_publish_approved_content_by_email_and_social(logged, monkeypatch):
     assert logged.post(f"/api/content/{zid}/publish", json={}).status_code == 422
 
 
+def _fake_postiz(monkeypatch, canais):
+    calls = []
+
+    async def fake_run(self, ctx, op, params):
+        calls.append((op, params))
+        if op == "listar_canais":
+            return {"canais": canais}
+        return {"tipo": "schedule" if op == "agendar_post" else "now", "canal": "IG", "ref": "p1"}
+
+    monkeypatch.setattr(senders.Postiz, "run", fake_run)
+    return calls
+
+
+def _pieces(a, *rows):
+    s = dbmod.new_session()
+    objs = [dbmod.ContentItem(project_id=pid(a), **r) for r in rows]
+    s.add_all(objs)
+    s.commit()
+    ids = [o.id for o in objs]
+    s.close()
+    return ids
+
+
+def test_approving_social_piece_sends_it_to_postiz(logged, monkeypatch):
+    from app import content as cnt
+    (a,) = make_projects("Zombie Party")
+    connect(a, "postiz", POSTIZ, monkeypatch)
+    # O Instagram sem Facebook chega do Postiz como "instagram-standalone"; canal desativado não conta.
+    calls = _fake_postiz(monkeypatch, [{"id": "ig1", "nome": "IG", "rede": "instagram-standalone"},
+                                       {"id": "ig0", "nome": "IG velho", "rede": "instagram", "desativado": True},
+                                       {"id": "li1", "nome": "LI", "rede": "linkedin-page"}])
+    future = cnt.local_now() + timedelta(days=2)
+    ids = _pieces(a, dict(channel="instagram", body="A", status="pending", scheduled_at=future),
+                  dict(channel="instagram", body="B", status="pending"),  # sem data: publica agora
+                  dict(channel="linkedin", body="L", status="pending", scheduled_at=future),
+                  dict(channel="x", body="C", status="pending", scheduled_at=future))  # sem canal X
+    out = [logged.post(f"/api/content/{i}/decide", json={"approve": True}).json() for i in ids]
+    assert [o["status"] for o in out[:3]] == ["sent", "sent", "sent"]
+    sched = [c[1] for c in calls if c[0] == "agendar_post"]
+    now = [c[1] for c in calls if c[0] == "publicar_post"]
+    assert [(x["canal_id"], x["texto"]) for x in sched] == [("ig1", "A"), ("li1", "L")]
+    assert [(x["canal_id"], x["texto"]) for x in now] == [("ig1", "B")]
+    assert out[3]["status"] == "approved" and "nenhum canal de X" in out[3]["note"]  # motivo visível; Publicar segue valendo
+
+
+def test_bulk_approval_and_sweep_send_to_postiz(logged, monkeypatch):
+    from app import content as cnt
+    from app import main
+    (a,) = make_projects("Zombie Party")
+    connect(a, "postiz", POSTIZ, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "ig1", "nome": "IG", "rede": "instagram"}])
+    future = cnt.local_now() + timedelta(days=1)
+    bulk, stuck, two = _pieces(a, dict(channel="instagram", body="Lote", status="pending", scheduled_at=future),
+                               dict(channel="instagram", body="Preso", status="approved", scheduled_at=future),
+                               dict(channel="instagram", body="Dois", status="approved", scheduled_at=future))
+    r = logged.post("/api/approvals/decide", json={"items": [{"kind": "content", "ref_id": bulk}], "approve": True})
+    assert r.status_code == 200
+    assert [c[1]["texto"] for c in calls if c[0] == "agendar_post"] == ["Lote"]
+    # Aprovada antes (ou por outro caminho) e nunca enviada: a varredura do agendador manda; não repete.
+    s = dbmod.new_session()
+    s.get(dbmod.ContentItem, two).status = "sent"
+    s.commit()
+    s.close()
+    asyncio.run(main.auto_send_pending())
+    asyncio.run(main.auto_send_pending())
+    assert [c[1]["texto"] for c in calls if c[0] == "agendar_post"] == ["Lote", "Preso"]
+    s = dbmod.new_session()
+    assert s.get(dbmod.ContentItem, stuck).status == "sent"
+    s.close()
+
+
+def test_each_project_uses_its_own_postiz_channel(logged, monkeypatch):
+    from app import content as cnt
+    (a,) = make_projects("A Ilha")
+    # um Postiz só, três contas de Instagram: uma por projeto
+    chans = [{"id": "z", "nome": "Zombie Party", "rede": "instagram"}, {"id": "t", "nome": "Take One", "rede": "instagram"},
+             {"id": "i", "nome": "A Ilha - Jogue no seu Whats", "rede": "instagram"}]
+    future = cnt.local_now() + timedelta(days=1)
+
+    connect(a, "postiz", POSTIZ, monkeypatch)  # sem campo Canal: o nome que cita o projeto decide
+    calls = _fake_postiz(monkeypatch, chans)
+    (p1,) = _pieces(a, dict(channel="instagram", body="1", status="pending", scheduled_at=future))
+    assert logged.post(f"/api/content/{p1}/decide", json={"approve": True}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["i"]
+
+    connect(a, "postiz", {**POSTIZ, "canal": "take one"}, monkeypatch)  # o campo Canal manda mais que o nome
+    calls.clear()
+    (p2,) = _pieces(a, dict(channel="instagram", body="2", status="pending", scheduled_at=future))
+    assert logged.post(f"/api/content/{p2}/decide", json={"approve": True}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["t"]
+
+    connect(a, "postiz", {**POSTIZ, "canal": "inexistente"}, monkeypatch)  # canal errado: não chuta, explica
+    (p3,) = _pieces(a, dict(channel="instagram", body="3", status="pending", scheduled_at=future))
+    out = logged.post(f"/api/content/{p3}/decide", json={"approve": True}).json()
+    assert out["status"] == "approved" and "inexistente" in out["note"]
+
+    connect(a, "postiz", POSTIZ, monkeypatch)  # Publicar sem canal na tela também usa o do projeto
+    calls.clear()
+    assert logged.post(f"/api/content/{p3}/publish", json={}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] in ("agendar_post", "publicar_post")] == ["i"]
+
+
+def test_postiz_network_mapping():
+    from app.main import postiz_network
+    assert postiz_network("instagram-standalone") == "instagram"
+    assert postiz_network("linkedin-page") == "linkedin"
+    assert postiz_network("x") == "x" and postiz_network("threads") == "threads"
+
+
 def test_failed_publish_marks_content_failed_and_can_retry(logged, monkeypatch):
     (a,) = make_projects("Zombie Party")
     connect(a, "email", EMAIL, monkeypatch)
@@ -282,3 +433,40 @@ def test_failed_publish_marks_content_failed_and_can_retry(logged, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
     again = logged.post(f"/api/content/{mid}/publish", json={"totp": code()})
     assert again.json()["status"] == "sent"
+
+
+def test_several_channels_of_one_network_pick_by_project(logged, monkeypatch):
+    """Vários Instagram no Postiz: vai o que leva o nome do projeto; sem pista, a tela recebe as opções e lembra a escolha."""
+    from app import content as cnt
+    (ilha,) = make_projects("A Ilha")
+    connect(ilha, "postiz", POSTIZ, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "t1", "nome": "Take One", "rede": "instagram"},
+                                       {"id": "z1", "nome": "Zombie Party", "rede": "instagram-standalone"},
+                                       {"id": "a1", "nome": "A Ilha Jogo", "rede": "instagram"}])
+    future = cnt.local_now() + timedelta(days=1)
+    (one,) = _pieces(ilha, dict(channel="instagram", body="Ilha", status="pending", scheduled_at=future))
+    r = logged.post(f"/api/content/{one}/decide", json={"approve": True}).json()
+    assert r["status"] == "sent" and r["auto"]["state"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["a1"]
+
+    # Sem nome que combine: pede a escolha (opções na resposta); publicar lembrando vale para as próximas.
+    (zp,) = make_projects("Outro")
+    calls.clear()
+    connect(zp, "postiz", POSTIZ, monkeypatch)
+    p1, p2 = _pieces(zp, dict(channel="instagram", body="1", status="pending"), dict(channel="instagram", body="2", status="pending"))
+    r = logged.post(f"/api/content/{p1}/decide", json={"approve": True}).json()
+    assert r["status"] == "approved" and r["auto"]["state"] == "pick" and len(r["auto"]["pick"]) == 3
+    assert not calls or all(c[0] == "listar_canais" for c in calls)
+    assert logged.post(f"/api/content/{p1}/publish", json={"canal_id": "z1", "lembrar": True}).json()["status"] == "sent"
+    r2 = logged.post(f"/api/content/{p2}/decide", json={"approve": True}).json()
+    assert r2["status"] == "sent" and [c[1]["canal_id"] for c in calls if c[0] == "publicar_post"] == ["z1", "z1"]
+
+
+def test_postiz_canal_field_wins_over_name(logged, monkeypatch):
+    from app import content as cnt
+    (a,) = make_projects("A Ilha")
+    connect(a, "postiz", {**POSTIZ, "canal": "take one"}, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "t", "nome": "Take One", "rede": "instagram"}, {"id": "i", "nome": "A Ilha Jogo", "rede": "instagram"}])
+    (p,) = _pieces(a, dict(channel="instagram", body="x", status="pending", scheduled_at=cnt.local_now() + timedelta(days=1)))
+    assert logged.post(f"/api/content/{p}/decide", json={"approve": True}).json()["status"] == "sent"
+    assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["t"]

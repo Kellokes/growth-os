@@ -353,6 +353,8 @@ class ContentItem(Base):
     media_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # layout_assets.id (kind=media): foto ou vídeo da peça
     media_job: Mapped[str] = mapped_column(String(120), default="")  # vídeo em geração no OpenRouter (id do job)
     asset_ids: Mapped[str] = mapped_column(Text, default="")  # ativos escolhidos para a arte (JSON de ids); vazio = automático
+    # linha de produção (app/pipeline.py): {"attempts": {parte: n}, "errors": {parte: msg}, "next": {parte: quando tentar}}
+    pipeline: Mapped[str] = mapped_column(Text, default="")
     # pending (aguardando aprovação) | approved | sent | rejected | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)  # hora local do owner
@@ -530,6 +532,7 @@ _NEW_COLUMNS = {
         "media_id": "INTEGER NULL",
         "media_job": "VARCHAR(120) NOT NULL DEFAULT ''",
         "asset_ids": "TEXT NOT NULL DEFAULT ''",
+        "pipeline": "TEXT NOT NULL DEFAULT ''",
     },
     "ai_calls": {"input_tokens": "INTEGER NULL", "output_tokens": "INTEGER NULL", "cost_usd": "FLOAT NULL"},
     "layout_assets": {

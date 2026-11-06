@@ -8,6 +8,7 @@ owner: nunca roda sozinha nem em laço.
 import asyncio
 import base64
 import json
+import logging
 import re
 import secrets
 import time
@@ -21,6 +22,7 @@ from .db import ContentItem, GrowthProject, LayoutAsset, new_session
 from .providers.openrouter import OPENROUTER_URL, _api_key, _error_detail, _explain
 from .providers.base import ProviderError
 
+log = logging.getLogger(__name__)
 summarize_bytes = calllog.summarize_bytes
 
 # formato -> (nome, proporção, para que serve)
@@ -906,6 +908,10 @@ def clean_slides(raw) -> list[dict]:
                 "text": str(s.get("text") or s.get("texto") or "").strip()[:300]}
         if isinstance(s.get("image_id"), int):
             item["image_id"] = s["image_id"]
+        if isinstance(s.get("photo_id"), int):
+            item["photo_id"] = s["photo_id"]
+        if str(s.get("media") or s.get("imagem") or "").strip():
+            item["media"] = str(s.get("media") or s.get("imagem")).strip()[:600]
         if item["role"] == "cta":
             cta = item
         elif len(pages) < MAX_PAGES and (item["title"] or item["text"]):
@@ -927,24 +933,35 @@ def piece_slides(c: ContentItem) -> list[dict]:
     return clean_slides(raw) if raw else default_slides(c)
 
 
-def _drop_slide_images(db, slides: list[dict]) -> None:
+def _drop_slide_images(db, slides: list[dict], photos: bool = False) -> None:
+    """Apaga a imagem final de cada página (e, com photos, também a foto que a IA fez para ela)."""
     for s in slides:
-        if s.get("image_id") and (old := db.get(LayoutAsset, s["image_id"])) is not None:
-            db.delete(old)
-        s.pop("image_id", None)
+        for key in (("image_id", "photo_id") if photos else ("image_id",)):
+            if s.get(key) and (old := db.get(LayoutAsset, s[key])) is not None:
+                db.delete(old)
+            s.pop(key, None)
 
 
-def drop_slides(db, c: ContentItem) -> None:
+def drop_slides(db, c: ContentItem, photos: bool = True) -> None:
     """Apaga as imagens das páginas e do CTA (a capa fica em image_id)."""
     raw = _json(c.slides, [])
-    _drop_slide_images(db, raw)
+    _drop_slide_images(db, raw, photos)
     c.slides = json.dumps(raw, ensure_ascii=False) if raw else ""
 
 
 def set_slides(db, c: ContentItem, slides) -> None:
-    """O owner editou as páginas: guarda os textos novos e apaga as imagens antigas (são refeitas em seguida)."""
-    drop_slides(db, c)
-    c.slides = json.dumps(clean_slides(slides), ensure_ascii=False)
+    """O owner editou as páginas: guarda os textos novos e apaga as imagens antigas (são refeitas em seguida).
+    A foto de uma página só fica se a descrição dela não mudou (foto custa; texto novo não precisa de foto nova)."""
+    old = _json(c.slides, [])
+    new = clean_slides(slides)
+    for i, s in enumerate(new):
+        o = old[i] if i < len(old) and isinstance(old[i], dict) and old[i].get("role") == s["role"] else {}
+        if "media" not in s and o.get("media"):
+            s["media"] = o["media"]
+        if o.get("photo_id") and s.get("media", "") == o.get("media", "") and "photo_id" not in s:
+            s["photo_id"], o["photo_id"] = o["photo_id"], None
+    _drop_slide_images(db, old, photos=True)
+    c.slides = json.dumps(new, ensure_ascii=False)
 
 
 def _replace_asset(db, c: ContentItem, attr: str, asset: LayoutAsset) -> None:
@@ -1025,30 +1042,112 @@ def render_piece(db, c: ContentItem, bg: LayoutAsset | None, template: LayoutAss
     return _render(db, c, template, layers[0], layers[1], title, text)
 
 
+def slide_wants_photo(db, c: ContentItem, s: dict) -> bool:
+    """A página ganha uma foto própria da IA: carrossel no modo template, mídia "gerar_imagem" e um template com janela de foto
+    (caixa {{midia}} do editor, janela do HTML ou arte transparente)."""
+    from . import media as med
+    from . import motion
+
+    if c.visual_format != "carrossel" or (c.image_mode or "template") != "template":
+        return False
+    if med.norm_source(c.media_source) != "gerar_imagem":
+        return False
+    try:
+        t = piece_template(db, c, s["role"])
+    except ProviderError:
+        return False
+    if t is None:
+        return False
+    plate = _plate(db, t)
+    return "midia" in template_boxes(t) or motion.has_media_slot(t.html) or (plate is not None and has_alpha(plate.data, plate.mime))
+
+
+def build_slide_photo_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, feedback: str = "") -> str:
+    subject = (s.get("media") or "").strip() or " — ".join(x for x in (s.get("title"), s.get("text")) if x) or c.media or c.title
+    lines = [
+        f"Create ONE photograph ({ratio}) for slide of a social media carousel of the brand \"{project_name}\". It goes inside a "
+        "picture window of an existing layout, so deliver ONLY the photo, edge to edge.",
+        f"Slide subject: {subject[:700]}",
+        f"Carousel theme (keep the same look across all slides): {(c.media.strip() or c.title or c.body)[:400]}",
+        "ONE single continuous scene, never panels, frames, collage or split screen. ABSOLUTELY NO text, letters or numbers.",
+        f"Brand style brief (mood and palette only): {brief.strip()[:600]}" if brief.strip() else "",
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+def _slide_layers(db, t: LayoutAsset, s: dict, cover_bg):
+    """(fundo, foto) de uma página: a arte do template com a foto da página na janela; sem arte, a foto vira o fundo."""
+    from . import motion
+
+    plate = _plate(db, t)
+    art = (plate.data, plate.mime) if plate is not None else cover_bg
+    photo = db.get(LayoutAsset, s["photo_id"]) if s.get("photo_id") else None
+    if photo is None:
+        return art, None
+    layer = (photo.data, photo.mime)
+    if motion.has_media_slot(t.html) or (plate is not None and has_alpha(plate.data, plate.mime)) or "midia" in template_boxes(t):
+        return art, layer
+    return layer, None
+
+
+def render_slide(db, c: ContentItem, s: dict, cover_bg) -> None:
+    """Imagem final de UMA página (ou do CTA), sem IA: arte do template + texto (+ a foto da página, se já existe).
+    Troca a imagem anterior da página. Levanta ProviderError se o template não existe ou o renderizador falha."""
+    t = piece_template(db, c, s["role"])
+    if t is None:
+        raise ProviderError(f"defina o template de {role_label('carrossel', s['role'])} em Layouts")
+    bg, layer = _slide_layers(db, t, s, cover_bg)
+    lt, ls = text_limits(t)
+    png = _render(db, c, t, bg, layer, fit_text(s["title"], lt), fit_text(s["text"], ls))
+    a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime="image/png", data=png,
+                    model="template", role=s["role"])
+    db.add(a)
+    db.flush()
+    if s.get("image_id") and (old := db.get(LayoutAsset, s["image_id"])) is not None:
+        db.delete(old)
+    s["image_id"] = a.id
+
+
 def render_slides(db, c: ContentItem, cover_bg: tuple[bytes, str] | None) -> str:
-    """Páginas e CTA do carrossel, cada um no seu template (sem IA: só a arte do layout e o texto). -> erros, se houver."""
+    """Páginas e CTA do carrossel, cada um no seu template (sem IA: só a arte do layout, o texto e a foto que a página já tem).
+    -> erros, se houver."""
     slides = piece_slides(c)
     _drop_slide_images(db, slides)
     errors = []
     for s in slides:
         try:
-            t = piece_template(db, c, s["role"])
-            if t is None:
-                raise ProviderError(f"defina o template de {role_label('carrossel', s['role'])} em Layouts")
-            plate = _plate(db, t)
-            bg = (plate.data, plate.mime) if plate is not None else cover_bg
-            lt, ls = text_limits(t)
-            png = _render(db, c, t, bg, None, fit_text(s["title"], lt), fit_text(s["text"], ls))
+            render_slide(db, c, s, cover_bg)
         except ProviderError as e:
             errors.append(f"{role_label('carrossel', s['role'])}: {e}")
-            continue
-        a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime="image/png", data=png,
-                        model="template", role=s["role"])
-        db.add(a)
-        db.flush()
-        s["image_id"] = a.id
     c.slides = json.dumps(slides, ensure_ascii=False)
     return "; ".join(errors)[:500]
+
+
+async def generate_slide_photo(db, c: ContentItem, s: dict, feedback: str = "") -> None:
+    """Foto da página (1 imagem paga), guardada em s["photo_id"]. Só para páginas que têm janela de foto."""
+    t = piece_template(db, c, s["role"])
+    project = db.get(GrowthProject, c.project_id)
+    name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
+    box = template_boxes(t).get("midia") if t is not None else None
+    w, h = CANVAS[c.visual_format]
+    ratio = nearest_ratio(box["w"] * w, box["h"] * h) if box else FORMATS[c.visual_format][1]
+    choice = image_choice(db, log=True, project_id=c.project_id)
+    picked = ast.for_piece(db, c)
+    prompt = build_slide_photo_prompt(name, brief, c, s, ratio, feedback)
+    if picked:
+        prompt += "\n" + ast.prompt_lines(picked, 1).replace("reproduce them faithfully when they appear",
+                                                            "use them only as reference for the real objects; never draw "
+                                                            "their text")
+    with calllog.context("image", c.project_id):
+        data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
+    photo = LayoutAsset(project_id=c.project_id, kind="media", format=c.visual_format, mime=mime, data=data,
+                        model=choice.model, prompt=prompt, role=s["role"])
+    db.add(photo)
+    db.flush()
+    if s.get("photo_id") and (old := db.get(LayoutAsset, s["photo_id"])) is not None:
+        db.delete(old)
+    s["photo_id"] = photo.id
 
 
 def _finish(db, c: ContentItem, template: LayoutAsset, final: bytes, model: str, prompt: str) -> None:
@@ -1281,40 +1380,28 @@ def _waiting_for_owner(db, c: ContentItem) -> bool:
 
 
 async def autogen_pending() -> int:
-    """Passada do agendador: imagem para peças que aguardam aprovação, até AUTOGEN_PER_TICK por vez.
+    """Passada do agendador: leva as peças que aguardam aprovação até "pronta para aprovar" (app/pipeline.py).
 
-    Cada peça tem uma tentativa automática: se falhar, o motivo fica em image_error e só o botão do owner tenta de novo.
-    Sem template aprovado, sem modelo de imagem ou esperando a mídia do owner, a peça espera sem gastar nada.
+    Texto que falta, capa, imagem de cada página e CTA: cada parte tem até MAX_ATTEMPTS tentativas, com espera entre elas, e
+    só a parte que falhou é refeita. No máximo AUTOGEN_PER_TICK peças por passada (limita o custo). Sem template, sem modelo
+    de imagem ou esperando a mídia do owner, a peça espera sem gastar nada (o status diz o quê).
     """
-    from . import media as med
+    from . import pipeline
 
     done = 0
     db = new_session()
     try:
-        rows = (db.query(ContentItem).filter(ContentItem.status == "pending", ContentItem.visual_format != "",
-                                             ContentItem.image_id.is_(None), ContentItem.image_error == "",
-                                             ContentItem.media_job == "")
-                .order_by(ContentItem.id).limit(50).all())
+        rows = db.query(ContentItem).filter(ContentItem.status == "pending").order_by(ContentItem.id).limit(300).all()
         for c in rows:
             if done >= AUTOGEN_PER_TICK:
                 break
-            if _waiting_for_owner(db, c):
-                continue
             try:
-                if (c.image_mode or "template") == "template" and piece_template(db, c) is None:
+                if not pipeline.should_run(db, c):
                     continue
-            except ProviderError as e:  # template escolhido sumiu: registra e não tenta de novo sozinho
-                c.image_error = str(e)[:500]
-                db.commit()
-                continue
-            try:
-                if (c.image_mode or "template") != "template" or med.norm_source(c.media_source) == "gerar_imagem":
-                    image_choice(db, log=True, project_id=c.project_id)
-                await generate_piece_image(db, c)
-            except ProviderError as e:
+                await pipeline.run_piece(db, c)
+            except Exception:  # noqa: BLE001 - uma peça com problema não trava as outras
                 db.rollback()
-                c.image_error = str(e)[:500]
-                db.commit()
+                log.exception("linha de produção da peça %s", c.id)
             done += 1
     finally:
         db.close()

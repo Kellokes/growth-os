@@ -56,6 +56,12 @@
   $("#tabs").addEventListener("click", (ev) => { const b = ev.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); });
 
   // ---------- peças ----------
+  // Linha de produção: o sistema completa texto, capa, páginas e CTA; aqui só mostra em que pé está.
+  const PIPE_ICON = { ready: "✅", working: "⏳", needs_you: "⚠️" };
+  function pipeBadge(it) {
+    const p = it.pipeline; if (!p || !p.total || it.status !== "pending") return "";
+    return `<div class="cpipe p-${esc(p.state)}"><b>${PIPE_ICON[p.state] || ""} ${esc(p.label)}</b>${p.state !== "ready" ? `<div class="cpipe-parts">${p.parts.map((x) => `<span class="${x.ok ? "ok" : x.waiting && x.waiting !== "espera a capa" || x.attempts >= 3 ? "bad" : ""}" title="${esc(x.detail || x.waiting || x.error || "")}">${x.ok ? "✓" : "○"} ${esc(x.label)}</span>`).join("")}</div>` : ""}</div>`;
+  }
   function piece(it) {
     const c = chan(it.channel);
     const email = it.group === "email";
@@ -76,6 +82,7 @@
       <p class="cbody">${esc(it.body)}</p>
       ${it.image_url ? `<img class="cimg" src="${esc(it.image_url)}" alt="imagem da peça" loading="lazy">` : it.needs_image ? `<div class="cmedia cneeds">🖼 Sem imagem${it.image_error ? ` · ${esc(it.image_error)}` : " · aguardando layout ou geração"}</div>` : ""}
       ${it.media ? `<div class="cmedia">🖼 ${esc(it.media)}</div>` : ""}
+      ${pipeBadge(it)}
       <div class="task-tags"><span class="tag">${esc(aname(it.agent))}</span>${project === "all" ? `<span class="tag">${esc(pinfo(it.project).icon)} ${esc(pinfo(it.project).name)}</span>` : ""}${it.purpose ? `<span class="tag">${esc(it.purpose)}</span>` : ""}</div>
       <footer class="cpiece-foot"><span class="muted">${it.scheduled_at && it.stage !== "sent" ? icon("calendar") : ""}${esc(date)}</span>${actions ? `<div class="kcard-actions">${actions}</div>` : ""}</footer>
     </article>`;
@@ -313,7 +320,8 @@
     const action = tplMode ? src : "gerar_imagem";
     const slides = (it?.slides || []).filter((s) => s.image_url);
     const again = it?.image_url && action !== "upload" ? "Refazer" : GEN_LABEL[action];
-    box.innerHTML = `${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça (capa)">` : ""}
+    box.innerHTML = `${it ? pipeBadge(it) : ""}${it?.pipeline && it.status === "pending" && it.pipeline.state !== "ready" ? `<div class="row"><button class="btn small primary" type="button" data-img="complete">Completar agora</button></div><small class="muted">Refaz só o que falta (texto, capa, páginas, CTA). O sistema também tenta sozinho a cada minuto, até 3 vezes por parte.</small>` : ""}
+      ${it?.image_url ? `<img class="cimg big" src="${esc(it.image_url)}" alt="imagem da peça (capa)">` : ""}
       ${slides.length && it.visual_format === "carrossel" ? `<div class="cf-strip">${slides.map((s, i) => `<figure><img src="${esc(s.image_url)}" alt="${s.role === "cta" ? "CTA final" : `página ${i + 2}`}" loading="lazy"><figcaption>${s.role === "cta" ? "CTA final" : `Página ${i + 2}`}</figcaption></figure>`).join("")}</div>` : ""}
       ${it?.media_file_url && tplMode && ["upload", "link", "gerar_video"].includes(src) ? `<small class="muted">Mídia da peça: <a href="${esc(it.media_file_url)}" target="_blank" rel="noopener">abrir</a> · <button class="btn small ghost" type="button" data-img="rmmedia">tirar</button></small>` : ""}
       ${it?.media_generating ? `<div class="secret-note">Gerando o vídeo com a IA… a imagem aparece aqui sozinha quando ficar pronto (alguns minutos).</div>` : ""}
@@ -334,6 +342,7 @@
     const what = b.dataset.img;
     if (what === "up") return $("#cf-image-file").click();
     try {
+      if (what === "complete") { b.disabled = true; b.textContent = "Completando… (pode levar alguns minutos)"; current = await api(`/api/content/${current.id}/complete`, { method: "POST" }); return refresh(); }
       if (what === "rmmedia") { current = await api(`/api/content/${current.id}/media`, { method: "DELETE" }); return refresh(); }
       await saveMode();
       const tplMode = $("#cf-mode").value === "template";

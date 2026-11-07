@@ -52,6 +52,7 @@ services:
       - no-new-privileges:true
     mem_limit: 3g
     pids_limit: 512
+    init: true  # reaproveita/encerra processos filhos do Chromium (sem zumbis acumulando)
 
   growth-os:
     build:

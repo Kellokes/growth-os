@@ -112,3 +112,44 @@ def test_big_images_are_shrunk_before_the_motion_service():
     small = io.BytesIO()
     Image.new("RGB", (10, 10)).save(small, "PNG")
     assert motion.shrink_image(small.getvalue(), "image/png", "carrossel") == (small.getvalue(), "image/png")
+
+
+def test_moderation_block_is_explained_and_not_retried(studio, monkeypatch):
+    from app import pipeline as pipe
+    from app.providers.base import ProviderError
+    from app.providers.openrouter import _error_detail, _explain
+
+    code, msg = _error_detail({"error": {"code": 400, "message": "Black Forest Labs blocked this request through content moderation.",
+                                         "metadata": {"provider_name": "Black Forest Labs"}}})
+    err = _explain(400, msg, "black-forest-labs/flux.2-pro")
+    assert err.moderated and "filtro de conteúdo" in str(err) and "outro modelo de imagem" in str(err)
+    assert not _explain(500, "boom", "m").moderated
+
+    for role in ("capa", "pagina", "cta"):
+        upload_template(studio, "carrossel", role, role)
+    cid = carousel()
+    studio.post(f"/api/content/{cid}/image", json={})
+    calls = []
+
+    async def blocked(model, prompt, refs, ratio):
+        calls.append(1)
+        raise err
+
+    monkeypatch.setattr(lay, "request_image", blocked)
+    s = dbmod.new_session()
+    c = s.get(dbmod.ContentItem, cid)
+    slides = json.loads(c.slides)
+    for x in slides:
+        x.pop("photo_id", None), x.pop("image_id", None)
+    c.slides = json.dumps(slides)
+    c.status = "pending"
+    s.commit()
+    try:
+        asyncio.run(pipe.run_piece(s, c, force=True))
+        n = len(calls)
+        asyncio.run(pipe.run_piece(s, c))
+        assert len(calls) == n  # sem nova tentativa: o bloqueio não some repetindo
+        st = pipe.check(s, c)
+        assert any("filtro de conteúdo" in p["error"] and p["attempts"] >= pipe.MAX_ATTEMPTS for p in st["parts"])
+    finally:
+        s.close()

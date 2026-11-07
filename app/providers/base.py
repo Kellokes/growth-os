@@ -77,9 +77,10 @@ class ChatTurn:
 class ProviderError(RuntimeError):
     """Falha do provider. retryable=True quando tentar de novo tem chance de dar certo (timeout, 5xx, 429)."""
 
-    def __init__(self, message: str, retryable: bool = False):
+    def __init__(self, message: str, retryable: bool = False, moderated: bool = False):
         super().__init__(message)
         self.retryable = retryable
+        self.moderated = moderated  # o provedor bloqueou o conteúdo: repetir igual dá o mesmo bloqueio
 
 
 def render_transcript(history: list[ChatTurn]) -> str:

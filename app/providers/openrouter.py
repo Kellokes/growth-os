@@ -36,7 +36,18 @@ def _is_context_error(status: int, msg: str) -> bool:
     return status == 413 or (status == 400 and ("context" in low or "too long" in low or ("maximum" in low and "token" in low)))
 
 
+def _is_moderation(status: int, msg: str) -> bool:
+    low = msg.lower()
+    return status in (400, 403) and ("moderation" in low or "content policy" in low or "safety system" in low)
+
+
 def _explain(status: int, msg: str, model: str) -> ProviderError:
+    if _is_moderation(status, msg):
+        return ProviderError(
+            f"O filtro de conteúdo do provedor de {model} bloqueou este pedido ({status}: {msg}). O OpenRouter não diz qual trecho "
+            "foi: tire do prompt desta imagem palavras de violência, sangue ou armas, tire uma referência (ou troque a que tem "
+            "pessoas ou cenas fortes), ou escolha outro modelo de imagem em Modelos. Repetir igual dá o mesmo bloqueio, por isso "
+            "o sistema não tenta sozinho de novo.", moderated=True)
     if status == 401:
         # "user not found" = a chave não existe/foi revogada na conta do OpenRouter (não é o modelo).
         return ProviderError(

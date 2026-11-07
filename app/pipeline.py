@@ -378,6 +378,10 @@ async def _attempt(db: DB, c: ContentItem, key: str, fn) -> bool:
     except ProviderError as e:
         db.rollback()
         _record_failure(c, key, str(e))
+        if e.moderated:  # bloqueio de conteúdo: igual dá igual, só o owner mudando prompt/referência resolve
+            st = _state(c)
+            st["attempts"][key] = MAX_ATTEMPTS
+            _save(c, st)
         db.commit()
         return False
     except Exception as e:  # noqa: BLE001 - uma foto que falha não pode parar a fila inteira

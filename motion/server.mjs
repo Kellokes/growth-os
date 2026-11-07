@@ -17,16 +17,23 @@ const SAFE_PATH = /^(index\.html|assets\/[A-Za-z0-9._-]+)$/;
 
 let busy = false;
 
+// O CLI abre o Chromium e vários filhos. Matar só o node deixa o Chrome órfão rodando: depois de um tempo esgotado os
+// processos e a memória do container se acumulam e o próximo render cai com "pthread_create: Resource temporarily unavailable"
+// (SIGTRAP). Por isso o CLI roda no próprio grupo de processos e o grupo inteiro é encerrado ao fim, com sucesso ou não.
+function killGroup(p) {
+  try { process.kill(-p.pid, "SIGKILL"); } catch { /* grupo já encerrado */ }
+}
+
 function run(args, cwd) {
   return new Promise((resolve, reject) => {
-    const p = spawn("node", [CLI, ...args], { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("node", [CLI, ...args], { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let out = "";
     const take = (d) => { out = (out + d).slice(-4000); };
     p.stdout.on("data", take);
     p.stderr.on("data", take);
-    const timer = setTimeout(() => { p.kill("SIGKILL"); reject(new Error("tempo esgotado")); }, JOB_TIMEOUT_MS);
-    p.on("error", (e) => { clearTimeout(timer); reject(e); });
-    p.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve(out) : reject(new Error(out.trim().split("\n").slice(-6).join("\n"))); });
+    const timer = setTimeout(() => { killGroup(p); reject(new Error("tempo esgotado")); }, JOB_TIMEOUT_MS);
+    p.on("error", (e) => { clearTimeout(timer); killGroup(p); reject(e); });
+    p.on("close", (code) => { clearTimeout(timer); killGroup(p); code === 0 ? resolve(out) : reject(new Error(out.trim().split("\n").slice(-6).join("\n"))); });
   });
 }
 

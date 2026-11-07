@@ -1416,3 +1416,27 @@ label.check input { width: auto; }
 .pick-list label:has(input:checked) { border-color: var(--text); background: var(--panel-2); }
 .pick-list small { margin-left: auto; }
 .pick-remember { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-bottom: 14px; }
+
+/* ---- carrossel: abas por página ---- */
+.cf-sub { font-size: 13px; }
+.cf-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; }
+.cf-tab { flex: 0 0 auto; display: grid; grid-template-columns: auto auto; align-items: center; gap: 2px 6px; min-width: 84px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 12px; background: none; color: var(--text-2); font-size: 12.5px; cursor: pointer; text-align: left; }
+.cf-tab img, .cf-tab .ph { grid-row: span 2; width: 34px; height: 42px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: var(--line); }
+.cf-tab i { font-style: normal; font-weight: 700; justify-self: end; }
+.cf-tab.st-ok i { color: var(--ok); } .cf-tab.st-erro i { color: var(--danger); } .cf-tab.st-falta i { color: var(--warn); }
+.cf-tab.on { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+.cf-tab.add { min-width: 44px; justify-content: center; font-size: 18px; grid-template-columns: auto; }
+.cf-tabpanel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.cf-tabpanel label { min-width: 0; }
+.cf-tabpanel textarea, .cf-tabpanel input, .cf-tabpanel select { max-width: 100%; }
+.cf-pan-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.cf-pan-grid { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 12px; align-items: start; }
+.cf-pan-fields { display: grid; gap: 8px; min-width: 0; }
+.cf-pan-img .cimg { width: 100%; border-radius: 10px; border: 1px solid var(--line); display: block; }
+.cf-noimg { aspect-ratio: 4 / 5; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; }
+.cf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.cf-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; border: 1px solid var(--line); border-radius: var(--pill); font-size: 12.5px; }
+.cf-chip img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; }
+.cf-chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; }
+.cf-pre { white-space: pre-wrap; font-size: 12px; max-height: 220px; overflow: auto; margin: 6px 0 0; }
+@media (max-width: 560px) { .cf-pan-grid { grid-template-columns: 1fr; } .cf-pan-img { max-width: 180px; } }

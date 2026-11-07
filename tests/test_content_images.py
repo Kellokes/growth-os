@@ -101,7 +101,8 @@ def test_generate_needs_approved_template_then_fills_it(logged, monkeypatch):
     seen = {}
 
     async def fake(model, prompt, refs, ratio):
-        seen.update(n=len(refs), ratio=ratio, prompt=prompt)
+        if not seen:  # a primeira chamada é a da capa; as páginas (arte sem janela) ganham o cenário refeito depois
+            seen.update(n=len(refs), ratio=ratio, prompt=prompt)
         return PNG + b"2", "image/png"
 
     monkeypatch.setattr(lay, "request_image", fake)
@@ -139,6 +140,8 @@ def test_autogen_runs_once_per_piece_and_records_failure(logged, monkeypatch):
     calls = {"n": 0}
 
     async def fake(model, prompt, refs, ratio):
+        if "page of a carousel" in prompt:  # cenário das páginas: a conta aqui é só das capas
+            return PNG, "image/png"
         calls["n"] += 1
         if calls["n"] == 2:
             raise ProviderError("sem créditos")
@@ -388,7 +391,8 @@ def test_image_mode_reference_and_prompt_need_no_template(logged, monkeypatch):
     seen = {}
 
     async def fake(model, prompt, refs, ratio):
-        seen.update(prompt=prompt, n=len(refs), ratio=ratio)
+        if "carousel slide" not in prompt:  # as páginas do carrossel têm o prompt delas
+            seen.update(prompt=prompt, n=len(refs), ratio=ratio)
         return PNG + b"9", "image/png"
 
     monkeypatch.setattr(lay, "request_image", fake)
@@ -513,7 +517,8 @@ def test_no_text_rule_only_without_reference_and_prompt_is_editable(logged, monk
     seen = {}
 
     async def fake(model, prompt, refs, ratio):
-        seen.update(prompt=prompt, n=len(refs))
+        if "carousel slide" not in prompt:
+            seen.update(prompt=prompt, n=len(refs))
         return PNG + b"9", "image/png"
 
     monkeypatch.setattr(lay, "request_image", fake)

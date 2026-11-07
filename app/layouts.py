@@ -1022,6 +1022,12 @@ def clean_slides(raw) -> list[dict]:
                 item["assets"] = ids
         if str(s.get("media") or s.get("imagem") or "").strip():
             item["media"] = str(s.get("media") or s.get("imagem")).strip()[:600]
+        if str(s.get("prompt") or "").strip():
+            item["prompt"] = str(s["prompt"]).strip()[:6000]  # prompt da imagem desta página, editado pelo owner
+        if s.get("photo_full"):
+            item["photo_full"] = True  # a foto da página já é a arte inteira (cenário refeito dentro do template)
+        if s.get("manual_assets"):
+            item["manual_assets"] = True  # só as referências escolhidas pelo owner, sem escolha automática
         if item["role"] == "cta":
             cta = item
         elif len(pages) < MAX_PAGES and (item["title"] or item["text"]):
@@ -1050,6 +1056,8 @@ def _drop_slide_images(db, slides: list[dict], photos: bool = False) -> None:
             if s.get(key) and (old := db.get(LayoutAsset, s[key])) is not None:
                 db.delete(old)
             s.pop(key, None)
+        if photos:
+            s.pop("photo_full", None)
 
 
 def drop_slides(db, c: ContentItem, photos: bool = True) -> None:
@@ -1066,10 +1074,14 @@ def set_slides(db, c: ContentItem, slides) -> None:
     new = clean_slides(slides)
     for i, s in enumerate(new):
         o = old[i] if i < len(old) and isinstance(old[i], dict) and old[i].get("role") == s["role"] else {}
-        if "media" not in s and o.get("media"):
-            s["media"] = o["media"]
-        if o.get("photo_id") and s.get("media", "") == o.get("media", "") and "photo_id" not in s:
+        for key in ("media", "prompt", "assets", "manual_assets"):
+            if key not in s and o.get(key):
+                s[key] = o[key]
+        same_img = all(s.get(k, "") == o.get(k, "") for k in ("media", "prompt", "assets", "manual_assets"))
+        if o.get("photo_id") and same_img and "photo_id" not in s:
             s["photo_id"], o["photo_id"] = o["photo_id"], None
+            if o.get("photo_full"):
+                s["photo_full"] = True
     _drop_slide_images(db, old, photos=True)
     c.slides = json.dumps(new, ensure_ascii=False)
 
@@ -1177,7 +1189,36 @@ def slide_wants_photo(db, c: ContentItem, s: dict) -> bool:
     plate = _plate(db, t)
     if plate is None:  # sem arte: a foto da página vira o fundo (senão todas as páginas ficam iguais à capa, sem imagem)
         return True
-    return "midia" in template_boxes(t) or motion.has_media_slot(t.html) or (has_alpha(plate.data, plate.mime))
+    if "midia" in template_boxes(t) or motion.has_media_slot(t.html) or has_alpha(plate.data, plate.mime):
+        return True
+    # arte opaca sem janela (upload "texto padrão"): como na capa, a IA refaz o cenário DENTRO da arte da página.
+    # Template do editor de caixas sem caixa de imagem é escolha do owner (a arte nunca vai à IA): fica só arte e texto.
+    return not template_boxes(t)
+
+
+def slide_photo_kind(db, c: ContentItem, s: dict) -> str:
+    """Como a imagem da página é feita: "livre" (modos sem template: a imagem inteira sai do modelo), "janela" (foto na janela
+    de foto do template), "cenario" (a IA refaz o cenário dentro da arte opaca), "fundo" (template sem arte: a foto é o fundo)
+    ou "" (o template não tem lugar para foto: só arte e texto)."""
+    if c.visual_format != "carrossel":
+        return ""
+    if (c.image_mode or "template") != "template":
+        return "livre"
+    if not slide_wants_photo(db, c, s):
+        return ""
+    t = piece_template(db, c, s["role"])
+    plate = _plate(db, t) if t is not None else None
+    if plate is None:
+        return "fundo"
+    if "midia" in template_boxes(t) or _has_slot(t, plate):
+        return "janela"
+    return "cenario"
+
+
+def _has_slot(t: LayoutAsset, plate: LayoutAsset) -> bool:
+    from . import motion
+
+    return motion.has_media_slot(t.html) or has_alpha(plate.data, plate.mime)
 
 
 def build_slide_photo_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, feedback: str = "",
@@ -1196,7 +1237,7 @@ def build_slide_photo_prompt(project_name: str, brief: str, c: ContentItem, s: d
 
 
 def build_free_slide_prompt(project_name: str, brief: str, c: ContentItem, s: dict, ratio: str, mode: str,
-                            has_refs: bool = False) -> str:
+                            has_refs: bool = False, feedback: str = "") -> str:
     subject = (s.get("media") or "").strip() or " — ".join(x for x in (s.get("title"), s.get("text")) if x) or c.media or c.title
     lines = [
         f"Create a finished carousel slide image ({ratio}) for a social media post of the brand \"{project_name}\".",
@@ -1207,33 +1248,111 @@ def build_free_slide_prompt(project_name: str, brief: str, c: ContentItem, s: di
         f"Brand style brief: {brief.strip()[:800]}" if brief.strip() else "",
         ("Keep the content of the reference images as it is, including any text or messages in them; do not add any headline "
          "or new sentence on the image." if has_refs else "Do not write any headline or sentence on the image; no garbled letters."),
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
     ]
     return "\n".join(x for x in lines if x)
 
 
-async def generate_free_slide(db, c: ContentItem, s: dict, mode: str, feedback: str = "") -> None:
-    """Página do carrossel sem template (modos reference/prompt): a imagem inteira sai do modelo, com os ativos certos da página.
-    Guarda em s["image_id"]."""
-    choice = image_choice(db, log=True, project_id=c.project_id)
+def build_slide_scenery_prompt(project_name: str, brief: str, c: ContentItem, s: dict, feedback: str = "",
+                               has_refs: bool = False) -> str:
+    """Página sobre arte opaca sem janela: a IA troca só o cenário fotográfico da arte da página (como na capa)."""
+    name, ratio, _ = FORMATS[c.visual_format]
+    subject = (s.get("media") or "").strip() or " — ".join(x for x in (s.get("title"), s.get("text")) if x) or c.media or c.title
+    lines = [
+        f"Edit the attached artwork of the brand \"{project_name}\" ({name}, one page of a carousel). KEEP EXACTLY as they are: the "
+        "logo/emblem, the frame, borders, ornaments, dividers, the panel or area reserved for text, the composition and the colors "
+        f"of those elements. CHANGE ONLY the photographic scenery/background to fit this page: {subject[:600]}.",
+        "The panel reserved for text must stay EXACTLY as it is in the attached artwork: empty and plain, with no photo, people, "
+        "objects or scenery inside it. Make ONE single new scene; do NOT add frames, picture boxes, cards, panels or collage.",
+        f"Carousel theme (same look on every page): {(c.media.strip() or c.title or c.body)[:300]}",
+        text_rule(has_refs),
+        f"Brand style brief: {brief.strip()[:800]}" if brief.strip() else "",
+        f"Adjustments requested by the owner: {feedback.strip()[:500]}" if feedback.strip() else "",
+    ]
+    return "\n".join(x for x in lines if x)
+
+
+def slide_plan(db, c: ContentItem, s: dict, feedback: str = "") -> dict:
+    """O que vai ao modelo para a imagem de UMA página: tipo, prompt montado, ativos escolhidos e o ratio. Não chama modelo
+    nenhum (usa só a escolha automática já guardada), então serve de prévia e é a mesma conta da geração."""
+    kind = slide_photo_kind(db, c, s)
+    plan = {"kind": kind, "prompt": "", "picked": [], "extra": [], "ratio": FORMATS[c.visual_format][1], "reason": ""}
+    if not kind:
+        plan["reason"] = ("o template desta página não tem caixa de imagem: abra o editor em Layouts e marque onde vai a imagem"
+                          if (c.image_mode or "template") == "template" else "")
+        from . import media as med
+
+        if (c.image_mode or "template") == "template" and med.norm_source(c.media_source) == "nenhuma":
+            plan["reason"] = "a fonte da mídia da peça está em \"Só o layout\" (sem foto)"
+        return plan
     project = db.get(GrowthProject, c.project_id)
     name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
     picked = ast.for_slide(db, c, s)
-    if mode == "reference":
-        picked += [a for a in style_refs(db, c.project_id) if a not in picked]
-        picked = (picked or [a for a in ast.project_assets(db, c.project_id) if ast.is_image(a)])[:MAX_REFS_SENT]
-        if not picked:
-            raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
-    ratio = FORMATS[c.visual_format][1]
-    prompt = _with_assets(build_free_slide_prompt(name, brief, c, s, ratio, mode, bool(picked)), picked, 1, db, c)
+    plan["picked"] = picked
+    if kind == "livre":
+        mode = c.image_mode
+        if mode == "reference":
+            picked += [a for a in style_refs(db, c.project_id) if a not in picked]
+            picked = (picked or [a for a in ast.project_assets(db, c.project_id) if ast.is_image(a)])[:MAX_REFS_SENT]
+            plan["picked"] = picked
+        plan["prompt"] = _with_assets(build_free_slide_prompt(name, brief, c, s, plan["ratio"], mode, bool(picked), feedback),
+                                      picked, 1, db, c)
+        return plan
+    t = piece_template(db, c, s["role"])
+    box = template_boxes(t).get("midia") if t is not None else None
+    w, h = CANVAS[c.visual_format]
+    if kind == "janela":
+        plan["ratio"] = nearest_ratio(box["w"] * w, box["h"] * h) if box else plan["ratio"]
+        prompt = build_slide_photo_prompt(name, brief, c, s, plan["ratio"], feedback, bool(picked))
+        plan["prompt"] = prompt + ("\n" + ast.prompt_lines(picked, 1) if picked else "")
+    elif kind == "cenario":
+        plate = _plate(db, t)
+        plan["extra"] = [(plate.data, plate.mime)]
+        prompt = build_slide_scenery_prompt(name, brief, c, s, feedback, bool(picked))
+        plan["prompt"] = _with_assets(prompt, picked, 2, db, c)
+    else:  # fundo
+        prompt = build_slide_photo_prompt(name, brief, c, s, plan["ratio"], feedback, bool(picked))
+        plan["prompt"] = prompt + ("\n" + ast.prompt_lines(picked, 1) if picked else "")
+    return plan
+
+
+async def generate_slide_image(db, c: ContentItem, s: dict, feedback: str = "", override: str = "") -> None:
+    """Gera a imagem de UMA página (ou do CTA), em qualquer modo, e a coloca no lugar dela:
+    modos livres: a imagem inteira sai do modelo (s["image_id"]); modo template: foto/cenário em s["photo_id"] e a página é
+    renderizada de novo no template dela (sem IA). O prompt é o do owner (override, ou s["prompt"]) ou o montado."""
+    await ast.auto_pick(db, c)
+    plan = slide_plan(db, c, s, feedback)
+    kind = plan["kind"]
+    if not kind:
+        raise ProviderError(plan["reason"] or "esta página não tem lugar para imagem")
+    choice = image_choice(db, log=True, project_id=c.project_id)
+    if kind == "livre" and c.image_mode == "reference" and not plan["picked"]:
+        raise ProviderError("Suba ao menos um ativo de imagem deste projeto em Conteúdo › Ativos (ou escolha outro modo de imagem).")
+    prompt = (override or s.get("prompt") or "").strip() or plan["prompt"]
+    refs = plan["extra"] + [(a.data, a.mime) for a in plan["picked"]]
     with calllog.context("image", c.project_id):
-        data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
-    a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime=mime, data=data,
-                    model=choice.model, prompt=prompt, role=s["role"])
+        data, mime = await request_image(choice.model, prompt, refs, plan["ratio"])
+    if kind == "livre":
+        a = LayoutAsset(project_id=c.project_id, kind="piece", format=c.visual_format, mime=mime, data=data,
+                        model=choice.model, prompt=prompt, role=s["role"])
+        key = "image_id"
+    else:
+        a = LayoutAsset(project_id=c.project_id, kind="media", format=c.visual_format, mime=mime, data=data,
+                        model=choice.model, prompt=prompt, role=s["role"])
+        key = "photo_id"
     db.add(a)
     db.flush()
-    if s.get("image_id") and (old := db.get(LayoutAsset, s["image_id"])) is not None:
+    if s.get(key) and (old := db.get(LayoutAsset, s[key])) is not None:
         db.delete(old)
-    s["image_id"] = a.id
+    s[key] = a.id
+    if kind == "cenario":
+        s["photo_full"] = True
+    else:
+        s.pop("photo_full", None)
+
+
+async def generate_free_slide(db, c: ContentItem, s: dict, mode: str, feedback: str = "") -> None:
+    await generate_slide_image(db, c, s, feedback)
 
 
 def _slide_layers(db, t: LayoutAsset, s: dict, cover_bg):
@@ -1246,6 +1365,8 @@ def _slide_layers(db, t: LayoutAsset, s: dict, cover_bg):
     if photo is None:
         return art, None
     layer = (photo.data, photo.mime)
+    if s.get("photo_full"):
+        return layer, None  # a IA já refez a arte inteira da página: o texto vai por cima
     if motion.has_media_slot(t.html) or (plate is not None and has_alpha(plate.data, plate.mime)) or "midia" in template_boxes(t):
         return art, layer
     return layer, None
@@ -1284,29 +1405,9 @@ def render_slides(db, c: ContentItem, cover_bg: tuple[bytes, str] | None) -> str
     return "; ".join(errors)[:500]
 
 
-async def generate_slide_photo(db, c: ContentItem, s: dict, feedback: str = "") -> None:
-    """Foto da página (1 imagem paga), guardada em s["photo_id"]. Só para páginas que têm janela de foto."""
-    t = piece_template(db, c, s["role"])
-    project = db.get(GrowthProject, c.project_id)
-    name, brief = (project.name if project else ""), ((project.style_brief if project else "") or "")
-    box = template_boxes(t).get("midia") if t is not None else None
-    w, h = CANVAS[c.visual_format]
-    ratio = nearest_ratio(box["w"] * w, box["h"] * h) if box else FORMATS[c.visual_format][1]
-    choice = image_choice(db, log=True, project_id=c.project_id)
-    await ast.auto_pick(db, c)
-    picked = ast.for_slide(db, c, s)  # o que a página pede: falou em tabuleiro, vai o tabuleiro
-    prompt = build_slide_photo_prompt(name, brief, c, s, ratio, feedback, bool(picked))
-    if picked:
-        prompt += "\n" + ast.prompt_lines(picked, 1)
-    with calllog.context("image", c.project_id):
-        data, mime = await request_image(choice.model, prompt, [(a.data, a.mime) for a in picked], ratio)
-    photo = LayoutAsset(project_id=c.project_id, kind="media", format=c.visual_format, mime=mime, data=data,
-                        model=choice.model, prompt=prompt, role=s["role"])
-    db.add(photo)
-    db.flush()
-    if s.get("photo_id") and (old := db.get(LayoutAsset, s["photo_id"])) is not None:
-        db.delete(old)
-    s["photo_id"] = photo.id
+async def generate_slide_photo(db, c: ContentItem, s: dict, feedback: str = "", override: str = "") -> None:
+    """Foto da página (1 imagem paga), guardada em s["photo_id"]."""
+    await generate_slide_image(db, c, s, feedback, override)
 
 
 def _finish(db, c: ContentItem, template: LayoutAsset, final: bytes, model: str, prompt: str) -> None:
@@ -1343,32 +1444,42 @@ def rerender_piece(db, c: ContentItem) -> None:
         db.commit()
 
 
+async def build_slide(db, c: ContentItem, i: int, feedback: str = "", override: str = "", force: bool = False) -> None:
+    """Deixa UMA página (índice i em piece_slides) pronta: a imagem dela é gerada (se falta, ou sempre com force) e a página é
+    montada no template dela. Modos livres: a imagem do modelo já é a página. Quem chama grava c.slides e faz commit."""
+    slides = piece_slides(c)
+    s = slides[i]
+    kind = slide_photo_kind(db, c, s)
+    if kind == "livre":
+        if force or not s.get("image_id"):
+            await generate_slide_image(db, c, s, feedback, override)
+    else:
+        if kind and (force or not s.get("photo_id")):
+            await generate_slide_image(db, c, s, feedback, override)
+        cover = await asyncio.to_thread(cover_layers, db, c, piece_template(db, c))
+        await asyncio.to_thread(render_slide, db, c, s, cover[0])
+    c.slides = json.dumps(slides, ensure_ascii=False)
+    db.commit()
+
+
 async def generate_slide_photos(db, c: ContentItem) -> str:
-    """Foto de cada página/CTA do carrossel que ainda não tem (as que já têm ficam) e refaz as imagens das páginas com elas.
-    -> erros (vazio = tudo certo). Uma foto que falha não impede as outras."""
-    if c.visual_format != "carrossel" or (c.image_mode or "template") != "template" or not c.image_id:
+    """Imagem de cada página/CTA do carrossel que ainda não tem (as que já têm ficam), em qualquer modo de imagem.
+    -> erros (vazio = tudo certo). Uma página que falha não impede as outras."""
+    if c.visual_format != "carrossel" or not c.image_id:
         return ""
-    errors, made = [], False
+    errors = []
     for i in range(len(piece_slides(c))):
-        slides = piece_slides(c)
-        s = slides[i]
-        if s.get("photo_id") or not slide_wants_photo(db, c, s):
+        s = piece_slides(c)[i]
+        kind = slide_photo_kind(db, c, s)
+        if kind == "livre" and s.get("image_id"):
+            continue
+        if kind != "livre" and (s.get("photo_id") or not kind):
             continue
         try:
-            await generate_slide_photo(db, c, s)
+            await build_slide(db, c, i)
         except ProviderError as e:
             db.rollback()
             errors.append(f"{role_label('carrossel', s['role'])}: {e}")
-            continue
-        c.slides = json.dumps(slides, ensure_ascii=False)
-        db.commit()
-        made = True
-    if made:
-        template = piece_template(db, c)
-        err = await asyncio.to_thread(render_slides, db, c, cover_layers(db, c, template)[0]) if template else ""
-        if err:
-            errors.append(err)
-        db.commit()
     return "; ".join(errors)[:500]
 
 

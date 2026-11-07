@@ -417,17 +417,7 @@ async def run_piece(db: DB, c: ContentItem, force: bool = False) -> dict:
                 continue
 
             async def build(i=i):
-                slides = lay.piece_slides(c)
-                s = slides[i]
-                if not _is_template_carousel(c):  # modos livres: a imagem inteira da página sai do modelo, com os ativos dela
-                    await lay.generate_free_slide(db, c, s, c.image_mode)
-                else:
-                    if lay.slide_wants_photo(db, c, s) and not s.get("photo_id"):
-                        await lay.generate_slide_photo(db, c, s)
-                    cover = await asyncio.to_thread(lay.cover_layers, db, c, lay.piece_template(db, c))
-                    await asyncio.to_thread(lay.render_slide, db, c, s, cover[0])
-                c.slides = json.dumps(slides, ensure_ascii=False)
-                db.commit()
+                await lay.build_slide(db, c, i)
 
             await _attempt(db, c, key, build)
     status = check(db, c)

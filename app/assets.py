@@ -346,6 +346,9 @@ def for_slide(db, c: ContentItem, s: dict, limit: int = MAX_SENT) -> list[Layout
     """Ativos da página: os que o agente indicou para ela, os citados com @ ou escolhidos na peça e o que o texto dela pede."""
     forced = slide_ids(s) + [a.id for a in mentioned(db, c)] + chosen_ids(c)
     forced = list(dict.fromkeys(forced))
+    if s.get("manual_assets"):  # o owner escolheu as referências desta página: só elas (sem "sempre" nem escolha automática)
+        by_id = {a.id: a for a in project_assets(db, c.project_id) if is_image(a)}
+        return [by_id[i] for i in slide_ids(s) if i in by_id][:limit]
     text = " ".join(str(x) for x in (s.get("media"), s.get("title"), s.get("text")) if x)
     picked = for_subject(db, c.project_id, text or c.media or c.title, forced, limit)
     if not any(not a.always and a.id not in forced for a in picked):  # a página não cita nada: vale o que a IA escolheu para a peça

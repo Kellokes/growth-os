@@ -168,12 +168,12 @@
     return true;
   }
   // Escolha do canal do Postiz (quando há vários da mesma rede e o OS não sabe qual): vale também para o botão Publicar.
-  function pickChannel(it, list) {
+  function pickChannel(it, list, agora = false) {
     let dlg = $("#pick-dialog");
     if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "pick-dialog"; dlg.className = "card"; document.body.append(dlg); }
     const net = chan(it.channel).name;
     dlg.innerHTML = `<form method="dialog"><h2>Em qual canal publicar?</h2>
-      <p class="muted">${esc(pinfo(it.project).name)} · ${esc(net)}. ${it.scheduled_at && parseLocal(it.scheduled_at) > new Date() ? "Fica agendada para " + esc(when(it.scheduled_at)) + "." : "Sai agora."}</p>
+      <p class="muted">${esc(pinfo(it.project).name)} · ${esc(net)}. ${!agora && it.scheduled_at && parseLocal(it.scheduled_at) > new Date() ? "Fica agendada para " + esc(when(it.scheduled_at)) + "." : "Sai agora."}</p>
       <div class="pick-list">${list.map((c, i) => `<label><input type="radio" name="pick" value="${esc(c.id)}" ${i === 0 ? "checked" : ""}><span>${esc(c.nome)}</span><small class="muted">${esc(c.rede)}</small></label>`).join("")}</div>
       <label class="pick-remember"><input type="checkbox" id="pick-mem" checked> Usar sempre este para ${esc(net)} em ${esc(pinfo(it.project).name)}</label>
       <div class="cf-actions"><button class="btn ghost" type="button" data-pk="no">Agora não</button><button class="btn primary" type="button" data-pk="go">${icon("send")} Publicar</button></div></form>`;
@@ -181,14 +181,14 @@
     dlg.querySelector('[data-pk="go"]').onclick = async (ev) => {
       const canal = dlg.querySelector("input[name=pick]:checked")?.value; if (!canal) return;
       const mem = $("#pick-mem").checked;
-      const ok = await publishNow(it.id, { canal_id: canal, lembrar: mem }, ev.currentTarget, dlg.querySelector("form"));
+      const ok = await publishNow(it.id, { canal_id: canal, lembrar: mem, agora }, ev.currentTarget, dlg.querySelector("form"));
       if (ok) dlg.close();
     };
     dlg.showModal();
   }
   async function publishNow(id, body, btn, scope = null) {
     const it = items.find((x) => x.id === id);
-    const sched = it?.scheduled_at && parseLocal(it.scheduled_at) > new Date();
+    const sched = !body.agora && it?.scheduled_at && parseLocal(it.scheduled_at) > new Date();
     const r = await working({ btn, scope, phases: it?.group === "email" ? [[0, "Enviando o e-mail…"]] : [[0, sched ? "Agendando…" : "Publicando…"], [2500, "Falando com o Postiz…"], [9000, "Quase lá…"]] },
       () => api(`/api/content/${id}/publish`, { method: "POST", body: JSON.stringify(body) }));
     await refreshAll(); sw?.reload?.();
@@ -703,13 +703,13 @@
 
   function renderActions() {
     const it = current; const b = [];
-    if (!it) b.push('<button class="btn ghost" type="button" data-cf="cancel">Cancelar</button>', '<button class="btn primary" type="submit">Salvar (já aprovada)</button>');
+    if (!it) b.push('<button class="btn ghost" type="button" data-cf="cancel">Cancelar</button>', '<button class="btn" type="submit">Salvar (já aprovada)</button>', `<button class="btn primary" type="button" data-cf="savepub">${icon("send")} Salvar e publicar agora</button>`);
     else {
       b.push(`<button class="btn ghost" type="button" data-cf="copy">${icon("copy")} Copiar texto</button>`);
       if (it.status !== "sent") b.push(`<button class="btn ghost" type="button" data-cf="delete">${icon("trash")} Excluir</button>`);
       if (["rejected", "failed", "approved"].includes(it.status)) b.push('<button class="btn ghost" type="button" data-cf="reopen">Voltar para aprovação</button>');
       if (it.status === "pending") b.push('<button class="btn danger" type="button" data-cf="reject">Rejeitar</button>', '<button class="btn" type="submit">Salvar</button>', `<button class="btn primary" type="button" data-cf="approve">${icon("check")} Salvar e aprovar</button>`);
-      if (["approved", "failed"].includes(it.status)) b.push('<button class="btn" type="submit">Salvar</button>', `<button class="btn ${it.group === "social" ? "" : "primary"}" type="button" data-cf="sent">${icon("send")} ${it.group === "social" ? "Já publiquei fora do OS" : "Marcar enviada"}</button>`);
+      if (["approved", "failed"].includes(it.status)) b.push('<button class="btn" type="submit">Salvar</button>', ["social", "email"].includes(it.group) ? `<button class="btn primary" type="button" data-cf="now">${icon("send")} Publicar agora</button>` : "", `<button class="btn ${it.group === "social" ? "" : "primary"}" type="button" data-cf="sent">${icon("send")} ${it.group === "social" ? "Já publiquei fora do OS" : "Marcar enviada"}</button>`);
     }
     $("#cf-actions").innerHTML = b.join("");
   }
@@ -744,6 +744,13 @@
     if (what === "reopen") { if (await act(() => api(`/api/content/${it.id}/reopen`, { method: "POST" }))) $("#content-dialog").close(); return; }
     if (what === "reject") { if (await rejectFlow(it.id, btn, $("#cf-actions"))) $("#content-dialog").close(); return; }
     if (what === "approve") { if (!(await save())) return; if (await approveFlow(it.id, btn, $("#cf-actions"))) $("#content-dialog").close(); return; }
+    if (what === "savepub") {
+      if (!$("#cf-body").value.trim()) return alert("Escreva o texto.");
+      let d; try { d = await api("/api/content", { method: "POST", body: JSON.stringify({ ...formBody(), project: $("#cf-project").value }) }); } catch (e) { return toast(e.message, "err"); }
+      await refreshAll(); $("#content-dialog").close();
+      return publish(d.id, null, true);
+    }
+    if (what === "now") { if (!(await save())) return; $("#content-dialog").close(); return publish(it.id, null, true); }
     if (what === "sent") { $("#cf-sent-box").hidden = false; $("#cf-actions").hidden = true; $("#cf-link").focus(); }
   });
   $("#cf-sent-cancel").onclick = () => { $("#cf-sent-box").hidden = true; $("#cf-actions").hidden = false; };
@@ -829,7 +836,7 @@
 
   // ---------- eventos ----------
   // Publicar pelo OS: e-mail (SMTP, pede 2FA) ou rede social (Postiz, escolhe o canal).
-  async function publish(id, btn) {
+  async function publish(id, btn, agora = false) {
     const it = items.find((x) => x.id === id); if (!it) return;
     if (it.group === "email") {
       const t = prompt(`Enviar este e-mail para ${it.recipient || "?"} agora?\nDigite o código 2FA para confirmar:`, "");
@@ -837,9 +844,9 @@
       return publishNow(id, { totp: t }, btn);
     }
     // o servidor já sabe o canal do projeto (campo Canal, nome citando o projeto, escolha lembrada); só pergunta se não souber
-    const sched = it.scheduled_at && parseLocal(it.scheduled_at) > new Date();
+    const sched = !agora && it.scheduled_at && parseLocal(it.scheduled_at) > new Date();
     const r = await working({ btn, phases: [[0, "Conferindo o canal…"], [1200, sched ? "Agendando no Postiz…" : "Publicando no Postiz…"], [9000, "Quase lá…"]] },
-      () => api(`/api/content/${id}/publish`, { method: "POST", body: "{}" }));
+      () => api(`/api/content/${id}/publish`, { method: "POST", body: JSON.stringify({ agora }) }));
     if (r.ok) { await refreshAll(); sw?.reload?.(); toast(r.value.status === "sent" ? (sched ? "Agendada no Postiz." : "Publicada.") : (r.value.note || "O envio falhou."), r.value.status === "sent" ? "ok" : "err", { action: goTo(r.value) }); flash(cardOf(id), r.value.status === "sent" ? "ok" : "err"); return; }
     if (!/escolha o canal/i.test(r.error.message)) { await refreshAll(); flash(cardOf(id), "err"); return toast(r.error.message, "err"); }
     let list;
@@ -847,7 +854,7 @@
     const canais = list.filter((c) => !c.desativado && (c.rede || "").split("-")[0] === it.channel);
     const pool = canais.length ? canais : list;
     if (!pool.length) return toast("Nenhum canal conectado no Postiz deste projeto.", "err");
-    pickChannel(it, pool);
+    pickChannel(it, pool, agora);
   }
   const findPiece = async (id) => {
     let it = items.find((x) => x.id === id);

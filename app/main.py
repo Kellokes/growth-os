@@ -1998,6 +1998,7 @@ class PublishIn(BaseModel):
     canal_id: str = Field(default="", max_length=120)
     lembrar: bool = False  # vale como o canal padrão desta rede neste projeto
     totp: str = Field(default="", max_length=12)
+    agora: bool = False  # rede social: publica já, mesmo que a peça tenha data futura
 
 
 @app.get("/api/gprojects/{slug}/postiz/canais")
@@ -2047,7 +2048,7 @@ async def _publish_piece(db: DB, c: ContentItem, body: PublishIn, auth: Auth, ip
             raw["midia_ids"] = ",".join(map(str, media_ids))
         if c.visual_format == "story":
             raw["tipo"] = "story"
-        if c.scheduled_at and c.scheduled_at > cnt.local_now():
+        if not body.agora and c.scheduled_at and c.scheduled_at > cnt.local_now():
             operation = "agendar_post"
             when = c.scheduled_at.replace(tzinfo=ZoneInfo(get_settings().timezone)).astimezone(ZoneInfo("UTC"))
             raw["quando"] = when.strftime("%Y-%m-%dT%H:%M:%SZ")

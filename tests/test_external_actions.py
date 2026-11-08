@@ -404,6 +404,12 @@ def test_each_project_uses_its_own_postiz_channel(logged, monkeypatch):
     assert logged.post(f"/api/content/{p3}/publish", json={}).json()["status"] == "sent"
     assert [c[1]["canal_id"] for c in calls if c[0] in ("agendar_post", "publicar_post")] == ["i"]
 
+    # "Publicar agora" ignora a data futura e sai na hora (publicar_post, não agendar_post).
+    (p4,) = _pieces(a, dict(channel="instagram", body="4", status="approved", scheduled_at=future))
+    calls.clear()
+    assert logged.post(f"/api/content/{p4}/publish", json={"agora": True}).json()["status"] == "sent"
+    assert [c[0] for c in calls if c[0] in ("agendar_post", "publicar_post")] == ["publicar_post"]
+
 
 def test_postiz_network_mapping():
     from app.main import postiz_network

@@ -81,13 +81,13 @@ def norm_visual(raw, channel: str) -> str:
 
 def needs_image(c: ContentItem) -> bool:
     """Peça visual (story, carrossel, reel) ainda sem imagem: não pode ser aprovada nem agendada assim."""
-    return bool(c.visual_format) and not c.image_id
+    return bool(c.visual_format) and not c.image_id and not (c.visual_format in ("reel", "story") and c.video_id)
 
 
 def media_asset_ids(c: ContentItem) -> list[int]:
     """Arquivos (layout_assets.id) que acompanham o post, na ordem: carrossel = capa + páginas; reel = o vídeo, se houver."""
     from .layouts import piece_slides
-    if c.visual_format == "reel" and c.video_id:
+    if c.visual_format in ("reel", "story") and c.video_id:
         return [c.video_id]
     ids = [c.image_id] if c.image_id else []
     ids += [s["image_id"] for s in piece_slides(c) if s.get("image_id")]
@@ -247,6 +247,7 @@ def item_json(c: ContentItem, project_slug: str = "", now: datetime | None = Non
         pipe = pipeline.check(db, c)
     return {
         "pipeline": pipe,
+        "account": c.account or "",
         "id": c.id, "project": project_slug, "agent": c.agent_slug, "task_id": c.task_id,
         "channel": c.channel, "channel_name": name, "channel_icon": icon, "group": group,
         "title": c.title, "body": c.body, "recipient": c.recipient, "purpose": c.purpose, "media": c.media,

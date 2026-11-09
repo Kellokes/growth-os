@@ -13,6 +13,7 @@
           <div class="seg" id="tabs" role="tablist" aria-label="Seções">
             <button type="button" role="tab" data-tab="pecas">{{ ic("send") }} Peças</button><button type="button" role="tab" data-tab="agenda">{{ ic("calendar") }} Agenda</button><button type="button" role="tab" data-tab="saidas">{{ ic("agents") }} Saídas</button><button type="button" role="tab" data-tab="ativos">{{ ic("folder") }} Ativos</button>
           </div>
+          <button class="btn" type="button" id="import-zip">{{ ic("plus") }} Importar ZIP</button>
           <button class="btn primary" type="button" id="new-content">{{ ic("plus") }} Novo</button>
         </div>
       </div>
@@ -144,6 +145,17 @@
       <div class="row"><button class="btn ghost" type="button" id="cf-sent-cancel">Voltar</button><button class="btn primary" type="button" id="cf-sent-ok">{{ ic("check") }} Confirmar envio</button></div>
     </div>
     <div class="row cf-actions" id="cf-actions"></div>
+  </form>
+</dialog>
+
+<dialog id="import-dialog" class="card wide-ish">
+  <form method="dialog" id="import-form">
+    <div class="dialog-head"><h3>Importar vários posts (ZIP)</h3><button class="icon-btn" type="button" id="imp-close" aria-label="Fechar">{{ ic("close") }}</button></div>
+    <p class="muted">Suba um ZIP com as imagens/vídeos e um <code>posts.csv</code> (canal, tipo, data, legenda, arquivos e conta). Eu confiro tudo, mostro a prévia, e só depois de confirmar crio as peças já aprovadas e agendadas no Postiz. Horário de São Paulo.</p>
+    <div class="row"><label class="btn primary" for="imp-file">{{ ic("plus") }} Escolher ZIP</label><input id="imp-file" type="file" accept=".zip,application/zip" hidden>
+      <button class="btn" type="button" id="imp-prompt">Copiar prompt para gerar o ZIP</button><span class="muted" id="imp-msg" aria-live="polite"></span></div>
+    <div id="imp-preview" aria-live="polite"></div>
+    <div class="row"><button class="btn ghost" type="button" id="imp-cancel">Cancelar</button><button class="btn primary" type="button" id="imp-ok" disabled>{{ ic("check") }} Importar e agendar</button></div>
   </form>
 </dialog>
 

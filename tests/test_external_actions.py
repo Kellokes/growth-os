@@ -476,3 +476,19 @@ def test_postiz_canal_field_wins_over_name(logged, monkeypatch):
     (p,) = _pieces(a, dict(channel="instagram", body="x", status="pending", scheduled_at=cnt.local_now() + timedelta(days=1)))
     assert logged.post(f"/api/content/{p}/decide", json={"approve": True}).json()["status"] == "sent"
     assert [c[1]["canal_id"] for c in calls if c[0] == "agendar_post"] == ["t"]
+
+
+def test_piece_account_picks_postiz_channel(logged, monkeypatch):
+    """Peça importada com "conta": vai para o canal do Postiz com esse nome; conta desconhecida segura a peça com o motivo."""
+    from app import content as cnt
+    (a,) = make_projects("Zombie Party")
+    connect(a, "postiz", POSTIZ, monkeypatch)
+    calls = _fake_postiz(monkeypatch, [{"id": "t1", "nome": "Take One", "rede": "instagram"},
+                                       {"id": "z1", "nome": "Zombie Party", "rede": "instagram"}])
+    future = cnt.local_now() + timedelta(days=1)
+    ok, bad = _pieces(a, dict(channel="instagram", body="a", status="pending", scheduled_at=future, account="take one"),
+                      dict(channel="instagram", body="b", status="pending", scheduled_at=future, account="Outra"))
+    r = logged.post(f"/api/content/{ok}/decide", json={"approve": True}).json()
+    assert r["status"] == "sent" and [p for o, p in calls if o == "agendar_post"][0]["canal_id"] == "t1"
+    r2 = logged.post(f"/api/content/{bad}/decide", json={"approve": True}).json()
+    assert r2["status"] == "approved" and "Outra" in r2["note"]

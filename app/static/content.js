@@ -769,6 +769,46 @@
     showTab("pecas"); openPiece(null);
   };
 
+  // ---------- importar ZIP (vários posts de uma vez) ----------
+  let impZip = null;
+  const impDlg = $("#import-dialog");
+  function renderImport(d) {
+    const rows = d.rows.map((r) => {
+      const bad = r.errors.length; const ign = r.duplicate;
+      return `<tr class="${bad ? "t-failed" : ""}"><td>${r.line}</td><td>${esc(r.project)}</td><td>${esc(r.channel)}</td><td>${esc(r.kind)}</td><td>${esc(r.when ? r.when.replace("T", " ") : "")}</td>
+        <td>${esc(r.body)}${r.files.length ? `<br><small class="muted">${esc(r.files.join(", "))}</small>` : ""}${r.account ? `<br><small class="muted">conta: ${esc(r.account)}</small>` : ""}</td>
+        <td>${bad ? r.errors.map((e) => `<span class="badge t-failed">${esc(e)}</span>`).join(" ") : ign ? `<span class="badge">ignorada</span>` : `<span class="badge t-done">ok</span>`}${r.warnings.map((w) => `<br><small class="muted">${esc(w)}</small>`).join("")}</td></tr>`;
+    }).join("");
+    $("#imp-preview").innerHTML = `<div class="secret-note">${d.to_create} peça(s) para criar${d.duplicates ? `, ${d.duplicates} já existente(s) ignorada(s)` : ""}${d.errors ? `, <b>${d.errors} linha(s) com erro</b>: corrija o ZIP e suba de novo` : ""}.</div>
+      <div class="table-wrap"><table class="tbl"><thead><tr><th>#</th><th>Projeto</th><th>Canal</th><th>Tipo</th><th>Quando</th><th>Texto / arquivos</th><th>Situação</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    $("#imp-ok").disabled = !d.ok || !d.to_create;
+  }
+  const impBody = (confirm) => JSON.stringify({ data: impZip, project: project === "all" ? "" : project, confirm });
+  $("#import-zip").onclick = () => { impZip = null; $("#imp-preview").innerHTML = ""; $("#imp-msg").textContent = ""; $("#imp-ok").disabled = true; impDlg.showModal(); };
+  $("#imp-close").onclick = $("#imp-cancel").onclick = () => impDlg.close();
+  $("#imp-file").onchange = async (ev) => {
+    const f = ev.target.files[0]; ev.target.value = "";
+    if (!f) return;
+    $("#imp-msg").textContent = "Conferindo o ZIP…"; $("#imp-ok").disabled = true;
+    try {
+      impZip = await readFile(f);
+      renderImport(await api("/api/content-import", { method: "POST", body: impBody(false) }));
+      $("#imp-msg").textContent = f.name;
+    } catch (e) { impZip = null; $("#imp-preview").innerHTML = `<div class="alert">${esc(e.message)}</div>`; $("#imp-msg").textContent = ""; }
+  };
+  $("#imp-ok").onclick = async () => {
+    const r = await working({ btn: $("#imp-ok"), scope: $("#import-form"), phases: [[0, "Criando peças…"]] }, () => api("/api/content-import", { method: "POST", body: impBody(true) }));
+    if (!r.ok) return toast(r.error.message, "err");
+    impDlg.close(); toast(`${r.value.created} peça(s) criada(s) e aprovadas; o Postiz agenda cada uma sozinho.`, "ok");
+    stageF = "postiz"; await refreshAll();
+  };
+  $("#imp-prompt").onclick = async () => {
+    try {
+      const t = (await api(`/api/content-import/prompt?project=${project === "all" ? "" : encodeURIComponent(project)}`)).prompt;
+      await navigator.clipboard.writeText(t); toast("Prompt copiado. Cole na IA que vai montar o ZIP.", "ok");
+    } catch (e) { toast("Não deu para copiar: " + e.message, "err"); }
+  };
+
   // ---------- agenda ----------
   function dayLabel(d) {
     const today = new Date(); today.setHours(0, 0, 0, 0);

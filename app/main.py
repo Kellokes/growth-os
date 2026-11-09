@@ -29,6 +29,7 @@ from . import calllog, costs
 from . import approvals as appr
 from . import content as cnt
 from . import growth
+from . import importer as imp
 from . import layouts as lay
 from . import media as med
 from . import assets as ast
@@ -1933,6 +1934,13 @@ async def _auto_send(db: DB, c: ContentItem, actor: str, ip: str) -> dict:
         if not mine:
             return why(f"nenhum canal de {cnt.CHANNELS[c.channel][0]} conectado no Postiz.")
         chosen = pick_postiz_channel(db, project, c.channel, mine)
+        if (c.account or "").strip():  # conta escolhida na importação em lote manda mais que o automático
+            want = _slug(c.account)
+            chosen = next((x for x in mine if want in (_slug(x.get("nome", "")), _slug(str(x.get("id", ""))))), None) or next(
+                (x for x in mine if want and want in _slug(x.get("nome", ""))), None)
+            if chosen is None:
+                return why(f'a conta "{c.account}" não está entre os canais de {cnt.CHANNELS[c.channel][0]} do Postiz: '
+                           + ", ".join(x.get("nome") or str(x["id"]) for x in mine) + ".")
         if chosen is None:
             cfg_msg = choose_postiz_channel(db, project, c.channel, mine)[1] if routines._config(
                 db.query(Integration).filter(Integration.project_id == project.id, Integration.kind == "postiz").one_or_none()).get("canal") else ""
@@ -2246,6 +2254,38 @@ async def content_complete(cid: int, request: Request, auth: Auth = Depends(curr
     await pipeline.run_piece(db, c, force=True)
     audit(db, auth.user.username, "content_complete", f"#{c.id}", client_ip(request))
     return _content_json(db, c)
+
+
+class ImportIn(BaseModel):
+    data: str = Field(max_length=115_000_000)  # ZIP em base64 (até 80 MB)
+    project: str = Field(default="", max_length=60)  # projeto padrão das linhas sem a coluna projeto
+    confirm: bool = False  # false = só a prévia (nada é gravado)
+
+
+@app.post("/api/content-import")
+def import_content(body: ImportIn, request: Request, auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """Vários posts de uma vez: ZIP com imagens/vídeos + posts.csv. Sem `confirm` só valida e mostra a prévia;
+    com `confirm` cria as peças já aprovadas e agendadas (o Postiz agenda cada uma sozinho)."""
+    raw = body.data.split(",", 1)[1] if body.data.startswith("data:") and "," in body.data else body.data
+    try:
+        zbytes = base64.b64decode(raw, validate=True)
+        rows, files, mimes = imp.build(db, zbytes, body.project)
+        prev = imp.preview_json(rows)
+        if not body.confirm:
+            return {**prev, "created": 0}
+        made = imp.commit(db, rows, files, mimes)
+    except (ValueError, TypeError) as e:  # ImportError_ e base64 inválido são ValueError
+        raise HTTPException(422, str(e) if str(e) else "arquivo inválido") from e
+    audit(db, auth.user.username, "content_import", f"{len(made)} peças importadas de ZIP ({prev['duplicates']} ignoradas)",
+          client_ip(request))
+    return {**prev, "created": len(made), "ids": [c.id for c in made]}
+
+
+@app.get("/api/content-import/prompt")
+def import_prompt(project: str = "", auth: Auth = Depends(current_auth), db: DB = Depends(get_db)):
+    """O texto para pedir a uma IA que monte o ZIP no formato certo."""
+    projects = db.query(GrowthProject).order_by(GrowthProject.name).all()
+    return {"prompt": imp.prompt_text([p.slug for p in projects], project)}
 
 
 @app.post("/api/content/{cid}/image/upload")

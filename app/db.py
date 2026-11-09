@@ -365,6 +365,7 @@ class ContentItem(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     link: Mapped[str] = mapped_column(String(500), default="")  # onde saiu (URL do post), opcional
     note: Mapped[str] = mapped_column(Text, default="")  # motivo da rejeição / da falha
+    account: Mapped[str] = mapped_column(String(120), default="")  # conta (canal do Postiz) escolhida na importação; vazio = automático
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -519,6 +520,7 @@ _NEW_COLUMNS = {
     "events": {"handled": "INTEGER NOT NULL DEFAULT 0"},
     "growth_projects": {"style_brief": "TEXT NOT NULL DEFAULT ''"},
     "content_items": {
+        "account": "VARCHAR(120) NOT NULL DEFAULT ''",
         "visual_format": "VARCHAR(12) NOT NULL DEFAULT ''",
         "image_id": "INTEGER NULL",
         "image_error": "TEXT NOT NULL DEFAULT ''",
